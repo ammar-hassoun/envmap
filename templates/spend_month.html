@@ -1,0 +1,165 @@
+{% extends "base.html" %}
+{% block crumbs %}<a href="/spend">IT spend</a> <span class="sep">/</span>
+  <b>{{ d.label }}</b>{% endblock %}
+{% block content %}
+{# One month, answered in the order the questions arrive: what did it come to,
+   was that more or less than last time, what was it made of, and then the
+   lines. The breakdowns are computed in spend.month_detail beside the table
+   they describe — a chart that disagrees with the table under it is the kind
+   of thing nobody notices and everybody quotes. #}
+
+<div class="page-head">
+  <div>
+    <h1 style="margin:0;">{{ d.label }}</h1>
+    <p class="sub">Everything charged that month, and what it added up to.</p>
+  </div>
+  <div style="display:flex;gap:10px;flex-wrap:wrap;">
+    <a class="btn btn-ghost" href="/spend/month?ym={{ d.prev }}">← {{ d.prev_label }}</a>
+    {% if d.next %}
+    <a class="btn btn-ghost" href="/spend/month?ym={{ d.next }}">{{ d.next_label }} →</a>
+    {% endif %}
+    <a class="btn btn-ghost" href="/spend">Calendar</a>
+    <button type="button" data-dlg-open="addSub">
+      ＋ Add an expense</button>
+  </div>
+</div>
+
+{% if d.pending %}
+<div class="sec-note" style="margin-bottom:12px;">Still reading
+  {{ d.pending }} account{{ "'s" if d.pending == 1 else "s'" }} bills — reload in a moment
+  for the full picture.</div>
+{% endif %}
+
+{% if d.stranded %}
+<div class="flash err" style="margin-bottom:12px;">
+  ⚠ <span>Not in the total below:
+    {% for r in d.stranded %}<b>{{ r.what }}</b>
+      ({{ r.currency }} {{ '{:,.2f}'.format(r.amount) }}){{ ', ' if not loop.last }}{% endfor %}.
+    No rate between {{ d.unconverted|join(', ') }} and {{ d.currency }} has been
+    set — <a href="/spend/manage#rates">add one</a> and {{ 'it joins' if d.stranded|length == 1
+      else 'they join' }} the month.</span>
+</div>
+{% endif %}
+
+{# ── what it came to ──────────────────────────────────────────────────── #}
+<div class="mfacts">
+  <div class="mfact">
+    <span class="mf-k">total</span>
+    <span class="mf-v">{{ d.currency }} {{ '{:,.2f}'.format(d.total) }}</span>
+  </div>
+  {% if not d.prev_total %}
+  {# "up by the whole total" is arithmetically true against a month with
+     nothing in it and tells nobody anything. #}
+  <div class="mfact">
+    <span class="mf-k">vs {{ d.prev_label }}</span>
+    <span class="mf-v" style="font-size:14px;color:var(--muted);font-weight:600;">
+      nothing charged then</span>
+  </div>
+  {% elif d.delta is not none %}
+  <div class="mfact">
+    <span class="mf-k">vs {{ d.prev_label }}</span>
+    {# up is bad here, which is the opposite of most deltas on this portal, so
+       the arrow and the colour both say which way it went rather than leaving
+       the reader to infer it from a sign. #}
+    <span class="mf-v {{ 'mf-up' if d.delta > 0 else 'mf-down' if d.delta < 0 }}">
+      {%- if d.delta > 0 %}↑{% elif d.delta < 0 %}↓{% else %}={% endif %}
+      {{ d.currency }} {{ '{:,.0f}'.format(d.delta|abs) }}
+      {%- if d.delta_pct %} <small>({{ '{:,.0f}'.format(d.delta_pct|abs) }}%)</small>{% endif %}
+    </span>
+  </div>
+  {% endif %}
+  <div class="mfact">
+    <span class="mf-k">lines</span>
+    <span class="mf-v">{{ d.lines|length }}</span>
+  </div>
+  {% if d.buckets %}
+  <div class="mfact mfact-wide">
+    <span class="mf-k">split by kind</span>
+    <div class="mstack">
+      {% for b in d.buckets %}
+      <span class="yb-{{ b.key }}-fill" style="width:{{ '{:.2f}'.format(b.share) }}%"
+            title="{{ b.label }} — {{ d.currency }} {{ '{:,.0f}'.format(b.amount) }}"></span>
+      {% endfor %}
+    </div>
+    <div class="mkeys">
+      {% for b in d.buckets %}
+      <span class="mkey"><i class="yb-{{ b.key }}-fill"></i>{{ b.label|lower }}
+        <b>{{ '{:,.0f}'.format(b.amount) }}</b></span>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+</div>
+
+{% if d.categories %}
+{# Ranked bars, one hue: this is magnitude, not identity — the name beside each
+   bar says which is which, so colour has nothing left to carry. #}
+<div class="card">
+  <div class="card-h">Where it went
+    <span class="hint">{{ d.categories|length }}
+      categor{{ 'y' if d.categories|length == 1 else 'ies' }}</span></div>
+  <div class="card-b">
+    <div class="hbars">
+      {% set top = d.categories[0].amount or 1 %}
+      {% for c in d.categories %}
+      <div class="hbar">
+        <div class="hbar-l" title="{{ c.label }}">{{ c.label }}</div>
+        <div class="hbar-t"><span style="width:{{ '{:.1f}'.format(c.amount / top * 100) }}%"></span></div>
+        <div class="hbar-v">{{ d.currency }} {{ '{:,.0f}'.format(c.amount) }}
+          <small style="opacity:.65;">{{ '{:.0f}'.format(c.share) }}%</small></div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="card-h">{{ d.lines|length }} line{{ 's' if d.lines|length != 1 }}
+    <span style="flex:1"></span>
+    <span style="font-size:17px;font-weight:750;">{{ d.currency }}
+      {{ '{:,.2f}'.format(d.total) }}</span>
+  </div>
+  <div class="card-b">
+    {% if not d.lines %}
+    <p class="sub" style="margin:0;">{{ d.note or 'Nothing was charged.' }}</p>
+    {% else %}
+    <table class="jenkins">
+      <thead><tr><th>what</th><th>from</th><th>kind</th>
+        <th class="num">amount</th><th class="num">share</th></tr></thead>
+      <tbody>
+        {% for r in d.lines %}
+        {#- A line that came from a typed row opens that row's editor. A cloud
+            line does not: its figure is read from the provider's bill and an
+            edit here would be overwritten within six hours. -#}
+        <tr {% if r.row %}class="regrow" tabindex="0" title="Edit {{ r.what }}"
+            data-call="editSubRow" data-arg-self data-enter data-row='{{ r.row|tojson }}'
+           {% endif %}>
+          <td><b>{{ r.what }}</b>
+            {% if r.note %}<div class="sec-note" style="margin:0;">{{ r.note }}</div>{% endif %}</td>
+          <td class="hint">{{ r.who or '—' }}</td>
+          <td><span class="badge">{{ r.kind }}</span></td>
+          <td class="numcell">{{ d.currency }} {{ '{:,.2f}'.format(r.amount) }}</td>
+          <td class="numcell hint">{% if r.credit %}credit{% else
+            %}{{ '{:.0f}'.format(r.share) }}%{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      <tfoot>
+        <tr><th colspan="3" style="text-align:right;">total</th>
+          <th class="numcell">{{ d.currency }} {{ '{:,.2f}'.format(d.total) }}</th>
+          <th></th></tr>
+      </tfoot>
+    </table>
+    <div class="sec-note" style="margin-top:12px;">A cloud account is one line
+      for what it cost that month — which service used it is in that
+      provider's own page. A subscription or an invoice appears once, in the
+      month it fell due. Share is of what was charged, so a credit shows as a
+      credit rather than as a negative slice. Everything is converted to
+      {{ d.currency }}. Click a line to edit it — except a cloud account, whose
+      figure comes from the provider's own bill.</div>
+    {% endif %}
+  </div>
+</div>
+{% include "_spend_dialog.html" %}
+{% endblock %}

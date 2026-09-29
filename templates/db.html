@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block crumbs %}<b>Databases</b>{% endblock %}
+{% block content %}
+<div class="kv" style="margin-bottom:6px;">
+  <h1 style="margin:0;">Databases</h1>
+  <span style="flex:1"></span>
+  <a class="btn btn-ghost" href="/settings/conns/db"
+     style="padding:6px 14px;font-size:12px;">Settings</a>
+</div>
+<p class="sub">Registered servers. The portal knows where they are, not how to
+  get in — you sign in with your own database account, it is held for this
+  session only, and it is gone when you close the console or the portal
+  restarts.</p>
+
+{% if msg %}<div class="flash">✓ {{ msg }}</div>{% endif %}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+
+{% if not servers %}
+<div class="card"><div class="card-b">
+  <p class="sub" style="margin:0 0 12px;">No database server is registered yet.
+    Add PostgreSQL and MySQL/MariaDB servers by host and port — as many as you
+    run, across every environment.</p>
+  <a class="btn" href="/settings/conns/db">Register a server</a>
+</div></div>
+{% else %}
+
+<div class="card">
+  <div class="card-h">Servers <span class="hint">{{ servers|length }} registered</span></div>
+  <div class="card-b">
+    {% for s in servers %}
+    <div class="rowcard">
+      <div class="kv">
+        {{ logo(s.type, s.name, 20) }}
+        <b style="font-size:14.5px;">{{ s.name }}</b>
+        <span class="badge">{{ providers[s.type].label if s.type in providers else s.type }}</span>
+        <span class="badge" style="font-family:var(--mono);">{{ s._where }}</span>
+        {% if s.database %}<span class="badge">default: {{ s.database }}</span>{% endif %}
+        {% if s._open %}<span class="badge" style="color:var(--ok-ink);">signed in</span>{% endif %}
+        <span style="flex:1"></span>
+        {% if s._open %}
+        <a class="btn" href="/db/{{ s.id }}"
+           style="padding:5px 15px;font-size:11.5px;">Open console</a>
+        <form method="post" action="/db/{{ s.id }}/close">
+          <button class="btn-ghost" style="padding:5px 13px;font-size:11.5px;">Sign out</button></form>
+        {% else %}
+        <button class="btn" style="padding:5px 15px;font-size:11.5px;"
+                data-dlg-open="signin-{{ s.id }}">
+          Connect</button>
+        {% endif %}
+      </div>
+      {% if s.status %}
+      <div class="sec-note"
+           style="color:{{ 'var(--ok-ink)' if s.status.startswith('ok') else 'var(--danger-ink)' }};">{{ s.status }}</div>
+      {% endif %}
+    </div>
+
+    <dialog id="signin-{{ s.id }}" class="pdialog">
+      <form method="post" action="/db/{{ s.id }}/open{{ '?back=' ~ back|urlencode if back and open_cid == s.id }}">
+        <div class="dhead">
+          <span>
+            <span class="dtitle">Sign in to {{ s.name }}</span>
+            <span class="dwhere">{{ s._where }}</span>
+          </span>
+          <span style="flex:1"></span>
+          <button type="button" class="dx"
+                  data-dlg-close="signin-{{ s.id }}"
+                  aria-label="Close">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="2.2" stroke-linecap="round"
+                 aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+          </button>
+        </div>
+        <div class="dbody">
+          {% if why and open_cid == s.id %}
+          <div class="dnote" style="margin-bottom:14px;border-color:var(--warn-line);
+               color:var(--warn-ink);">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                 aria-hidden="true"><circle cx="12" cy="12" r="9"/>
+              <path d="M12 11v5M12 7.6v.1"/></svg>
+            <span>{{ why }}</span>
+          </div>
+          {% endif %}
+          <div class="dnote" style="margin-bottom:16px;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                 aria-hidden="true"><circle cx="12" cy="12" r="9"/>
+              <path d="M12 11v5M12 7.6v.1"/></svg>
+            <span>Your own database account. It is held in memory for this
+              session, never written to disk, and forgotten when you sign out,
+              after an hour unused, or when the portal restarts.</span>
+          </div>
+          <div class="dfield">
+            <label for="u-{{ s.id }}">database username</label>
+            <input id="u-{{ s.id }}" type="text" name="user" autocomplete="off"
+                   required autofocus placeholder="e.g. reporting_ro">
+          </div>
+          <div class="dfield">
+            <label for="p-{{ s.id }}">password</label>
+            <input id="p-{{ s.id }}" type="password" name="password"
+                   autocomplete="new-password">
+          </div>
+          <p class="sub" style="margin:14px 0 0;">The console opens read-only.
+            The server itself refuses writes until you switch the session to
+            write mode, which is recorded along with every statement after it.</p>
+        </div>
+        <div class="dfoot">
+          <button type="button" class="btn-ghost"
+                  data-dlg-close="signin-{{ s.id }}">Cancel</button>
+          <span class="spacer"></span>
+          <button type="submit">Connect</button>
+        </div>
+      </form>
+    </dialog>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+{% if open_cid %}
+<script nonce="{{ csp_nonce() }}">
+  const d = document.getElementById('signin-{{ open_cid }}');
+  if (d) d.showModal();
+</script>
+{% endif %}
+{% endblock %}

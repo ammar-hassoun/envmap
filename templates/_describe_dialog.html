@@ -1,0 +1,224 @@
+{# `kubectl describe`, in a window over the page.
+
+   WHY A WINDOW AND NOT A NAVIGATION
+       `desc` was a link that loaded the whole cluster page again with
+       `inspect=describe` in the query. You lost the pod list you were reading,
+       the namespace filter you had set, and your place in a hundred-row table —
+       to look at one object and then go back. Describing something is a glance,
+       not a destination.
+
+   WHY THIS ONE IS A `.psh` WINDOW AND THE KEY EDITOR IS NOT
+       `.psh` is the kubectl console's chrome: a fixed frame with monospace
+       applied to everything inside it. That was wrong for a key/value form —
+       prose in Menlo, a form floating in a half-empty terminal — and it is
+       exactly right here, because describe output IS monospace terminal text
+       whose alignment carries meaning.
+
+   Deliberately not a live stream. `kubectl describe` is a snapshot; the log
+   window's follow/pause machinery would be pretending otherwise. Refresh is a
+   button, so a reader knows when what they are looking at was true.
+#}
+<dialog id="dsDlg" class="psh dswin">
+  <div class="psh-bar">
+    <span class="psh-dots"><b title="close" data-dsdot="close">✕</b><b
+      title="minimise" data-dsdot="mini">–</b><b title="maximise" data-dsdot="maxi">+</b></span>
+    <b>describe</b>
+    <span class="psh-ns" id="dsWhat"></span>
+    <span style="flex:1"></span>
+    <span class="psh-state" id="dsState"></span>
+    <button type="button" class="psh-x" id="dsClose">close</button>
+  </div>
+  <div class="lgbar">
+    <input type="search" class="psh-find" id="dsFind"
+           placeholder="filter lines…" spellcheck="false" autocomplete="off">
+    <button type="button" class="psh-x" id="dsWrap" title="wrap long lines">wrap</button>
+    <button type="button" class="psh-x" id="dsCopy">copy</button>
+    <button type="button" class="psh-x" id="dsDownload">download</button>
+    <button type="button" class="psh-x" id="dsAgain"
+            title="read it again from the cluster">refresh</button>
+    <span style="flex:1"></span>
+    <span class="psh-state" id="dsCount"></span>
+  </div>
+  <div class="dsv" id="dsView" tabindex="0"></div>
+</dialog>
+
+<style>
+  dialog.dswin { width:min(900px,94vw); height:min(660px,84vh); }
+  /* The window is a column: title bar, tool bar, then the output taking what is
+     left. Without this the output pane's `flex:1` is inert — nothing above it is
+     a flex container — so it took its full content height, the dialog's own
+     `overflow:hidden` clipped it, and 170 lines of describe simply could not be
+     scrolled to.
+
+     `[open]` is not optional. `dialog.psh.lgwin { display:flex }` unscoped is
+     what once rendered a closed window in the middle of the page: any author
+     `display` beats the user agent's `dialog:not([open]) { display:none }`.
+
+     `min-height:0` is the other half. A flex item defaults to `min-height:auto`,
+     which refuses to shrink below its content — so `overflow:auto` never has
+     anything to scroll and the pane just grows. It is the reason this scrolls,
+     not decoration. */
+  dialog.psh.dswin[open] { display:flex; flex-direction:column; }
+  .dswin .dsv { flex:1 1 auto; min-height:0; }
+  /* The same reading surface as the log window: this is terminal output and its
+     alignment is information — an Events table or a mount list stops meaning
+     anything the moment the columns move. */
+  .dsv { flex:1; overflow:auto; padding:11px 14px 16px; font-family:var(--mono);
+    font-size:12px; line-height:1.5; white-space:pre; color:#cfe0f5; }
+  .dsv.wrap { white-space:pre-wrap; word-break:break-word; }
+  .dsv .l { display:block; }
+  /* A section header in describe output is a line with no leading space and a
+     colon. Marking them is the difference between reading and scanning. */
+  .dsv .h { color:#eaf2ff; font-weight:650; }
+  .dsv .off { display:none; }
+  .dsv mark { background:rgba(245,196,81,.28); color:var(--warn-on-wash);
+    border-radius:3px; }
+  .dsv .none { color:var(--muted); font-family:var(--sans); white-space:normal; }
+  .psh-find { width:190px; padding:3px 9px; font-size:11.5px; border-radius:6px;
+    border:1px solid #263149; background:#0e131d; color:#cfe0f5;
+    font-family:var(--mono); }
+</style>
+
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  const dlg = document.getElementById('dsDlg');
+  const view = document.getElementById('dsView');
+  const what = document.getElementById('dsWhat');
+  const state = document.getElementById('dsState');
+  const count = document.getElementById('dsCount');
+  const find = document.getElementById('dsFind');
+  let where = null, lines = [];
+
+  function paint() {
+    const needle = find.value.trim().toLowerCase();
+    const frag = document.createDocumentFragment();
+    let shown = 0;
+    for (const line of lines) {
+      const hit = !needle || line.toLowerCase().includes(needle);
+      if (!hit) continue;
+      shown++;
+      const el = document.createElement('span');
+      // A header is a line starting in column zero whose colon ends the line
+      // with NOTHING after it. Detected from the shape rather than from a list
+      // of kinds, because every kind has its own sections and kubectl adds more.
+      //
+      // The "nothing after it" is the whole rule. kubectl pads a field's value
+      // to a fixed column, so a field with an EMPTY value looks like
+      // `IP:               ` — and allowing trailing whitespace marked that as a
+      // section. Measured on a real pod: the loose pattern claimed IP:, the
+      // strict one leaves Containers:, Conditions:, Volumes:, Events:.
+      el.className = 'l' + (/^\S[^:]*:$/.test(line) ? ' h' : '');
+      if (needle) {
+        const at = line.toLowerCase().indexOf(needle);
+        el.append(document.createTextNode(line.slice(0, at)));
+        const m = document.createElement('mark');
+        m.textContent = line.slice(at, at + needle.length);
+        el.append(m, document.createTextNode(line.slice(at + needle.length)));
+      } else {
+        el.textContent = line || ' ';
+      }
+      frag.appendChild(el);
+    }
+    view.replaceChildren(frag);
+    if (!shown) {
+      const p = document.createElement('span');
+      p.className = 'none';
+      p.textContent = needle ? 'No line contains “' + find.value.trim() + '”.'
+                             : 'Nothing to show.';
+      view.appendChild(p);
+    }
+    count.textContent = needle
+      ? shown.toLocaleString() + ' of ' + lines.length.toLocaleString() + ' lines'
+      : lines.length.toLocaleString() + ' lines';
+  }
+
+  function load() {
+    if (!where) return;
+    state.textContent = 'reading…';
+    lines = [];
+    view.replaceChildren();
+    count.textContent = '';
+    const url = where.url + (where.url.includes('?') ? '&' : '?')
+      + new URLSearchParams({kind: where.kind, namespace: where.ns,
+                             name: where.name});
+    fetch(url).then(r => r.json()).then(doc => {
+      if (doc.error && !doc.text) {
+        state.textContent = '';
+        lines = [];
+        paint();
+        const p = document.createElement('span');
+        p.className = 'none';
+        p.textContent = doc.error;
+        view.replaceChildren(p);
+        return;
+      }
+      // The stamp matters: this is a snapshot, not a stream, and a reader has to
+      // know whether they are looking at something from a minute ago.
+      state.textContent = 'read at ' + new Date().toLocaleTimeString();
+      lines = (doc.text || '').replace(/\s+$/, '').split('\n');
+      paint();
+      view.scrollTop = 0;
+    }).catch(err => {
+      state.textContent = '';
+      const p = document.createElement('span');
+      p.className = 'none';
+      p.textContent = String(err);
+      view.replaceChildren(p);
+    });
+  }
+
+  find.addEventListener('input', paint);
+  document.getElementById('dsAgain').addEventListener('click', load);
+  document.getElementById('dsWrap').addEventListener('click', e => {
+    view.classList.toggle('wrap');
+    e.currentTarget.classList.toggle('on', view.classList.contains('wrap'));
+  });
+  document.getElementById('dsCopy').addEventListener('click', e => {
+    navigator.clipboard.writeText(lines.join('\n')).then(() => {
+      const b = e.currentTarget, was = b.textContent;
+      b.textContent = 'copied';
+      setTimeout(() => { b.textContent = was; }, 1200);
+    }).catch(() => {});
+  });
+  document.getElementById('dsDownload').addEventListener('click', () => {
+    const blob = new Blob([lines.join('\n')], {type: 'text/plain'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = (where ? where.name : 'describe') + '.txt';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  });
+
+  function shut() { dlg.close(); }
+  document.getElementById('dsClose').addEventListener('click', shut);
+  dlg.querySelector('[data-dsdot="close"]').addEventListener('click', shut);
+  dlg.querySelector('[data-dsdot="mini"]').addEventListener('click', shut);
+  dlg.querySelector('[data-dsdot="maxi"]').addEventListener('click', () => {
+    dlg.classList.toggle('maxi');
+  });
+  dlg.addEventListener('cancel', shut);
+
+  // Delegated, so a row anywhere on any page opens this by carrying data-
+  // attributes and nothing else — the same contract the log window uses.
+  document.addEventListener('click', e => {
+    const a = e.target.closest && e.target.closest('[data-poddesc]');
+    if (!a || e.metaKey || e.ctrlKey || e.shiftKey || e.button) return;
+    e.preventDefault();
+    // same as the log window: identifiers on the row, URL built here
+    const dsurl = a.dataset.dsurl || ('/clusters/describe.json?project='
+                  + encodeURIComponent(a.dataset.pid || '') + '&cluster='
+                  + encodeURIComponent(a.dataset.cid || ''));
+    openDescribe({url: dsurl, kind: a.dataset.dskind || 'pod',
+                  namespace: a.dataset.ns, name: a.dataset.pod});
+  });
+
+  window.openDescribe = function (opts) {
+    where = {url: opts.url, kind: opts.kind || 'pod', ns: opts.namespace,
+             name: opts.name};
+    what.textContent = (where.ns ? where.ns + '/' : '') + where.name;
+    find.value = '';
+    if (!dlg.open) dlg.showModal();
+    load();
+  };
+})();
+</script>

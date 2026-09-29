@@ -1,0 +1,351 @@
+{% extends "base.html" %}
+{% block crumbs %}<a href="/workflows">Workflows</a> <span class="sep">/</span>
+  <a href="/workflows">{{ conn.name }}</a> <span class="sep">/</span>
+  <b>{{ ns }}</b>{% endblock %}
+{% block content %}
+
+{# Temporal's own colours for the six statuses, because an operator who lives in
+   that UI reads the colour before the word. Kept in one place so the list, the
+   pills and the execution page cannot drift apart. #}
+{% set SC = {'Running':   ('#4f7dff', 'rgba(79,125,255,.14)'),
+             'Completed': ('#12b76a', 'rgba(18,183,106,.14)'),
+             'Failed':    ('#f04438', 'rgba(240,68,56,.14)'),
+             'TimedOut':  ('#f79009', 'rgba(247,144,9,.16)'),
+             'Canceled':  ('#8098b8', 'rgba(128,152,184,.16)'),
+             'Terminated':('#eaaa08', 'rgba(234,170,8,.18)'),
+             'ContinuedAsNew': ('#8098b8', 'rgba(128,152,184,.16)')} %}
+{# Custom attributes first and labelled: they are the ones specific to this
+   estate, and they are what somebody came to filter by. #}
+{% macro attroptions(chosen) %}
+<option value="">choose an attribute…</option>
+{% if attrs.custom %}
+<optgroup label="Custom">
+  {% for a in attrs.custom %}
+  <option value="{{ a.name }}" data-type="{{ a.type }}"{{
+    ' selected' if a.name == chosen }}>{{ a.name }} · {{ a.type|lower }}</option>
+  {% endfor %}
+</optgroup>
+{% endif %}
+<optgroup label="System">
+  {% for a in attrs.system %}
+  <option value="{{ a.name }}" data-type="{{ a.type }}"{{
+    ' selected' if a.name == chosen }}>{{ a.name }} · {{ a.type|lower }}</option>
+  {% endfor %}
+</optgroup>
+{% endmacro %}
+
+{% macro pill(status, count, on, href) %}
+{% set c = SC.get(status, ('#8098b8', 'rgba(128,152,184,.16)')) %}
+<a href="{{ href }}" style="display:inline-flex;align-items:center;gap:6px;
+   padding:4px 11px;border-radius:6px;font-size:12px;font-weight:500;
+   text-decoration:none;color:{{ c[0] }};background:{{ c[1] }};
+   border:1px solid {{ c[0] if on else 'transparent' }};">
+  {% if count is not none %}<b style="font-variant-numeric:tabular-nums;">{{
+    '{:,}'.format(count) }}</b>{% endif %}
+  <span>{{ status }}</span></a>
+{% endmacro %}
+
+<style>
+  /* the execution list: dense, monospaced ids, one row per execution */
+  .wfl { width:100%; border-collapse:collapse; }
+  .wfl th { text-align:left; font-size:11px; text-transform:uppercase;
+    letter-spacing:.04em; color:var(--muted); font-weight:600;
+    padding:8px 10px; border-bottom:1px solid var(--line2); }
+  .wfl td { padding:9px 10px; border-bottom:1px solid var(--line);
+    font-size:12.5px; vertical-align:top; }
+  .wfl tr:hover td { background:var(--panel2); }
+  .wfid { font-family:var(--mono); font-size:12px; overflow-wrap:anywhere; }
+  .wfrun { font-family:var(--mono); font-size:11.5px; color:var(--muted); }
+  .wfviews a { display:block; padding:7px 11px; border-radius:7px;
+    font-size:12.5px; text-decoration:none; color:var(--text2); }
+  .wfviews a.on { background:var(--panel2); color:var(--text);
+    font-weight:600; }
+  .wfviews a:hover { background:var(--panel2); }
+</style>
+
+{# ── the header Temporal leads with: how many, and how they ended ────── #}
+<div style="margin-bottom:14px;">
+  <div class="kv" style="gap:12px;flex-wrap:wrap;align-items:baseline;">
+    <h1 style="margin:0;">
+      {% if tally.available %}{{ '{:,}'.format(tally.total) }} {% endif %}Workflows</h1>
+    <span class="hint">{{ ns }} · {{ conn.name }}</span>
+    <span style="flex:1"></span>
+    {% if namespaces|length > 1 %}
+    <select data-call-change="wfBrowseGo" data-base="/workflows/{{ conn.id }}/"
+            style="min-width:0;width:auto;">
+      {% for n in namespaces %}
+      <option value="{{ n.name }}"{{ ' selected' if n.name == ns }}>{{ n.name }}</option>
+      {% endfor %}
+    </select>
+    {% endif %}
+    <a class="btn btn-ghost" style="padding:6px 13px;font-size:12px;"
+       href="{{ conn.base_url }}/namespaces/{{ ns }}/workflows"
+       target="_blank" rel="noopener">Open in Temporal ↗</a>
+  </div>
+
+  <div style="display:flex;flex-wrap:wrap;gap:7px;margin-top:11px;">
+    {% for s in statuses %}
+    {# Every status is shown even at zero, because "0 Failed" is worth reading.
+       But it must show the 0: a pill with no number beside pills that have one
+       reads as a gap in the data rather than an absence of executions. When
+       counts are unavailable at all, none of them gets a number and the note
+       below says why. #}
+    {% set n = tally.by_status.get(s, 0) if tally.available else none %}
+    {{ pill(s, n, s in picked,
+            '?status=' ~ s ~ ('&raw=' ~ (filters.raw|urlencode) if filters.raw else '')) }}
+    {% endfor %}
+    {% if not tally.available %}
+    <span class="hint" style="align-self:center;">counts unavailable —
+      {{ tally.why }}</span>
+    {% endif %}
+  </div>
+</div>
+
+<div style="display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap;">
+
+  {# ── saved views ──────────────────────────────────────────────────── #}
+  <div class="card wfviews" style="width:190px;flex:0 0 auto;">
+    <div class="card-h" style="font-size:12px;">Saved views</div>
+    <div class="card-b" style="padding:7px;">
+      {% for v in views %}
+      <a href="?{{ ('view=' ~ v.key) if v.key else '' }}"
+         class="{{ 'on' if (v.key == view) or (not v.key and not view and not picked
+                            and not filters.raw) }}">{{ v.label }}</a>
+      {% endfor %}
+      <div class="sec-note" style="margin:8px 4px 2px;font-size:10.5px;">
+        Each view is a query — it lands in the box so you can edit it.</div>
+    </div>
+  </div>
+
+  <div style="flex:1 1 520px;min-width:0;">
+    <form method="get" action="/workflows/{{ conn.id }}/{{ ns }}" class="card"
+          style="margin-bottom:12px;">
+      <div class="card-b">
+        <div style="display:grid;gap:10px;
+                    grid-template-columns:repeat(auto-fit,minmax(170px,1fr));">
+          <div><div class="cmp-lbl">Workflow type</div>
+            <input type="text" name="type" value="{{ filters.type }}"
+                   placeholder="poll_order_status_workflow"
+                   style="width:100%;box-sizing:border-box;"></div>
+          <div><div class="cmp-lbl">Workflow ID</div>
+            <input type="text" name="wid" value="{{ filters.wid }}"
+                   placeholder="exact id"
+                   style="width:100%;box-sizing:border-box;"></div>
+          <div><div class="cmp-lbl">Task queue</div>
+            <input type="text" name="queue" value="{{ filters.queue }}"
+                   placeholder="ni-topup-gateway-task-queue"
+                   style="width:100%;box-sizing:border-box;"></div>
+          <div><div class="cmp-lbl">Started since</div>
+            <input type="text" name="since" value="{{ filters.since }}"
+                   placeholder="2026-08-03T00:00:00Z"
+                   style="width:100%;box-sizing:border-box;"></div>
+        </div>
+        <div style="margin-top:11px;">
+          <div class="cmp-lbl">Query <span class="hint">overrides the fields
+            above; ORDER BY and STARTS_WITH need Elasticsearch-backed
+            visibility and are refused on a database-indexed cluster</span></div>
+          <input type="text" name="raw" value="{{ filters.raw }}"
+                 placeholder='ExecutionStatus = "Failed" AND WorkflowType = "x"'
+                 style="width:100%;box-sizing:border-box;font-family:var(--mono);
+                        font-size:12px;">
+        </div>
+        {# ── attribute filters ──────────────────────────────────────────
+           The namespace's own indexed fields, custom ones first. Operators are
+           offered per type: a store rejects `HistoryLength = "5"` as a type
+           mismatch, and accepts `WorkflowId = 5` while matching nothing, so the
+           type has to drive both the operator list and the quoting. #}
+        <div style="margin-top:12px;">
+          <div class="cmp-lbl">Attribute filters
+            {% if attrs.custom %}<span class="hint">{{ attrs.custom|length }}
+              custom attribute{{ '' if attrs.custom|length == 1 else 's' }} in
+              this namespace</span>{% endif %}</div>
+          <div id="afrows">
+            {% for a in picked_attrs %}
+            <div class="afrow" style="display:flex;gap:6px;margin-bottom:6px;
+                 flex-wrap:wrap;">
+              <select name="af" class="afname" style="min-width:0;flex:1 1 170px;">
+                {{ attroptions(a.name) }}
+              </select>
+              <select name="ao" class="afop" style="min-width:0;width:auto;">
+                {% for o in ops.get(a.type, ops['KEYWORD']) %}
+                <option value="{{ o }}"{{ ' selected' if o == a.op }}>{{ o }}</option>
+                {% endfor %}
+              </select>
+              <input type="text" name="av" value="{{ a.value }}"
+                     placeholder="value" style="flex:1 1 150px;min-width:0;">
+              <button type="button" class="btn-ghost afdel"
+                      style="padding:5px 10px;font-size:11.5px;">✕</button>
+            </div>
+            {% endfor %}
+          </div>
+          <div class="afrow" id="aftemplate" hidden
+               style="display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap;">
+            <select name="af" class="afname" style="min-width:0;flex:1 1 170px;">
+              {{ attroptions('') }}
+            </select>
+            <select name="ao" class="afop" style="min-width:0;width:auto;"></select>
+            <input type="text" name="av" placeholder="value"
+                   style="flex:1 1 150px;min-width:0;">
+            <button type="button" class="btn-ghost afdel"
+                    style="padding:5px 10px;font-size:11.5px;">✕</button>
+          </div>
+          <button type="button" class="btn-ghost" id="afadd"
+                  style="padding:5px 12px;font-size:11.5px;">＋ Add filter</button>
+          {% if attrs.why %}
+          <div class="sec-note" style="margin-top:6px;">The attribute list could
+            not be read: {{ attrs.why }}</div>
+          {% endif %}
+        </div>
+
+        <div style="margin-top:11px;">
+          <div class="cmp-lbl">Status</div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;">
+            {% for s in statuses %}
+            <label class="badge" style="cursor:pointer;font-size:11.5px;{{
+              'border-color:' ~ SC.get(s, ('#8098b8',''))[0] ~ ';' if s in picked }}">
+              <input type="checkbox" name="status" value="{{ s }}"
+                     style="width:auto;margin-right:5px;"{{
+                ' checked' if s in picked }}>{{ s }}</label>
+            {% endfor %}
+          </div>
+        </div>
+        <div class="actions" style="margin-top:12px;align-items:center;">
+          <button class="btn">Search</button>
+          <a class="btn btn-ghost" href="/workflows/{{ conn.id }}/{{ ns }}"
+             style="margin-left:8px;">Clear</a>
+          <select name="size" style="margin-left:10px;width:auto;min-width:0;">
+            {% for n in [25, 50, 100] %}
+            <option value="{{ n }}"{{ ' selected' if n == size }}>{{ n }} per page</option>
+            {% endfor %}
+          </select>
+          {% if found.query %}
+          <code class="hint" style="margin-left:10px;font-size:11px;">{{
+            found.query }}</code>
+          {% endif %}
+        </div>
+      </div>
+    </form>
+
+    {% if found.error %}
+    {# Temporal's own words. A rejected query is the operator's typing, and the
+       server names the attribute or operator it cannot use. #}
+    <div class="flash err">⚠ {{ found.error }}</div>
+    {% endif %}
+
+    <div class="card">
+      <div class="card-b" style="padding:0;">
+        {% if not found.rows %}
+        <p class="sub" style="margin:0;padding:16px;">
+          {% if found.error %}Fix the query above and search again.
+          {% else %}No execution matched. History only goes back as far as this
+          namespace's retention{% for n in namespaces %}{% if n.name == ns and n.retention %}
+          ({{ n.retention }}){% endif %}{% endfor %} — anything older is gone
+          from Temporal itself, not just from this view.{% endif %}</p>
+        {% else %}
+        <table class="wfl">
+          <thead><tr>
+            <th style="width:108px;">Status</th>
+            <th>Workflow ID</th>
+            <th style="width:170px;">Type</th>
+            <th style="width:88px;">Run ID</th>
+            <th style="width:96px;">Start</th>
+            <th style="width:74px;text-align:right;">Duration</th>
+          </tr></thead>
+          <tbody>
+            {% for r in found.rows %}
+            {% set c = SC.get(r.status, ('#8098b8', 'rgba(128,152,184,.16)')) %}
+            <tr>
+              <td><span style="display:inline-block;padding:3px 9px;
+                    border-radius:5px;font-size:11.5px;font-weight:500;
+                    color:{{ c[0] }};background:{{ c[1] }};">{{ r.status }}</span></td>
+              <td class="wfid">
+                <a href="/workflows/{{ conn.id }}/{{ ns }}/run?id={{ r.wid|urlencode
+                   }}&run={{ r.rid|urlencode }}">{{ r.wid }}</a></td>
+              <td class="hint" style="font-size:11.5px;">{{ r.type }}</td>
+              {# Temporal shows the run id truncated to its last four; the whole
+                 thing is on the execution page, and the short form is what makes
+                 two runs of one workflow id distinguishable at a glance. #}
+              <td class="wfrun">{{ r.rid[:4] }}…{{ r.rid[-4:] }}</td>
+              <td class="hint" style="font-size:11.5px;">{{ r.ago }}</td>
+              <td style="text-align:right;font-variant-numeric:tabular-nums;">{{ r.took }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <div class="kv" style="padding:10px 12px;border-top:1px solid var(--line2);">
+          <span class="hint">{{ found.rows|length }} shown{% if tally.available
+            %} of {{ '{:,}'.format(tally.total) }}{% endif %}</span>
+          <span style="flex:1"></span>
+          {% if found.token %}
+          {# forward only: Temporal pages by token, so there is no page number to
+             go back to and no Previous button pretending there is #}
+          <a class="btn btn-ghost" style="padding:5px 12px;font-size:11.5px;"
+             href="?{% for s in picked %}status={{ s }}&{% endfor %}type={{
+             filters.type|urlencode }}&wid={{ filters.wid|urlencode }}&queue={{
+             filters.queue|urlencode }}&since={{ filters.since|urlencode }}&raw={{
+             filters.raw|urlencode }}&size={{ size }}&token={{
+             found.token|urlencode }}">Next {{ size }} →</a>
+          {% else %}
+          <span class="hint">end of the results</span>
+          {% endif %}
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+<script nonce="{{ csp_nonce() }}">
+// The operator list has to follow the attribute's type: offering ">" on a
+// Keyword produces a query the store rejects, and offering only "=" on a
+// Datetime makes the useful filter impossible to express.
+(function () {
+  const OPS = {{ ops|tojson }};
+  const rows = document.getElementById('afrows');
+  const tpl = document.getElementById('aftemplate');
+  if (!rows || !tpl) return;
+
+  function fitOps(row) {
+    const sel = row.querySelector('.afname');
+    const opt = sel.options[sel.selectedIndex];
+    const t = (opt && opt.dataset.type) || 'KEYWORD';
+    const op = row.querySelector('.afop');
+    const had = op.value;
+    op.innerHTML = (OPS[t] || OPS.KEYWORD)
+      .map(o => `<option value="${o}">${o}</option>`).join('');
+    if ([...op.options].some(o => o.value === had)) op.value = had;
+    // IS NULL takes no value; leaving the box enabled invites typing into
+    // something that will be ignored
+    const val = row.querySelector('input[name=av]');
+    val.disabled = op.value.indexOf('IS ') === 0;
+    val.placeholder = val.disabled ? 'no value needed' : 'value';
+  }
+
+  function wire(row) {
+    row.querySelector('.afname').addEventListener('change', () => fitOps(row));
+    row.querySelector('.afop').addEventListener('change', () => fitOps(row));
+    // removing the last row and searching is how a filter is cleared: a row
+    // with no attribute name is skipped server-side
+    row.querySelector('.afdel').addEventListener('click', () => row.remove());
+    fitOps(row);
+  }
+
+  rows.querySelectorAll('.afrow').forEach(wire);
+
+  document.getElementById('afadd').addEventListener('click', () => {
+    const fresh = tpl.cloneNode(true);
+    fresh.removeAttribute('id');
+    fresh.hidden = false;
+    rows.appendChild(fresh);
+    wire(fresh);
+    fresh.querySelector('.afname').focus();
+  });
+})();
+</script>
+{% endblock %}
+
+<script nonce="{{ csp_nonce() }}">
+window.wfBrowseGo = function (value) {
+  location.href = this.dataset.base + encodeURIComponent(value);
+};
+</script>

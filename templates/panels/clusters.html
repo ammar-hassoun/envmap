@@ -1,0 +1,128 @@
+{# Two clusters side by side once there is room for them.
+
+   A cluster card is four stat blocks; nothing in it reads better at 700px than
+   at 350. So the wider measure goes to a SECOND CLUSTER rather than to
+   stretching one — five clusters become three rows instead of five, and the
+   CPU and memory meters stop floating in half-empty columns.
+
+   auto-fit with a 560px floor, so this collapses back to one per row on the
+   narrow measure and on a laptop without anybody choosing a breakpoint. #}
+<div class="clustercards">
+{% for c in f.clusters %}
+<div class="card">
+  <div class="card-h" style="flex-wrap:wrap;">
+    <span class="dot {% if not c.reachable %}dirty{% elif c.pods.bad %}dirty{% endif %}"></span>
+    {# The name opens THIS CLUSTER — the card is about the cluster, so its title
+       has to lead to the cluster. It used to open the environment mapped to it,
+       which meant clicking "3/3 nodes, 2 unhealthy pods" landed on a
+       values-file listing. The environment badges below still go there. #}
+    <a class="clusterlink" href="{{ c.href }}"
+       title="Open {{ c.name }} — its nodes, pods, events and storage">
+      <b style="font-size:14.5px;">{{ c.name }}</b><span class="go">→</span></a>
+    <span class="badge">{{ project_icon(c.icon, 13) }} {{ c.project }}</span>
+    {% if c.context %}<span class="badge" style="font-family:var(--mono);font-size:11px;">{{ c.context }}</span>{% endif %}
+    {% if c.guessed %}
+    <a class="badge" href="{{ c.guess_href }}"
+       title="Matched from this cluster's name, not an explicit mapping. Map it in cluster settings to make it permanent.">
+      → {{ c.guessed }}</a>
+    {% elif not c.used_by %}
+    <a class="badge" href="/settings/clusters#clusters"
+       style="color:var(--warn-ink);"
+       title="Assign an environment on the cluster's own form in settings"
+       >no environment matched</a>
+    {% endif %}
+    <span style="flex:1"></span>
+    {% if c.reachable %}
+      <span class="hint">{{ c.namespaces }} namespaces</span>
+    {% else %}
+      <span class="hint" style="color:var(--danger-ink);">{{ c.error }}</span>
+    {% endif %}
+  </div>
+
+  {% if c.reachable %}
+  <div class="card-b">
+    <div class="clusterrow">
+      <div>
+        <div class="cmp-lbl">Nodes</div>
+        <div class="bignum {% if c.nodes.ready < c.nodes.total %}bad{% endif %}">
+          {{ c.nodes.ready }}<span class="of">/{{ c.nodes.total }}</span></div>
+      </div>
+      <div>
+        <div class="cmp-lbl">Pods</div>
+        <div class="bignum">{{ c.pods.running }}<span class="of">/{{ c.pods.total }}</span></div>
+        {% if c.pods.bad %}<div class="tiny bad">{{ c.pods.bad }} unhealthy</div>{% endif %}
+      </div>
+      <div class="util">
+        <div class="cmp-lbl">CPU <span class="src">{{ c.cpu.source }}</span></div>
+        {{ gauge(c.cpu.pct, caption="cpu",
+                 detail="%dm / %dm"|format(c.cpu.used, c.cpu.cap)) }}
+        {{ sparkline(trend.cpu.get(c.cid, []), height=30,
+                     color=load_color(c.cpu.pct), ceiling=20) }}
+      </div>
+      <div class="util">
+        <div class="cmp-lbl">Memory <span class="src">{{ c.mem.source }}</span></div>
+        {{ gauge(c.mem.pct, caption="memory",
+                 detail="%.1fGi / %.1fGi"|format(c.mem.used / 1024, c.mem.cap / 1024)) }}
+        {{ sparkline(trend.mem.get(c.cid, []), height=30,
+                     color=load_color(c.mem.pct), ceiling=40) }}
+      </div>
+    </div>
+
+    {# pod health as one proportional bar #}
+    {% if c.pods.total %}
+    <div class="podbar" title="{{ c.pods.running }} healthy · {{ c.pods.bad }} unhealthy">
+      <div class="seg-ok" style="width:{{ (c.pods.running / c.pods.total * 100)|round(2) }}%;"></div>
+      <div class="seg-bad" style="width:{{ (c.pods.bad / c.pods.total * 100)|round(2) }}%;"></div>
+    </div>
+    {% endif %}
+
+    {% if c.top_ns %}
+    <div style="margin-top:16px;">
+      <div class="cmp-lbl" style="margin-bottom:8px;">Pods by namespace
+        <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted);">
+          top {{ c.top_ns|length }} of {{ c.namespaces }}</span></div>
+      {{ hbars(c.top_ns) }}
+    </div>
+    {% endif %}
+
+    {% if c.problems %}
+    <div style="margin-top:14px;">
+      <div class="cmp-lbl">Needs attention</div>
+      <table style="width:100%;border-collapse:collapse;font-size:12px;">
+        {% for p in c.problems %}
+        <tr style="border-top:1px solid var(--hairline);">
+          <td style="padding:6px 10px 6px 0;font-family:var(--mono);">{{ p.name }}</td>
+          <td style="padding:6px 10px;color:var(--muted);">{{ p.namespace }}</td>
+          <td style="padding:6px 10px;color:var(--danger-ink);font-weight:600;">{{ p.status }}</td>
+          <td style="padding:6px 0 6px 10px;color:{{ 'var(--warn-ink)' if p.restarts > 3 else 'var(--muted)' }};">
+            {{ p.restarts }} restarts</td>
+        </tr>
+        {% endfor %}
+      </table>
+    </div>
+    {% endif %}
+
+    {% if c.used_by %}
+    <div style="margin-top:14px;">
+      {% for u in c.used_by %}<a class="badge" href="{{ u.url }}">{{ u.label }}</a>{% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  {% else %}
+  <div class="card-b">
+    <span style="color:var(--muted);font-size:13px;">
+      Cannot read this cluster — check its kubeconfig and context in
+      <a href="/clusters#{{ c.cid }}">cluster settings</a>.</span>
+  </div>
+  {% endif %}
+</div>
+{% endfor %}
+</div>
+
+{% if not f.clusters %}
+<div class="card"><div class="card-b" style="text-align:center;padding:30px;">
+  <p style="color:var(--muted);margin:0 0 16px;">No clusters connected yet — add one and its
+     health panel appears here automatically.</p>
+  <a class="btn" href="/clusters">＋ Add a cluster</a>
+</div></div>
+{% endif %}

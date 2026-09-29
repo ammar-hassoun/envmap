@@ -1,0 +1,180 @@
+{% extends "base.html" %}
+{% from "_set_head.html" import head %}
+{% block crumbs %}<a href="/settings">Settings</a> <span class="sep">/</span>
+  <b>Deployment</b>{% endblock %}
+{% block content %}
+{{ head("Deployment", "Everything this installation was told by its environment.
+   Set them in the Helm chart's values, or as plain environment variables.",
+   msg, err) }}
+
+{% include "_update_progress.html" %}
+
+{% if upd.configured %}
+{# Only shown when a feed is configured. With none there is no check, no
+   request and nothing here. #}
+<div class="card" {{ 'style="border-color:var(--accent);"' if upd.available }}>
+  <div class="card-h">Updates
+    {% if upd.available %}
+    <span class="badge" style="color:var(--accent-ink);">{{ upd.latest }} available</span>
+    {% elif upd.latest %}
+    <span class="badge" style="color:var(--ok-ink);">up to date</span>
+    {% endif %}
+    <span style="flex:1"></span>
+    <form method="post" action="/settings/deployment/check-updates">
+      <button class="btn-ghost" style="padding:5px 13px;font-size:11.5px;"
+        >↻ Check now</button></form>
+  </div>
+  <div class="card-b">
+    {% if upd.error %}
+    <div class="sec-note" style="color:var(--warn-ink);margin:0 0 10px;"
+      >⚠ {{ upd.error }}</div>
+    {% endif %}
+    <div class="kv" style="gap:26px;flex-wrap:wrap;">
+      <div><div class="stat" style="font-size:20px;">{{ upd.current }}</div>
+        <div class="statsub">running</div></div>
+      <div><div class="stat" style="font-size:20px;{{ 'color:var(--accent-ink);'
+             if upd.available }}">{{ upd.latest or '—' }}</div>
+        <div class="statsub">newest published</div></div>
+      {% if upd.age is not none %}
+      <div><div class="stat" style="font-size:20px;">{{ (upd.age // 60) }}m</div>
+        <div class="statsub">since last checked</div></div>
+      {% endif %}
+    </div>
+    {% if upd.notes %}
+    <div class="notes">{{ upd.notes }}</div>
+    {% endif %}
+    {# The same button the About page shows, from the same include. This page had
+       its own copy of this section, without one — and it still told the reader
+       that the portal could not update itself, directly under a notice that a
+       new version was available. #}
+    {% include "_update_button.html" %}
+    <div class="sec-note" style="margin-top:12px;">Checked at most every six
+      hours, by reading a published version list.
+      Nothing is sent: no identifiers and no telemetry.
+      {% if not selfupd.possible %}Nothing here can install anything.{% endif %}</div>
+  </div>
+</div>
+{% endif %}
+
+{% if snaps %}
+<div class="card">
+  <div class="card-h">Backups
+    <span class="hint">taken automatically when the version changes</span></div>
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr><th>File</th><th style="width:150px;">Taken</th>
+        <th style="width:120px;">Size</th>
+        <th style="width:160px;">Upgrading from</th></tr></thead>
+      <tbody>
+        {% for b in snaps %}
+        <tr><td class="jname" style="font-family:var(--mono);font-size:12px;"
+              >{{ b.name }}</td>
+          <td class="hint">{{ b.when }}</td>
+          <td class="hint">{{ b.size }}</td>
+          <td class="hint">{{ b.from_version or '—' }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div class="sec-note" style="padding:10px 16px 2px;">Kept in
+      <span style="font-family:var(--mono);">{{ data_dir }}/backups</span>. The
+      newest {{ keep }} are kept. To restore one, stop the portal, put the file
+      back as <span style="font-family:var(--mono);">portal.db</span> and start
+      the previous image — a database that a newer version has already migrated
+      is not one an older version has been tested against.</div>
+  </div>
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="card-h">Environment
+    <span class="hint">read once at startup · restart to change</span>
+    <span style="flex:1"></span>
+    <input id="envq" class="cel" placeholder="filter…" aria-label="Filter settings"
+           style="max-width:190px;border:1px solid var(--line);
+                  background:var(--panel);padding:5px 9px;font-size:12px;">
+  </div>
+  {#- Not a table. Four columns of prose meant the widest value decided how far
+      everything else was pushed: PORTAL_TOOL_PATH is a 900-character PATH, and
+      reading any other row meant scrolling past it. A grid lets the value wrap
+      under its own name and take exactly the width it has. -#}
+  <div class="card-b" style="padding:4px 0 6px;">
+    <div class="envlist">
+      {% for r in rows %}
+      <div class="envrow" data-k="{{ r.key|lower }} {{ r.note|lower }}">
+        <div class="envkey">{{ r.key }}</div>
+        <div class="envval">
+          <span class="envv">{{ r.value }}</span>
+          <div class="envnote">{{ r.note }}</div>
+        </div>
+        <div class="envsrc">{% if r.set %}<span class="sv sv-info">environment</span>
+          {% else %}<span class="sv sv-clean">default</span>{% endif %}</div>
+      </div>
+      {% endfor %}
+      <div class="envnone hint" hidden style="padding:14px 20px;">Nothing matches.</div>
+    </div>
+  </div>
+</div>
+
+<style>
+  .envlist { display:flex; flex-direction:column; }
+  .envrow { display:grid; grid-template-columns:minmax(150px,210px) minmax(0,1fr) auto;
+    gap:4px 18px; align-items:start; padding:11px 20px;
+    border-top:1px solid var(--line); }
+  .envrow:first-child { border-top:none; }
+  .envrow:hover { background:var(--overlay); }
+  .envkey { font-family:var(--mono); font-size:11.5px; color:var(--text);
+    overflow-wrap:anywhere; }
+  /* the long one is a PATH: let it wrap, and cap it so one setting cannot own
+     the page. It scrolls inside itself if it is really that long. */
+  .envv { display:block; font-family:var(--mono); font-size:11.5px;
+    color:var(--muted); overflow-wrap:anywhere; max-height:5.6em;
+    overflow-y:auto; }
+  .envnote { font-size:11.5px; color:var(--muted); opacity:.78; margin-top:3px; }
+  .envsrc { justify-self:end; }
+  @media (max-width:820px) {
+    .envrow { grid-template-columns:1fr auto; }
+    .envkey { grid-column:1 / -1; }
+  }
+</style>
+
+<script nonce="{{ csp_nonce() }}">
+  (function () {
+    var q = document.getElementById('envq');
+    if (!q) return;
+    var rows = [].slice.call(document.querySelectorAll('.envrow'));
+    var none = document.querySelector('.envnone');
+    q.addEventListener('input', function () {
+      var t = q.value.trim().toLowerCase(), shown = 0;
+      rows.forEach(function (r) {
+        var hit = !t || r.dataset.k.indexOf(t) !== -1;
+        r.hidden = !hit; if (hit) shown++;
+      });
+      none.hidden = shown !== 0;
+    });
+  })();
+</script>
+
+<div class="card">
+  <div class="card-h">What is <em>not</em> here</div>
+  <div class="card-b">
+    <div class="sec-note" style="line-height:1.7;">
+      Projects, regions, clusters, repositories, CI, scanners, log stores,
+      monitoring systems and every credential are configured in the running
+      portal and stored in <code>{{ data_dir }}/portal.db</code> — not in the
+      environment. That is deliberate: they change while the portal is running,
+      and a chart upgrade must never overwrite them.<br><br>
+      Which means a Helm upgrade only needs to keep the volume at
+      <code>{{ data_dir }}</code>. Everything an operator configured survives it.
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+<style>
+  /* Same as the About page: notes arrive as text and
+     are shown as typed. */
+  .notes { white-space:pre-wrap; margin:12px 0 0; padding:14px 16px;
+    background:var(--well); border:1px solid var(--line); border-radius:11px;
+    font-size:13.5px; line-height:1.8; color:var(--text);
+    max-height:340px; overflow-y:auto; }
+</style>

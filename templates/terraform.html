@@ -1,0 +1,2769 @@
+{% extends "base.html" %}
+{% import "_bits.html" as bits %}
+{% block crumbs %}<b>Infrastructure Provisioning</b>{% endblock %}
+{% block content %}
+{%- set cur = sec if sec in ('overview','instances','hosts','images','stacks','runs') else 'overview' -%}
+{%- set tabbase = '/terraform?' ~ ('reg=' ~ reg ~ '&' if reg) -%}
+
+<div class="page-head"><div>
+  <h1>Infrastructure Provisioning</h1>
+  <p class="sub">Launch VMs and clusters, browse every machine your Proxmox runs, and manage the stacks behind them.</p>
+</div><div class="tf-actions">
+  <a class="btn btn-ghost" href="/settings/terraform">Settings</a>
+  <button type="button" class="btn" id="provisionBtn">⊕ Provision a VM</button>
+  <div class="region-pick" id="regionPick">
+    <button type="button" class="region-btn" id="regionBtn" title="filter every tab by region">
+      {{ glyph('globe', 15) }}<span class="region-cur">{{ region_label }}</span>
+      <span class="region-caret">▾</span></button>
+    <div class="region-menu" id="regionMenu" hidden>
+      <a class="region-item {{ 'on' if not reg }}" href="/terraform?sec={{ cur }}">All regions</a>
+      {% set ns = namespace(proj='') %}
+      {% for r in region_opts %}
+        {% if r.project != ns.proj %}<div class="region-grp">{{ r.project }}</div>{% set ns.proj = r.project %}{% endif %}
+        <a class="region-item {{ 'on' if reg == r.id }}" href="/terraform?sec={{ cur }}&reg={{ r.id }}">{{ r.name }}</a>
+      {% endfor %}
+    </div>
+  </div>
+</div></div>
+
+{% if msg %}<div class="flash ok">✓ {{ msg }}</div>{% endif %}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+
+{% if not tool.found %}
+<div class="flash err">The engine is not available: {{ tool.error }}. Stacks can be
+  written and reviewed, but nothing runs until a <code>terraform</code> (or
+  <code>tofu</code>) binary is on the portal's PATH.</div>
+{% elif not cfg.allow_apply %}
+<div class="flash warn">
+  Apply and destroy are switched off — plans work, but nothing changes real
+  infrastructure until an administrator turns them on in
+  <a href="/settings/terraform">Settings</a>.</div>
+{% endif %}
+{% if not may_apply %}
+<div class="flash" style="background:var(--overlay);border:1px solid var(--line);color:var(--muted);">
+  {{ why_no_apply }} — you can read everything and plan, but not apply.</div>
+{% endif %}
+
+{{ bits.subtabs(tabbase, 'sec', cur, [
+     {'key':'overview','label':'Overview','count':none,'icon':'chart-line'},
+     {'key':'instances','label':'Instances','count':none,'icon':'server'},
+     {'key':'hosts','label':'Hosts','count':none,'icon':'cpu'},
+     {'key':'images','label':'Images','count':none,'icon':'hard-drive'},
+     {'key':'stacks','label':'Stacks','count':stacks|length,'icon':'boxes'},
+     {'key':'runs','label':'Runs','count':runs|length,'icon':'history'}], wide=true) }}
+{% if reg %}<div class="region-note">{{ glyph('globe', 13) }} filtered to
+  <b>{{ region_label }}</b> — <a href="/terraform?sec={{ cur }}">show all regions</a></div>{% endif %}
+
+{% if cur == 'overview' %}
+<div class="ex-tiles">
+  <a class="ex-tile {{ 'quiet' if not summary.stacks }}" href="{{ tabbase }}sec=stacks">
+    <span class="ico">{{ glyph("boxes", 17) }}</span>
+    <span><span class="big">{{ summary.stacks }}</span>
+      <span class="cap">stack{{ 's' if summary.stacks != 1 }}</span>
+      <span class="sub">every version kept</span></span></a>
+  <a class="ex-tile act {{ 'quiet' if not summary.running }}" href="{{ tabbase }}sec=runs&ran=running">
+    <span class="ico">{{ glyph("zap", 17) }}</span>
+    <span><span class="big">{{ summary.running }}</span>
+      <span class="cap">running now</span>
+      <span class="sub">the window follows the output</span></span></a>
+  <a class="ex-tile ok {{ 'quiet' if not summary.applied }}" href="{{ tabbase }}sec=runs">
+    <span class="ico">{{ glyph("circle-check", 17) }}</span>
+    <span><span class="big">{{ summary.applied }}</span>
+      <span class="cap">applied</span>
+      <span class="sub">apply finished clean</span></span></a>
+  <a class="ex-tile bad {{ 'quiet' if not summary.failed }}" href="{{ tabbase }}sec=runs&state=failed">
+    <span class="ico">{{ glyph("triangle-alert", 17) }}</span>
+    <span><span class="big">{{ summary.failed }}</span>
+      <span class="cap">failed</span>
+      <span class="sub">a run that did not finish clean</span></span></a>
+</div>
+
+<div class="card">
+  <div class="card-h">Quick launch
+    <span class="hint">a recipe fixes the OS &amp; resources — you give it a home and a network</span></div>
+  <div class="card-b">
+    <div class="recipe-grid">
+      {% for r in recipes if r.quick %}
+      {% if r.os == 'talos' %}
+      <button type="button" class="recipe" id="talosTile"
+              data-cores="{{ r.cores }}" data-mem="{{ r.mem_mb }}" data-disk="{{ r.disk_gb }}">
+        <span class="ico">{{ glyph(r.icon, 20) }}</span>
+        <span class="rc-body"><span class="rc-name">{{ r.label }}</span>
+          <span class="rc-blurb">{{ r.blurb }}</span>
+          <span class="rc-specs">{{ r.cores }} vCPU · {{ (r.mem_mb / 1024)|round(1) }} GB · {{ r.disk_gb }} GB · cluster wizard</span></span>
+        <span class="rc-go">{{ glyph('rocket', 16) }}</span></button>
+      {% else %}
+      <button type="button" class="recipe" data-recipe
+              data-key="{{ r.key }}" data-os="{{ r.os }}" data-method="{{ r.method }}"
+              data-family="{{ r.family }}" data-label="{{ r.label }}" data-cores="{{ r.cores }}"
+              data-mem="{{ r.mem_mb }}" data-disk="{{ r.disk_gb }}">
+        <span class="ico">{{ glyph(r.icon, 20) }}</span>
+        <span class="rc-body"><span class="rc-name">{{ r.label }}</span>
+          <span class="rc-blurb">{{ r.blurb }}</span>
+          <span class="rc-specs">{{ r.cores }} vCPU · {{ (r.mem_mb / 1024)|round(1) }} GB · {{ r.disk_gb }} GB disk</span></span>
+        <span class="rc-go">{{ glyph('plus', 16) }}</span></button>
+      {% endif %}
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
+<div class="tf-engine">Engine
+  {% if tool.found %}<span class="sv sv-clean">{{ tool.flavour or 'terraform' }}</span>
+    <code>{{ tool.version }}</code>{% else %}<span class="sv sv-high">not found</span>{% endif %}
+  · apply <b>{{ 'on' if cfg.allow_apply else 'off' }}</b> · parallelism {{ cfg.parallelism }}</div>
+
+{% elif cur == 'instances' %}
+<div class="card" id="invCard">
+  <div class="card-h">Instances
+    <span class="hint">live from Proxmox{% if not may_apply %} — read-only for your role{% elif not cfg.allow_apply %} — actions off (enable apply in Settings){% endif %}</span>
+    <span style="flex:1"></span>
+    <span class="sec-note" id="invShown"></span>
+    <button type="button" class="btn-ghost tbtn" id="invReload">↻ refresh</button></div>
+  <div class="card-b">
+    <div class="inv-tiles" id="invTiles" hidden></div>
+    <div class="inv-bar" id="invFilter" hidden>
+      <span class="inv-search">{{ glyph('search', 14) }}
+        <input type="search" id="invSearch" placeholder="search name, id, node, tag, pool…"
+               spellcheck="false" autocomplete="off"></span>
+      <select id="invConn" class="inv-sel"><option value="">all clusters</option></select>
+      <select id="invProj" class="inv-sel"><option value="">all projects</option></select>
+      <select id="invEnv" class="inv-sel"><option value="">all envs</option></select>
+      <select id="invStatus" class="inv-sel">
+        <option value="">any state</option>
+        <option value="running">running</option>
+        <option value="stopped">stopped</option>
+        <option value="managed">portal-managed</option>
+        <option value="unmanaged">unmanaged</option></select>
+      <button type="button" class="inv-reset" id="invReset" hidden>✕ clear</button>
+    </div>
+    {% if may_apply and cfg.allow_apply %}
+    <div class="inv-bulk" id="invBulk" hidden>
+      <b><span id="invBulkN">0</span> selected</b>
+      <span style="flex:1"></span>
+      <button type="button" class="abtn go" data-bulk="start">start</button>
+      <button type="button" class="abtn danger" data-bulk="shutdown">shutdown</button>
+      <button type="button" class="abtn" data-bulk="reboot">reboot</button>
+      <button type="button" class="abtn danger" data-bulk="stop">stop</button>
+      <button type="button" class="abtn danger" data-bulk="delete">delete</button>
+      <a class="abtn" id="invBulkClear" style="cursor:pointer;">clear</a>
+    </div>
+    {% endif %}
+    <div id="invBody"><div class="sec-note" style="padding:14px 2px;">Loading the fleet…</div></div>
+  </div>
+</div>
+
+{% elif cur == 'hosts' %}
+<div class="card" id="hostCard">
+  <div class="card-h">Hosts
+    <span class="hint">click a host for its VMs &amp; disks · cluster or standalone</span>
+    <span style="flex:1"></span>
+    <span class="sec-note" id="hostShown"></span>
+    <button type="button" class="btn tbtn" id="hostAdd">＋ Add host</button>
+    <button type="button" class="btn-ghost tbtn" id="hostReload">↻ refresh</button></div>
+  <div class="card-b">
+    <div class="inv-tiles" id="hostTiles" hidden></div>
+    <div id="hostBody"><div class="sec-note" style="padding:14px 2px;">Loading hosts…</div></div>
+  </div>
+</div>
+
+{% elif cur == 'images' %}
+<div class="card" id="imgCard">
+  <div class="card-h">Images
+    <span class="hint">ISO &amp; imported disk images per node · remaining space</span>
+    <span style="flex:1"></span>
+    <select id="imgConn" class="inv-sel" hidden></select>
+    <label class="img-upas">upload as
+      <select id="imgContent" class="inv-sel">
+        <option value="iso">ISO image</option>
+        <option value="import">disk image (import)</option>
+        <option value="vztmpl">container template</option>
+      </select></label>
+    <button type="button" class="btn-ghost tbtn" id="imgReload">↻ refresh</button></div>
+  <div class="card-b">
+    <div id="imgBody"><div class="sec-note" style="padding:14px 2px;">Loading images…</div></div>
+  </div>
+</div>
+<input type="file" id="isoFile" accept=".iso,.img" hidden>
+
+{% elif cur == 'stacks' %}
+<div class="card">
+  <div class="card-h">Stacks
+    <span class="hint">the credential for each is sealed and injected at run time,
+      never shown here</span></div>
+  {% if stacks %}
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr>
+        <th style="min-width:160px;">Stack</th><th style="width:104px;">Env</th>
+        <th style="width:96px;">Provider</th><th style="width:130px;">Where</th>
+        <th style="min-width:140px;">Last run</th>
+        <th class="actcol" style="width:250px;"></th>
+      </tr></thead>
+      <tbody>
+      {% for s in stacks %}
+      <tr id="s-{{ s.id }}">
+        <td class="jname"><b>{{ s.name }}</b>
+          {% if s.has_spec %}<span class="badge" title="created from a Provision-a-VM recipe">recipe</span>{% endif %}
+          {% if s.arun %}<a class="badge" href="/ansible?sec=runs"
+            title="the post-provision playbook run — reopen its log">▷ playbook log</a>{% endif %}
+          {% if not s.has_creds %}<span class="sv sv-medium" style="margin-left:6px;"
+            title="no provider credential set — a run will fail unless the .tf gets it another way">no creds</span>{% endif %}
+          {% if s.notes %}<div class="sec-note" style="margin:2px 0 0;">{{ s.notes }}</div>{% endif %}</td>
+        <td>{% if s.env_label %}<span class="envtag {{ s.env_tone }}">{{ s.env_label }}</span>
+          {% elif s.is_prod %}<span class="sv sv-high">prod</span>{% else %}<span class="na">—</span>{% endif %}</td>
+        <td><span class="badge">{{ s.provider }}</span></td>
+        <td>{% if s.project_name %}<span class="badge">{{ s.project_name }}{% if s.region_name %}
+          · {{ s.region_name }}{% endif %}</span>{% else %}<span class="hint">—</span>{% endif %}</td>
+        <td>{% if s.last %}<a href="#" data-tfout="{{ s.last.id }}"
+            data-tftitle="{{ s.name }} · {{ s.last.action }}">
+            <span class="sv {{ 'sv-clean' if s.last.status == 'ok' else 'sv-high' if s.last.status == 'failed' else 'sv-medium' }}"
+              >{{ s.last.action }} · {{ s.last.status }}</span></a>
+          <span class="sec-note">{{ s.last.ago }}</span>
+          {% else %}<span class="hint">never run</span>{% endif %}</td>
+        <td class="actcol"><div class="tf-acts">
+          <button type="button" class="abtn go" data-tfrun="{{ s.id }}"
+                  data-tfname="{{ s.name }}" data-tfprod="{{ 1 if s.is_prod else 0 }}"
+                  title="init / plan / apply / destroy this stack">run</button>
+          {# every row shows the same buttons; the cluster downloads are disabled
+             (never hidden) on a stack that is not a Talos cluster #}
+          {% if s.has_kube %}
+          <a class="abtn" href="/provision/cluster/download?sid={{ s.id }}&which=kubeconfig"
+             title="download the cluster kubeconfig (available once applied)">kubeconfig</a>
+          <a class="abtn" href="/provision/cluster/download?sid={{ s.id }}&which=talosconfig"
+             title="download the talosconfig (available once applied)">talosconfig</a>
+          {% else %}
+          <button type="button" class="abtn" disabled title="only a Talos cluster stack has a kubeconfig">kubeconfig</button>
+          <button type="button" class="abtn" disabled title="only a Talos cluster stack has a talosconfig">talosconfig</button>
+          {% endif %}
+          <a class="abtn" href="/terraform/stacks/{{ s.id }}" title="the raw HCL">edit</a>
+          <button type="submit" class="abtn danger" form="dels-{{ s.id }}"
+                  data-del="{{ s.name }} and its working directory">delete</button>
+        </div></td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-b"><div class="sec-note">No stacks yet —
+    <a href="/terraform?sec=overview">Provision a VM</a> to make one.</div></div>
+  {% endif %}
+</div>
+{% for s in stacks %}
+<form method="post" action="/terraform/stack/delete" id="dels-{{ s.id }}">
+  <input type="hidden" name="sid" value="{{ s.id }}"></form>
+{% endfor %}
+
+{% elif cur == 'runs' %}
+<div class="card">
+  <div class="card-h">Runs
+    <span class="hint">{{ runs|length }} shown</span><span style="flex:1"></span>
+    {% if may_apply %}
+    <form method="post" action="/terraform/runs/clear" style="display:inline;">
+      <input type="hidden" name="which" value="finished">
+      <button class="btn-ghost tbtn" type="submit">clear finished</button></form>
+    {% endif %}</div>
+  {% if runs %}
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr>
+        <th style="width:150px;">Result</th><th style="min-width:150px;">Stack</th>
+        <th style="width:90px;">Action</th><th style="min-width:150px;">Change</th>
+        <th style="width:90px;">Took</th><th style="min-width:150px;">Who, when</th>
+        <th class="actcol" style="width:150px;"></th>
+      </tr></thead>
+      <tbody>
+      {% for r in runs %}
+      <tr>
+        <td><span class="sv {{ 'sv-clean' if r.status == 'ok' else 'sv-high' if r.status == 'failed' else 'sv-medium' }}"
+          >{{ r.status }}</span></td>
+        <td class="jname"><b>{{ r.stack_name }}</b></td>
+        <td><span class="badge">{{ r.action }}</span></td>
+        <td style="font-family:var(--mono);font-size:11.5px;">
+          {% if r.res.added is defined %}<span class="l-add" style="color:var(--ok-ink);">+{{ r.res.added }}</span>
+            <span style="color:var(--warn-ink);">~{{ r.res.changed }}</span>
+            <span style="color:var(--danger-ink);">-{{ r.res.destroyed }}</span>
+          {% elif r.res.add is defined %}<span style="color:var(--ok-ink);">+{{ r.res.add }}</span>
+            <span style="color:var(--warn-ink);">~{{ r.res.change }}</span>
+            <span style="color:var(--danger-ink);">-{{ r.res.destroy }}</span>
+            <span class="sec-note">(plan)</span>
+          {% else %}<span class="hint">—</span>{% endif %}</td>
+        <td>{{ r.took or '—' }}</td>
+        <td class="sec-note">{{ r.by or '—' }}<br>{{ r.ago }}</td>
+        <td class="actcol"><div class="tf-acts">
+          <button type="button" class="abtn" data-tfout="{{ r.id }}"
+                  data-tftitle="{{ r.stack_name }} · {{ r.action }}">output</button>
+          {% if may_apply %}
+          <button type="submit" class="abtn danger" form="delr-{{ r.id }}"
+                  data-del="this run and its output"
+                  {% if r.status == 'running' %}disabled title="stop it first"{% endif %}>del</button>
+          {% endif %}
+        </div></td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-b"><div class="sec-note">No runs yet.</div></div>
+  {% endif %}
+</div>
+{% for r in runs %}
+<form method="post" action="/terraform/run/delete" id="delr-{{ r.id }}">
+  <input type="hidden" name="rid" value="{{ r.id }}"></form>
+{% endfor %}
+{% endif %}
+
+{# ── "Provision a VM" chooser: category → OS → the matching wizard ── #}
+<dialog id="pickDlg" class="rcdlg">
+  <form method="dialog" class="rc-head">
+    <b>Provision a VM</b><span style="flex:1"></span>
+    <button class="psh-x" value="cancel">✕</button></form>
+  <div class="rc-form">
+    <div id="pickCat">
+      <div class="rc-sechead rc-first">What are you provisioning?</div>
+      <div class="pick-grid">
+        <button type="button" class="pick-card" data-cat="linux">
+          <span class="ico">{{ glyph('server', 22) }}</span>
+          <span class="pick-t">Linux VM</span>
+          <span class="pick-s">A standalone virtual machine</span></button>
+        <button type="button" class="pick-card" data-cat="k8s">
+          <span class="ico">{{ glyph('boxes', 22) }}</span>
+          <span class="pick-t">Kubernetes</span>
+          <span class="pick-s">A self-configuring cluster</span></button>
+      </div>
+    </div>
+    <div id="pickOs" hidden>
+      <div class="rc-sechead rc-first" id="pickOsLbl">Choose an image</div>
+      <div class="pick-grid" id="pickOsGrid"></div>
+    </div>
+    <div class="rc-foot">
+      <button type="button" class="btn btn-ghost" id="pickBack" hidden>← Back</button>
+      <span style="flex:1"></span>
+      <span class="rc-crumb">pick a type, then an image</span>
+    </div>
+  </div>
+</dialog>
+
+{# ── recipe quick-launch modal ─────────────────────────────────── #}
+<dialog id="recipeDlg" class="rcdlg">
+  <form method="dialog" class="rc-head">
+    <b id="rcTitle">Launch</b><span style="flex:1"></span>
+    <button class="psh-x" value="cancel">✕</button></form>
+  <div class="rc-form">
+    <div class="tz-body">
+    <div id="rcPgSetup">
+      <p class="rc-note rc-first" id="rcSpecNote"></p>
+      <div class="rc-sechead">Where &amp; how</div>
+      <div class="rc-grid">
+        <label>Host<select id="rcConn"><option value="">discovering hosts…</option></select></label>
+        <label>Install method<select id="rcMethod"><option value="cloud">Cloud image · cloud-init</option></select></label>
+        <label id="rcImageWrap">Installer ISO<select id="rcImage"><option value="">choose a host first</option></select></label>
+        <label id="rcSrcWrap" hidden>Image source<select id="rcImgSrc">
+            <option value="download">Host downloads it</option>
+            <option value="stage">Stage from the portal</option>
+            <option value="onhost">Use an image on the host</option>
+          </select></label>
+        <label class="rc-wide" id="rcImgPickRow" hidden>Which image<select id="rcImgPick"><option value="">discovering images…</option></select></label>
+        <label class="rc-wide">Instances <span class="rc-opt">how many VMs</span><input type="number" id="rcCount" min="1" max="16" value="1"></label>
+      </div>
+      <p class="rc-note" id="rcCloudNote" hidden></p>
+      <div class="rc-sechead">OS login <span class="rc-opt">shared by every VM</span></div>
+      <div class="rc-grid">
+        <label>OS user<input type="text" id="rcUser" placeholder="ammar" spellcheck="false" autocomplete="off"></label>
+        <label>OS password
+          <span class="rc-passrow"><input type="text" id="rcPass" spellcheck="false" autocomplete="off">
+            <button type="button" class="btn-ghost tbtn" id="rcGen" title="generate a strong password">generate</button></span></label>
+      </div>
+      <div id="rcAnsRow" hidden>
+        <label class="rc-check"><input type="checkbox" id="rcAns"> Configure with Ansible after boot
+          <span class="rc-opt">runs a playbook on the VM once it is up — key + sudo set up automatically</span></label>
+        <div class="rc-grid" id="rcAnsPick" hidden>
+          <label class="rc-wide">Playbook<select id="rcAnsPb"><option value="">choose a playbook…</option></select></label>
+        </div>
+      </div>
+    </div>
+
+    <div id="rcPgNode" hidden>
+      <div class="rc-sechead" id="rcVmHead"><span id="rcVmHeadLbl">This VM</span><span style="flex:1"></span><span class="rc-step" id="rcStep">VM 1</span></div>
+      <div class="rc-grid">
+        <label>Hostname<input type="text" id="rcHost" placeholder="alma-web01" spellcheck="false" autocomplete="off"></label>
+        <label>Node<select id="rcNode"><option value="">choose a host first</option></select></label>
+        <label>IP / CIDR<input type="text" id="rcIp" placeholder="10.0.10.20/26" spellcheck="false" autocomplete="off"></label>
+        <label>Gateway<input type="text" id="rcGw" placeholder="10.0.10.1" spellcheck="false" autocomplete="off"></label>
+        <label>DNS <span class="rc-opt">comma-sep</span><input type="text" id="rcDns" placeholder="10.0.10.53, 10.0.10.54" spellcheck="false" autocomplete="off"></label>
+        <label>VLAN / Bridge <span class="rc-opt">VLAN optional</span>
+          <span class="rc-pair"><input type="text" id="rcVlan" placeholder="3101" style="flex:.7" spellcheck="false" autocomplete="off">
+            <input type="text" id="rcBridge" value="vmbr0" spellcheck="false" autocomplete="off"></span></label>
+        <label class="rc-wide">Resources <span class="rc-opt">vCPU · RAM GB · Disk GB</span>
+          <span class="rc-triple"><input type="number" id="rcCpu" min="1" title="vCPU">
+            <input type="number" id="rcMem" min="1" step="0.5" title="RAM (GB)">
+            <input type="number" id="rcDisk" min="5" title="Disk (GB)"></span></label>
+      </div>
+      <div class="rc-cap" id="rcCap" hidden></div>
+    </div>
+
+    <div id="rcPgReview" hidden>
+      <div class="rc-sechead rc-first">Review</div>
+      <div id="rcReview"></div>
+    </div>
+    </div>
+
+    <div class="rc-prog" id="rcProg" hidden></div>
+    <div class="rc-foot">
+      <button type="button" class="btn btn-ghost" id="rcBack" hidden>← Back</button>
+      <span class="rc-crumb" id="rcCrumb"></span>
+      <span class="rc-msg" id="rcMsg"></span><span style="flex:1"></span>
+      <button type="button" class="btn" id="rcLaunch">Next →</button>
+    </div>
+  </div>
+</dialog>
+
+{# ── add-host wizard modal ─────────────────────────────────────── #}
+<dialog id="hostDlg" class="rcdlg">
+  <form method="dialog" class="rc-head">
+    <b id="hDlgTitle">Add a Proxmox host</b><span style="flex:1"></span>
+    <button class="psh-x" value="cancel">✕</button></form>
+  <div class="rc-form">
+    <p class="rc-note">Register a Proxmox host or cluster — standalone or clustered, both work. The
+      credential is sealed on save and never shown again; <b>enter it yourself</b> — the portal never
+      fills credentials in for you.</p>
+    <p class="rc-note" id="hEditNote" hidden><b>Editing a saved connection.</b> The stored
+      credential is never shown — leave the token / password blank to keep it, or enter a new one to
+      replace it (do that to fix a rejected login). Switch to <b>Standalone hosts</b> to also register
+      more hosts under the same region / environment in the same save.</p>
+    {# TYPE: cluster = one endpoint (lists every node); standalone = add several
+       hosts at once. Hidden when editing a saved connection (always single). #}
+    <div class="rc-grid" id="hTypeRow">
+      <label class="rc-wide">Type
+        <span style="display:flex;gap:20px;flex-wrap:wrap;text-transform:none;letter-spacing:0;font-size:13px;color:var(--text);margin-top:3px;">
+          <label style="display:inline-flex;gap:6px;align-items:center;"><input type="radio" name="htype" value="cluster" checked style="width:auto;"> Cluster / one host <span class="rc-opt" style="text-transform:none;letter-spacing:0;">— one endpoint, lists every node</span></label>
+          <label style="display:inline-flex;gap:6px;align-items:center;"><input type="radio" name="htype" value="standalone" style="width:auto;"> Standalone hosts <span class="rc-opt" style="text-transform:none;letter-spacing:0;">— add several at once</span></label>
+        </span></label>
+    </div>
+    <div class="rc-grid">
+      <label class="rc-wide">Authentication
+        <span style="display:flex;gap:18px;text-transform:none;letter-spacing:0;font-size:13px;color:var(--text);margin-top:3px;">
+          <label style="display:inline-flex;gap:6px;align-items:center;"><input type="radio" name="hauth" value="token" checked style="width:auto;"> API token</label>
+          <label style="display:inline-flex;gap:6px;align-items:center;"><input type="radio" name="hauth" value="pass" style="width:auto;"> Username &amp; password</label>
+        </span></label>
+    </div>
+    {# ── ONE host (a cluster endpoint, a single standalone, or an edit) ── #}
+    <div id="hSingle">
+      <div class="rc-grid">
+        <label class="rc-wide">Name<input type="text" id="hName" placeholder="e.g. pve-dc1" spellcheck="false" autocomplete="off"></label>
+        <label class="rc-wide">Endpoint<input type="text" id="hEndpoint" placeholder="https://10.0.0.5:8006" spellcheck="false" autocomplete="off"></label>
+        <label class="rc-wide" id="hTokenBox">API token <span class="rc-opt">user@realm!tokenid=uuid</span>
+          <input type="text" id="hToken" placeholder="root@pam!portal=xxxxxxxx-…" spellcheck="false" autocomplete="off"></label>
+        <label id="hUserBox" style="display:none;">Username<input type="text" id="hUser" placeholder="root@pam" spellcheck="false" autocomplete="off"></label>
+        <label id="hPassBox" style="display:none;">Password<input type="password" id="hPass" autocomplete="new-password"></label>
+        <label class="rc-wide" style="flex-direction:row;align-items:center;gap:8px;text-transform:none;letter-spacing:0;">
+          <input type="checkbox" id="hInsecure" style="width:auto;"> Skip TLS verification (self-signed certificate)</label>
+      </div>
+    </div>
+    {# ── SEVERAL standalone hosts — each its own endpoint + credential ── #}
+    <div id="hMulti" hidden>
+      <p class="rc-note">Each host is separate: its own endpoint and credential (all use the
+        authentication method chosen above). They all land under the Region &amp; Environment below.</p>
+      <div id="hRows"></div>
+      <button type="button" class="btn btn-ghost" id="hAddRow" style="padding:6px 13px;font-size:12.5px;margin-top:2px;">＋ Add another host</button>
+    </div>
+    <div class="rc-grid" style="margin-top:12px;">
+      <label>Region <span class="rc-opt">where it belongs</span>
+        <select id="hRegion"><option value="" data-pid="">— none (Global) —</option>
+          {% for r in region_opts %}<option value="{{ r.id }}" data-pid="{{ r.pid }}">{{ r.name }} · {{ r.project }}</option>{% endfor %}
+        </select></label>
+      <label>Environment <span class="rc-opt">optional</span><input type="text" id="hEnv" placeholder="prod, dev…" spellcheck="false" autocomplete="off"></label>
+    </div>
+    <div class="rc-foot">
+      <button type="button" class="btn-ghost" id="hTest">Test connection</button>
+      <span class="rc-msg" id="hMsg"></span><span style="flex:1"></span>
+      <button type="button" class="btn" id="hAdd">Add host →</button>
+    </div>
+  </div>
+</dialog>
+
+{# ── Talos cluster wizard modal ─────────────────────────────── #}
+<dialog id="talosDlg" class="rcdlg">
+  <form method="dialog" class="rc-head">
+    <b>Launch Talos cluster</b><span style="flex:1"></span>
+    <button class="psh-x" value="cancel">✕</button></form>
+  <div class="rc-form">
+    <div class="tz-body">
+    <div id="tzPgCluster">
+      <p class="rc-note">Each node self-configures at boot (static IP, no DHCP or console), then bootstraps and returns a kubeconfig.</p>
+      <div class="rc-sechead rc-first">Cluster</div>
+      <div class="rc-grid">
+        <label class="rc-wide">Host <span class="rc-opt">the Proxmox the cluster runs on</span><select id="tzConn"><option value="">discovering hosts…</option></select></label>
+        <label>Cluster name<input type="text" id="tzName" value="talos" spellcheck="false" autocomplete="off"></label>
+        <label>Talos version<input type="text" id="tzVer" value="v1.13.8" spellcheck="false" autocomplete="off"></label>
+        <label>Control-plane nodes<input type="number" id="tzCp" min="1" max="7" value="1"></label>
+        <label>Worker nodes<input type="number" id="tzW" min="0" max="16" value="2"></label>
+        <label>Pod CIDR<input type="text" id="tzPod" value="10.244.0.0/16" spellcheck="false" autocomplete="off"></label>
+        <label>Service CIDR<input type="text" id="tzSvc" value="10.96.0.0/12" spellcheck="false" autocomplete="off"></label>
+        <label>API VIP <span class="rc-opt">optional</span><input type="text" id="tzVip" placeholder="10.0.10.29" spellcheck="false" autocomplete="off"></label>
+        <label>NTP servers <span class="rc-opt">comma-sep</span><input type="text" id="tzNtp" placeholder="10.0.10.53, 10.0.10.54" spellcheck="false" autocomplete="off"></label>
+      </div>
+    </div>
+
+    <div id="tzPgImage" hidden>
+      <div class="rc-sechead rc-first">Image</div>
+      <div class="rc-grid">
+        <label>Source<select id="tzImg">
+            <option value="download">Host downloads it — needs internet on the host</option>
+            <option value="stage">Stage from here — air-gapped, slow over a VPN</option>
+            <option value="onhost">Use a disk image on the host</option>
+            <option value="iso">Boot an ISO on the host — needs DHCP (experimental)</option>
+          </select></label>
+        <label>Config-drive store <span class="rc-opt">needs snippets</span><select id="tzSnip"><option value="">discovering hosts…</option></select></label>
+        <label class="rc-wide" id="tzImgPickRow" hidden>Which image<select id="tzImgPick"><option value="">discovering images…</option></select></label>
+      </div>
+      <p class="rc-note rc-warn" id="tzImgNote" hidden style="margin:8px 0 0;"></p>
+    </div>
+
+    <div id="tzPgNode" hidden>
+      <div class="rc-sechead" id="tzHead"><span id="tzHeadLbl">This node</span><span style="flex:1"></span><span class="rc-step" id="tzStep">node 1</span></div>
+      <div class="rc-grid">
+        <label>Hostname<input type="text" id="tzHost" placeholder="talos-cp-1" spellcheck="false" autocomplete="off"></label>
+        <label>Node<select id="tzNode"><option value="">choose a host first</option></select></label>
+        <label>IP / CIDR<input type="text" id="tzIp" placeholder="10.0.10.30/26" spellcheck="false" autocomplete="off"></label>
+        <label>Gateway<input type="text" id="tzGw" placeholder="10.0.10.1" spellcheck="false" autocomplete="off"></label>
+        <label>DNS <span class="rc-opt">comma-sep</span><input type="text" id="tzDns" placeholder="10.0.10.53, 10.0.10.54" spellcheck="false" autocomplete="off"></label>
+        <label>VLAN / Bridge <span class="rc-opt">VLAN optional</span>
+          <span class="rc-pair"><input type="text" id="tzVlan" placeholder="3101" style="flex:.7" spellcheck="false" autocomplete="off">
+            <input type="text" id="tzBridge" value="vmbr0" spellcheck="false" autocomplete="off"></span></label>
+        <label class="rc-wide">Resources <span class="rc-opt">vCPU · RAM GB · Disk GB</span>
+          <span class="rc-triple"><input type="number" id="tzCpu" min="1" title="vCPU">
+            <input type="number" id="tzMem" min="1" step="0.5" title="RAM (GB)">
+            <input type="number" id="tzDisk" min="5" title="Disk (GB)"></span></label>
+      </div>
+      <div class="rc-cap" id="tzCap" hidden></div>
+    </div>
+
+    <div id="tzPgReview" hidden>
+      <div class="rc-sechead rc-first">Review</div>
+      <div id="tzReview"></div>
+    </div>
+    </div>
+
+    <div class="rc-prog" id="tzProg" hidden></div>
+    <div class="rc-foot">
+      <button type="button" class="btn btn-ghost" id="tzBack" hidden>← Back</button>
+      <span class="rc-crumb" id="tzCrumb"></span>
+      <span class="rc-msg" id="tzMsg"></span><span style="flex:1"></span>
+      <button type="button" class="btn" id="tzLaunch">Next →</button>
+    </div>
+  </div>
+</dialog>
+
+{# ── VM hardware detail + edit modal (opened by clicking a VM name) ── #}
+<dialog id="vmDlg" class="rcdlg vmdlg">
+  <form method="dialog" class="rc-head">
+    <b id="vmdTitle">VM</b> <span class="rc-opt" id="vmdSub"></span><span style="flex:1"></span>
+    <button class="psh-x" value="cancel">✕</button></form>
+  <div class="rc-form" id="vmdBody">
+    <div class="sec-note" style="padding:14px 2px;">Loading…</div>
+  </div>
+  <div class="rc-foot">
+    <span class="rc-msg" id="vmdMsg"></span><span style="flex:1"></span>
+    <button type="button" class="btn-ghost" id="vmdConsole">Console</button>
+    <button type="button" class="btn" id="vmdSave">Save changes</button>
+  </div>
+</dialog>
+
+<style>
+  /* recipe tiles */
+  .recipe-grid { display:grid; gap:12px;
+    grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); }
+  .recipe { display:flex; align-items:center; gap:13px; text-align:left;
+    padding:14px 15px; border:1px solid var(--line); border-radius:12px;
+    background:var(--panel); color:inherit; cursor:pointer; font:inherit;
+    transition:border-color .12s, background .12s, transform .06s; }
+  .recipe:hover { border-color:var(--accent); background:var(--accent-wash);
+    transform:translateY(-1px); }
+  .recipe .ico { flex:none; width:40px; height:40px; border-radius:10px;
+    display:grid; place-items:center; background:var(--accent-wash);
+    color:var(--accent); }
+  .recipe:hover .ico { background:var(--panel); }
+  .rc-body { display:flex; flex-direction:column; gap:2px; min-width:0; flex:1; }
+  .rc-name { font-weight:650; font-size:14.5px; }
+  .rc-blurb { font-size:12px; color:var(--muted); }
+  .rc-specs { font-family:var(--mono); font-size:10.5px; color:var(--muted);
+    margin-top:2px; }
+  .recipe .rc-go { flex:none; color:var(--muted); }
+  .recipe:hover .rc-go { color:var(--accent); }
+
+  /* inventory */
+  .inv-tiles { display:flex; flex-wrap:wrap; gap:8px; margin:2px 0 12px; }
+  .inv-pill { display:inline-flex; align-items:center; gap:7px; padding:7px 12px;
+    border:1px solid var(--line); border-radius:999px; background:var(--panel);
+    cursor:pointer; font:inherit; color:inherit; }
+  .inv-pill:hover { border-color:var(--accent); }
+  .inv-pill.on { border-color:var(--accent); background:var(--accent-wash); color:var(--accent); }
+  .inv-pill b { font-size:14px; } .inv-pill span { font-size:11.5px; color:var(--muted); }
+  .inv-pill.on span { color:inherit; }
+  .inv-filter { display:flex; flex-wrap:wrap; gap:8px; align-items:center;
+    margin-bottom:10px; }
+  .inv-filter .psh-find { min-width:200px; flex:1; }
+  .inv-filter select { min-width:0; }
+  .inv-dot { display:inline-block; width:8px; height:8px; border-radius:50%;
+    margin-right:6px; vertical-align:middle; background:var(--muted); }
+  .inv-dot.running { background:var(--ok-ink); }
+  .inv-dot.stopped { background:var(--muted); }
+  .inv-tags { display:flex; flex-wrap:wrap; gap:4px; }
+  .inv-tag { font-family:var(--mono); font-size:10px; padding:1px 6px;
+    border-radius:5px; background:var(--overlay); color:var(--muted); }
+  .inv-num { font-family:var(--mono); font-size:11.5px; }
+
+  /* recipe modal */
+  dialog.rcdlg { width:min(880px,95vw); max-height:92vh; border:1px solid var(--line);
+    border-radius:14px; padding:0; background:var(--bg); color:inherit; }
+  dialog.rcdlg::backdrop { background:rgba(6,10,20,.55); }
+  .rc-head { display:flex; align-items:center; gap:10px; padding:13px 16px;
+    border-bottom:1px solid var(--line); font-size:15px; margin:0; }
+  .rc-head .psh-x { border:1px solid var(--line); border-radius:7px;
+    background:var(--panel); padding:3px 9px; cursor:pointer; color:inherit; }
+  .rc-form { padding:14px 16px 16px; }
+  /* every wizard page renders in the same box so the modal never jumps size
+     between steps; taller content (a big Review) scrolls inside. */
+  .tz-body { height:min(440px, 62vh); overflow-y:auto; overflow-x:hidden; padding-right:2px; }
+  .rc-note { margin:0 0 12px; font-size:12.5px; color:var(--muted); }
+  .rc-note.rc-warn { color:var(--danger-ink); }
+  .rc-grid { display:grid; gap:11px 14px; grid-template-columns:1fr 1fr; }
+  .rc-grid label { display:flex; flex-direction:column; gap:4px;
+    font-size:11px; color:var(--muted); text-transform:uppercase;
+    letter-spacing:.03em; }
+  .rc-grid label.rc-wide { grid-column:1 / -1; }
+  .rc-grid input, .rc-grid select { font:inherit; text-transform:none;
+    letter-spacing:0; color:var(--text); background:var(--panel);
+    border:1px solid var(--line); border-radius:8px; padding:7px 9px;
+    box-sizing:border-box; width:100%; min-width:0; }
+  /* Grid cells in a row stretch to the tallest, so a label with a second-line
+     hint used to sit its input higher than its plain-label neighbour. Anchor
+     every control to the bottom of its cell and a row's inputs line up whatever
+     their labels' heights. Covers the enhanced dropdown (.dd) too. */
+  .rc-grid label > input, .rc-grid label > select, .rc-grid label > .dd,
+  .rc-grid label > .rc-passrow, .rc-grid label > .rc-pair, .rc-grid label > .rc-triple { margin-top:auto; }
+  .rc-grid label > .dd .dd-btn { padding:7px 9px; }   /* match the modal's fields */
+  .rc-opt { text-transform:none; color:var(--muted); font-size:10px; }
+  .rc-passrow { display:flex; gap:6px; } .rc-passrow input { flex:1; }
+  .rc-foot { display:flex; align-items:center; gap:10px; margin-top:16px; }
+  .rc-msg { font-size:12.5px; color:var(--danger-ink); }
+  .rc-msg.ok { color:var(--ok-ink); }
+  .rc-sechead { display:flex; align-items:center; gap:8px; font-size:11px; text-transform:uppercase;
+    letter-spacing:.04em; color:var(--muted); margin:16px 0 9px; border-top:1px solid var(--line);
+    padding-top:13px; }
+  .rc-sechead.rc-first { margin-top:4px; border-top:0; padding-top:0; }
+  .rc-step { font-size:11.5px; color:var(--accent); background:var(--accent-wash); border-radius:7px;
+    padding:4px 10px; font-weight:600; text-transform:none; letter-spacing:0; }
+  .rc-pair, .rc-triple { display:flex; gap:6px; }
+  .rc-pair > input, .rc-triple > input { flex:1; min-width:0; }
+  .rc-check { display:flex; align-items:center; gap:8px; font-size:13px; color:var(--text);
+    cursor:pointer; margin:10px 0 6px; text-transform:none; letter-spacing:0; }
+  .rc-check input { width:auto; }
+  .rc-out { font-family:var(--mono); font-size:11.5px; color:var(--muted); background:var(--well);
+    border:1px solid var(--line); border-radius:8px; padding:8px 10px; margin:8px 0 0;
+    max-height:220px; overflow:auto; white-space:pre-wrap; word-break:break-word; }
+  /* the picked node's free capacity — shown under the VM/node form so you can size the VM */
+  .rc-cap { margin-top:14px; border:1px solid var(--line); border-radius:10px;
+    padding:11px 13px 9px; background:var(--well); }
+  .rc-cap-h { font-size:10.5px; text-transform:uppercase; letter-spacing:.5px; color:var(--muted); margin-bottom:9px; }
+  .rc-cap-row { display:grid; grid-template-columns:46px 1fr auto; align-items:center; gap:11px; margin:7px 0; }
+  .rc-cap-k { font-size:11.5px; color:var(--muted); }
+  .rc-cap-bar { height:7px; border-radius:4px; background:var(--line); overflow:hidden; }
+  .rc-cap-bar > i { display:block; height:100%; width:0; background:var(--accent); border-radius:4px; }
+  .rc-cap-bar.warn > i { background:#d0a11a; }
+  .rc-cap-bar.bad > i { background:var(--danger-ink); }
+  .rc-cap-v { font-family:var(--mono); font-size:12px; color:var(--text); white-space:nowrap; }
+  .rc-cap-v .rc-cap-s { color:var(--muted); }
+  /* a state-inapplicable action button stays in place (never hidden) but reads as
+     off — dimmed, muted, and with the hover affordance suppressed (inline, not
+     app.css, so the hover override lands before a release busts the cache). */
+  .actcol .abtn[disabled], .actcol .abtn[disabled]:hover {
+    opacity:.4; cursor:not-allowed; color:var(--muted); border-color:var(--line);
+    background:transparent; box-shadow:none; transform:none; }
+  .rc-crumb { font-size:11px; color:var(--muted); white-space:nowrap; }
+  /* themed dropdown (.dd*) is now GLOBAL in base.html; only the modal-field
+     padding tweak stays here (see .rc-grid label > .dd .dd-btn above). */
+  /* multi standalone-host rows in the add-host wizard */
+  .hmrow { display:grid; grid-template-columns:1fr 1.5fr auto; gap:8px; align-items:center;
+    border:1px solid var(--line); border-radius:10px; padding:9px 10px; margin-bottom:8px; }
+  .hmrow input { width:100%; box-sizing:border-box; }
+  .hmrow .hm-cred { grid-column:1 / -1; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .hmrow .hm-cred input { flex:1; min-width:170px; width:auto; }
+  .hmrow .hm-del { flex:0 0 auto; }
+  /* Provision-a-VM chooser cards */
+  .pick-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:4px; }
+  .pick-card { display:flex; flex-direction:column; gap:5px; align-items:flex-start; text-align:left;
+    padding:18px 16px; border:1px solid var(--line); border-radius:12px; background:var(--panel);
+    color:var(--text); cursor:pointer; transition:border-color .15s, background .15s; }
+  .pick-card:hover { border-color:var(--accent); background:var(--overlay); }
+  .pick-card .ico { color:var(--accent); margin-bottom:3px; }
+  .pick-card .pick-t { font-size:15px; font-weight:650; }
+  .pick-card .pick-s { font-size:12px; color:var(--muted); }
+  .pick-card .pick-spec { font-family:var(--mono); font-size:11px; color:var(--faint); margin-top:2px; }
+  @media (max-width:620px){ .pick-grid { grid-template-columns:1fr; } }
+  /* slim engine-status line under the overview tiles */
+  .tf-engine { display:flex; align-items:center; gap:6px; flex-wrap:wrap;
+    font-size:12px; color:var(--muted); margin:14px 2px 0; }
+  /* review page */
+  .tzrev { border:1px solid var(--line); border-radius:9px; overflow:hidden; }
+  .tzrev-r { display:flex; gap:12px; padding:8px 12px; font-size:12.5px; border-top:1px solid var(--line); }
+  .tzrev-r:first-child { border-top:0; }
+  .tzrev-k { flex:0 0 148px; color:var(--muted); }
+  .tzrev-v { min-width:0; color:var(--text); font-family:var(--mono); font-size:12px; word-break:break-word; }
+  .tzrev-h { background:var(--overlay); color:var(--muted); text-transform:uppercase; font-size:10.5px;
+    letter-spacing:.04em; font-weight:600; padding:6px 12px; }
+  .rc-prog { font-family:var(--mono); font-size:12px; color:var(--muted); background:var(--well);
+    border:1px solid var(--line); border-radius:8px; padding:9px 11px; margin-top:14px; }
+  .rc-dls { display:flex; align-items:center; gap:8px; margin-top:11px; font-size:12.5px; color:var(--muted); }
+
+  /* pro filter toolbar — one inline row (override the global select{width:100%}) */
+  .inv-bar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:12px; }
+  .inv-bar .inv-search { display:flex; align-items:center; gap:6px; flex:1 1 240px; width:auto;
+    min-width:180px; border:1px solid var(--line); border-radius:8px; padding:0 10px;
+    background:var(--panel); color:var(--muted); }
+  .inv-bar .inv-search input { border:0; background:transparent; color:var(--text); font:inherit;
+    padding:8px 0; width:100%; outline:none; }
+  .inv-bar select.inv-sel { flex:0 0 168px; width:168px; border:1px solid var(--line);
+    border-radius:8px; background:var(--panel); color:var(--text); font:inherit; padding:7px 9px; }
+  .inv-reset { border:1px solid var(--line); border-radius:8px; background:transparent;
+    color:var(--muted); font:inherit; padding:7px 11px; cursor:pointer; }
+  .inv-reset:hover { color:var(--danger-ink); border-color:var(--danger-line); }
+  .inv-th:hover { color:var(--accent); }
+  .inv-act { white-space:nowrap; }
+  .inv-act .abtn { margin-left:4px; }
+  /* bulk-action bar — appears when ≥1 VM is ticked */
+  .inv-bulk { display:flex; align-items:center; gap:7px; padding:9px 12px; margin-bottom:10px;
+    border:1px solid var(--accent-ink); border-radius:10px; background:var(--accent-wash); }
+  .inv-bulk b { font-size:13px; }
+  .inv-pickcol { width:34px; text-align:center; }
+  .inv-pickcol input { width:auto; cursor:pointer; }
+  /* stacks/runs action cells: right-aligned so they line up across rows */
+  .tf-acts { display:flex; justify-content:flex-end; align-items:center; gap:6px; flex-wrap:nowrap; }
+
+  /* env tag readability: app.css paired a light --warn/--ok text with the pale
+     --*-on-wash as a BACKGROUND — light-on-light in the dark theme, so PRE-PROD
+     was unreadable. The fix (readable-text --*-ink on the translucent --*-wash)
+     is in app.css, but that is version-cached; mirror it here so it shows now.
+     --ok-wash exists in the cached sheet; --warn-wash is new, so it carries a
+     literal fallback until the next release busts the cache. */
+  .envtag.warn { color:var(--warn-ink); background:var(--warn-wash,rgba(245,196,81,.14)); }
+  .envtag.ok   { color:var(--ok-ink);   background:var(--ok-wash); }
+
+  /* images / iso subtab */
+  .img-upas { display:inline-flex; align-items:center; gap:6px; font-size:11.5px; color:var(--muted); }
+  .img-upas .dd, .img-upas select { width:auto; min-width:158px; }
+  .img-host { border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin-bottom:12px; }
+  .img-host-h { display:flex; align-items:center; gap:8px; margin-bottom:8px; font-size:14px; }
+  .img-host table.jenkins { margin:0; }
+  .img-prog { margin-top:8px; height:20px; position:relative; border:1px solid var(--line);
+    border-radius:6px; overflow:hidden; background:var(--well); }
+  .img-prog .img-bar { position:absolute; inset:0 auto 0 0; width:0; background:var(--accent-wash);
+    transition:width .2s; }
+  .img-prog span { position:relative; display:block; font-size:11px; line-height:20px;
+    padding:0 8px; color:var(--muted); }
+
+  /* header action row — one height, no text wrap, whatever the base .btn does
+     (which is in the version-cached app.css and can't be relied on to update) */
+  .tf-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+  .tf-actions > * { flex:0 0 auto; }
+  .tf-actions .btn, .tf-actions .region-btn { height:38px; padding:0 15px; white-space:nowrap;
+    font-size:13px; font-weight:600; display:inline-flex; align-items:center; gap:7px;
+    border-radius:9px; box-sizing:border-box; }
+
+  /* AWS-style region picker (custom popover) */
+  .region-pick { position:relative; }
+  .region-btn { display:inline-flex; align-items:center; gap:7px; border:1px solid var(--line);
+    border-radius:8px; padding:7px 11px; background:var(--panel); color:var(--text); font:inherit; cursor:pointer; }
+  .region-btn:hover, .region-btn.open { border-color:var(--accent); }
+  .region-cur { font-size:13px; max-width:190px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .region-caret { color:var(--muted); font-size:10px; }
+  .region-menu { position:absolute; right:0; top:calc(100% + 6px); z-index:50; min-width:250px;
+    max-height:62vh; overflow:auto; background:var(--panel); border:1px solid var(--line);
+    border-radius:10px; padding:6px; box-shadow:var(--shadow); }
+  .region-grp { font-size:10.5px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); padding:8px 10px 3px; }
+  .region-item { display:block; padding:7px 10px; border-radius:7px; font-size:13px; color:var(--text); text-decoration:none; }
+  .region-item:hover { background:var(--overlay); }
+  .region-item.on { background:var(--accent-wash); color:var(--accent); font-weight:600; }
+  .region-note { display:flex; align-items:center; gap:6px; font-size:12px; color:var(--muted); margin:-6px 0 12px; }
+
+  /* hosts overview */
+  .hcard { border:1px solid var(--line); border-radius:12px; padding:14px 16px; margin-bottom:12px; }
+  .hcard-h { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:12px; font-size:14.5px; }
+  .hchip { font-family:var(--mono); font-size:10.5px; padding:2px 8px; border-radius:999px;
+    background:var(--overlay); color:var(--muted); }
+  .hmetrics { display:grid; gap:14px 18px; grid-template-columns:repeat(3, minmax(0,1fr)); }
+  .hmetric { min-width:0; }
+  .hmet-top { display:flex; justify-content:space-between; font-size:11.5px; color:var(--muted);
+    text-transform:uppercase; letter-spacing:.03em; margin-bottom:5px; }
+  .hmet-top b { color:var(--text); }
+  .hmet-sub { font-family:var(--mono); font-size:10.5px; color:var(--muted); margin-top:5px; }
+  .hbar { height:8px; border-radius:999px; background:var(--well); overflow:hidden; }
+  .hbar-f { height:100%; border-radius:999px; }
+  .hbar-f.ok { background:var(--ok); }
+  .hbar-f.warn { background:var(--warn); }
+  .hbar-f.bad { background:var(--danger); }
+  @media (max-width:720px){ .hmetrics { grid-template-columns:1fr; } }
+
+  /* hosts: cluster groups + expandable node rows */
+  .hcluster { border:1px solid var(--line); border-radius:12px; margin-bottom:14px; overflow:hidden; }
+  .hcl-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:11px 14px;
+    background:var(--overlay); border-bottom:1px solid var(--line); font-size:14px; }
+  .hnode { border-bottom:1px solid var(--line); }
+  .hnode:last-child { border-bottom:0; }
+  .hnode-row { display:flex; align-items:center; gap:13px; padding:11px 14px; cursor:pointer; flex-wrap:wrap; }
+  .hnode-row:hover { background:var(--overlay); }
+  .hnode-name { min-width:60px; }
+  .hstat { display:inline-flex; align-items:center; gap:6px; font-size:11.5px; color:var(--muted); font-family:var(--mono); }
+  .mbar { display:inline-block; width:46px; height:6px; border-radius:999px; background:var(--well);
+    overflow:hidden; vertical-align:middle; }
+  .mbar-f { display:block; height:100%; border-radius:999px; }
+  .mbar-f.ok { background:var(--ok); }
+  .mbar-f.warn { background:var(--warn); }
+  .mbar-f.bad { background:var(--danger); }
+  .hcaret { color:var(--muted); transition:transform .15s; }
+  .hnode.open .hcaret { transform:rotate(180deg); }
+  .hdetail { padding:2px 14px 14px; }
+  .hdetail-in { display:grid; gap:20px; grid-template-columns:minmax(0,1.7fr) minmax(0,1fr); }
+  .hdetail-col { min-width:0; }
+  .hdetail-t { font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:2px 0 8px; }
+  /* VMs-on-node: long Proxmox names were collapsing to one character per row
+     (the base td.jname is break-word). Keep the name on one line, ellipsised
+     past a sensible width with the full name on hover, and let the row scroll
+     rather than crush a column when the full action set is shown. */
+  .hdetail .hvms { overflow-x:auto; }
+  .hdetail table.jenkins td.jname { white-space:nowrap; word-break:normal; }
+  .hdetail .jname .vmname { display:inline-block; max-width:240px; overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap; vertical-align:bottom; font-weight:600; }
+  .hstore { margin-bottom:11px; }
+  .hstore-h { display:flex; align-items:center; gap:6px; font-size:12.5px; margin-bottom:5px; }
+  @media (max-width:820px){ .hdetail-in { grid-template-columns:1fr; } }
+
+  /* VM detail/edit modal */
+  .vmdlg { width:min(760px,94vw); max-width:760px; }
+  .vmopen { cursor:pointer; }
+  .vmopen:hover b { color:var(--accent); text-decoration:underline; }
+  .vmd-live { display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size:13px;
+    color:var(--muted); padding:10px 12px; border:1px solid var(--line); border-radius:10px;
+    background:var(--panel2); margin-bottom:14px; }
+  .vmd-live b { color:var(--text); text-transform:capitalize; }
+  .vmd-sep { color:var(--line2); }
+  .vmd-facts { display:grid; gap:8px 16px; grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+    margin-bottom:16px; }
+  .vmd-fact { display:flex; flex-direction:column; gap:2px; min-width:0; }
+  .vmd-fact span { font-size:10.5px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
+  .vmd-fact b { font-size:13px; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .vmd-sec { font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted);
+    margin:16px 0 9px; padding-bottom:5px; border-bottom:1px solid var(--line); }
+  .vmd-edit { display:grid; gap:11px 14px; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); }
+  .vmd-edit label { display:flex; flex-direction:column; gap:4px; font-size:11px;
+    text-transform:uppercase; letter-spacing:.03em; color:var(--muted); }
+  .vmd-edit label.vmd-wide { grid-column:1/-1; }
+  .vmd-edit input, .vmd-edit textarea { width:100%; box-sizing:border-box; font:inherit;
+    font-size:13px; text-transform:none; letter-spacing:0; color:var(--text);
+    background:#0b1020; border:1px solid var(--line); border-radius:8px; padding:8px 10px; }
+  .vmd-edit input:focus, .vmd-edit textarea:focus { outline:none; border-color:var(--accent-ink); }
+  .vmd-edit input:disabled, .vmd-edit textarea:disabled { opacity:.6; cursor:not-allowed; }
+  .vmd-tbl { width:100%; margin-top:2px; }
+  .rc-msg.ok { color:var(--ok-ink); } .rc-msg.err { color:var(--danger-ink); }
+</style>
+
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  const CUR = '{{ cur }}', REGION = '{{ reg }}';
+  const IMG_CLUSTERS = {{ clusters|tojson }};
+  const RECIPES = {{ recipes|tojson }};
+  const ANSIBLE_PBS = {{ ansible_playbooks|tojson }};
+  const MAY_ANSIBLE = {{ 'true' if may_ansible else 'false' }};
+  // set by the recipe / Talos modal blocks so the "Provision a VM" chooser (a
+  // separate block) can open either wizard from any tab
+  let openRecipe = null, openTalos = null;
+
+  /* ── AWS-style region picker (custom popover; items are links) ── */
+  const regBtn = document.getElementById('regionBtn'), regMenu = document.getElementById('regionMenu');
+  if (regBtn && regMenu) {
+    const close = () => { regMenu.hidden = true; regBtn.classList.remove('open'); };
+    regBtn.addEventListener('click', e => { e.stopPropagation();
+      regMenu.hidden = !regMenu.hidden; regBtn.classList.toggle('open', !regMenu.hidden); });
+    document.addEventListener('click', e => { if (!regMenu.hidden && !regMenu.contains(e.target)) close(); });
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') close(); });
+  }
+  // client-side tabs (Instances / Hosts / Images) filter by the same region
+  const inRegion = item => !REGION ? true
+    : item.rgid === REGION;
+
+  /* themed dropdowns: enhanceSelect / ddRefresh are now GLOBAL (base.html), so
+     the bare calls below resolve to window.enhanceSelect / window.ddRefresh. The
+     global sweep also enhances every <select> on load; the explicit calls here
+     stay because the wizard repopulates its selects and must ddRefresh them. */
+
+  // post-provision Ansible: reveal the "configure after boot" toggle only when
+  // the operator may run playbooks and at least one exists. Fill the picker here
+  // — BEFORE enhanceSelect below — so the themed dropdown captures the options.
+  // (esc() is in its TDZ at module-eval time, so build options via textContent.)
+  (() => {
+    const row = document.getElementById('rcAnsRow'), pb = document.getElementById('rcAnsPb');
+    if (!row || !pb || !MAY_ANSIBLE || !ANSIBLE_PBS.length) return;
+    ANSIBLE_PBS.forEach(p => {
+      const o = document.createElement('option'); o.value = p.id; o.textContent = p.name; pb.appendChild(o);
+    });
+    row.hidden = false;
+  })();
+  document.querySelectorAll('.rc-form select').forEach(enhanceSelect);
+
+  /* ── recipe quick-launch modal (multi-VM stepper → one-click auto-launch) ── */
+  const dlg = document.getElementById('recipeDlg');
+  if (dlg) {
+    const $ = id => document.getElementById(id);
+    // page wizard (mirrors the Talos one): setup → VM 0 … VM N-1 → review. drafts[i]
+    // holds each VM's raw inputs so Back keeps everything; the vm list is built at create.
+    let R = null, rpage = 'setup', ni = 0, drafts = [], nodes = [], applyRunId = '', RCIMGS = [];
+    const setMsg = (t, ok) => { const m = $('rcMsg'); m.textContent = t || ''; m.classList.toggle('ok', !!ok); };
+    const rcN = () => Math.max(1, Math.min(16, +$('rcCount').value || 1));
+
+    // the host picker is the region's deduped Proxmox connections — same source
+    // and region filter as the Hosts / Images tabs, so no stray clusters appear
+    function rcFillConns() {
+      const cs = (IMG_CLUSTERS || []).filter(inRegion);
+      // ≥2 hosts in the region → offer spanning one run across them (standalone nodes
+      // or several clusters). Each VM then picks its own host on its page; the backend
+      // builds one aliased provider per connection. One host → the option is pointless.
+      const multi = cs.length > 1
+        ? '<option value="__multi__">⁂ Multiple hosts — pick a host per VM</option>' : '';
+      $('rcConn').innerHTML = '<option value="">' +
+        (cs.length ? 'choose a host…' : ('no host' + (REGION ? ' in this region' : '') + ' — add one on the Hosts tab')) +
+        '</option>' + multi + cs.map(c => '<option value="' + esc(c.id) + '">' + esc(c.name) + '</option>').join('');
+      ddRefresh($('rcConn'));
+    }
+    const RC_MULTI = () => $('rcConn').value === '__multi__';
+
+    async function loadImages() {
+      // the installer ISO is shared by every VM; list it from the host's first node
+      const conn = $('rcConn').value, isel = $('rcImage'), node = (nodes[0] || {}).node;
+      const put = h => { isel.innerHTML = h; ddRefresh(isel); };
+      if (RC_MULTI()) { put('<option value="">use a single host for the ISO method</option>'); return; }
+      if (!conn || !node) { put('<option value="">choose a host first</option>'); return; }
+      put('<option value="">…</option>');
+      try {
+        const d = await (await fetch('/provision/images?connection=' + encodeURIComponent(conn) +
+          '&node=' + encodeURIComponent(node) + '&storage=local')).json();
+        const isos = (d.images || []).filter(i => i.content === 'iso' && /\.iso$/i.test(i.name));
+        if (!isos.length) { put('<option value="">no ISO on the host — upload one on the Images tab</option>'); return; }
+        put('<option value="">choose the installer ISO…</option>' +
+          isos.map(i => '<option value="' + i.volid + '">' + i.name + ' (' + i.size_gb + ' GB)</option>').join(''));
+        const fam = (R.os || '').split('-')[0];
+        const guess = isos.find(i => i.name.toLowerCase().includes(fam));
+        if (guess) { isel.value = guess.volid; ddRefresh(isel); }
+      } catch (e) { put('<option value="">' + esc(e) + '</option>'); }
+    }
+
+    // discover ONE connection's nodes, each tagged with its connection id + name and a
+    // stable key — node names ('pve') collide across standalone hosts, the key never does
+    async function discoverConn(cid) {
+      const cname = ((IMG_CLUSTERS || []).find(c => c.id === cid) || {}).name || cid;
+      const d = await (await fetch('/provision/discover?connection=' + encodeURIComponent(cid))).json();
+      if (!d.ok) throw new Error(d.error || 'could not read ' + cname);
+      const ns = d.nodes || [];
+      // the VM disk lands on 'local-lvm' (the generator's disk_datastore); discover only
+      // reads node[0]'s storages (datastores are cluster-uniform per connection), so attach
+      // that datastore's capacity to every node for the capacity panel's Disk row
+      const dds = ((ns[0] || {}).storages || []).find(s => s.id === 'local-lvm') || null;
+      ns.forEach(nn => { nn.conn = cid; nn.connName = cname; nn.key = cid + '|' + nn.node; nn.diskDs = dds; });
+      return ns;
+    }
+    const nodeByKey = k => nodes.find(n => n.key === k) || null;
+
+    async function loadCluster() {
+      const conn = $('rcConn').value, nsel = $('rcNode'), multi = RC_MULTI();
+      const put = h => { nsel.innerHTML = h; ddRefresh(nsel); };
+      nodes = []; put('<option value="">…</option>');
+      $('rcImage').innerHTML = '<option value="">choose a host first</option>'; ddRefresh($('rcImage'));
+      rcFillMethods();                            // multi-host drops the ISO method (see rcMethods)
+      if (!conn) { put('<option value="">choose a host first</option>'); return; }
+      try {
+        if (multi) {                              // fan out over every region host; skip any that won't answer
+          for (const c of (IMG_CLUSTERS || []).filter(inRegion)) {
+            try { nodes.push(...await discoverConn(c.id)); } catch (e) { /* one host down ≠ whole picker dead */ }
+          }
+          if (!nodes.length) { put('<option value="">no host answered — check the Hosts tab</option>'); return; }
+        } else {
+          nodes = await discoverConn(conn);
+        }
+        put('<option value="">choose a node…</option>' +
+          nodes.map(n => '<option value="' + esc(n.key) + '"' + (n.online === false ? ' disabled' : '') + '>' +
+            (multi ? esc(n.connName) + ' · ' : '') + esc(n.node) +
+            (n.cpu_cores != null ? ' — ' + n.cpu_cores + 'c · ' + n.mem_free_gb + ' GB RAM free · ' + n.disk_free_gb + ' GB disk free' : '') +
+            (n.online === false ? ' (offline)' : '') + '</option>').join(''));
+        rcApplyMethod();   // nodes are loaded → populate the image list the method needs
+      } catch (e) { put('<option value="">' + esc(e.message || e) + '</option>'); }
+    }
+
+    // ── install method + image source (same choices as the Talos wizard) ──────
+    // RHEL-family ISOs install unattended via kickstart, so they get iso + cloud;
+    // every other family is cloud-image only (mirrors provision.methods_for()).
+    const RC_KICKSTART = new Set(['almalinux', 'centos', 'rocky']);
+    function rcMethods() {
+      if (RC_MULTI()) return ['cloud'];   // one installer ISO volid can't pin across hosts — cloud only
+      return RC_KICKSTART.has(R && R.family) ? ['cloud', 'iso'] : ['cloud'];
+    }
+    function rcFillMethods() {
+      const m = rcMethods(), lbl = {cloud: 'Cloud image · cloud-init', iso: 'ISO · unattended kickstart'}, cur = $('rcMethod').value;
+      $('rcMethod').innerHTML = m.map(k => '<option value="' + k + '">' + lbl[k] + '</option>').join('');
+      $('rcMethod').value = m.includes(cur) ? cur : m[0];   // keep the choice when it survives the mode switch
+      $('rcMethod').disabled = m.length < 2;   // single method → locked (still shows which)
+      ddRefresh($('rcMethod'));
+    }
+    // show the controls the chosen method needs, with a note explaining the source.
+    function rcApplyMethod() {
+      const iso = $('rcMethod').value === 'iso';
+      $('rcImageWrap').hidden = !iso;
+      $('rcSrcWrap').hidden = iso;
+      if (iso) {
+        $('rcImgPickRow').hidden = true;
+        $('rcCloudNote').hidden = false;
+        $('rcCloudNote').textContent = 'The installer ISO must already be on the host — upload it on the Images tab.';
+        if (nodes.length) loadImages();
+      } else { rcApplySrc(); }
+    }
+    // for the cloud method: host-downloads / stage-from-portal / use-on-host.
+    async function rcApplySrc() {
+      const src = $('rcImgSrc').value, note = $('rcCloudNote');
+      $('rcImgPickRow').hidden = (src !== 'onhost');
+      note.hidden = false;
+      if (src === 'download') note.textContent = 'The host downloads the ' + R.label + ' cloud image itself (needs internet on the host).';
+      else if (src === 'stage') note.textContent = 'The portal downloads the image once and pushes it to each host over 8006 — '
+        + 'for air-gapped hosts. Slow over a VPN; place every VM on one host to upload once.';
+      else note.textContent = 'Pick a cloud image already on the host (upload one on the Images tab, or stage it).';
+      if (src === 'onhost') {
+        const sel = $('rcImgPick');
+        sel.innerHTML = '<option value="">discovering images…</option>'; ddRefresh(sel);
+        RCIMGS = await rcHostImages(/\.(img|raw|qcow2)$/i);
+        sel.innerHTML = RCIMGS.length
+          ? '<option value="">choose an image…</option>' + RCIMGS.map(im =>
+              '<option value="' + esc(im.volid) + '">' + esc(im.name) + ' · on ' + esc(im.hosts.join(', ')) + '</option>').join('')
+          : '<option value="">no cloud image on the host — upload or stage one</option>';
+        ddRefresh(sel);
+      }
+    }
+    // cloud images (of a kind) across the chosen host's nodes, deduped by volid.
+    async function rcHostImages(ext) {
+      if (!$('rcConn').value) return [];
+      const byVolid = new Map();
+      for (const n of nodes) {                    // n.conn is the node's own connection (multi spans hosts)
+        let d;
+        try { d = await (await fetch('/provision/images?connection=' + encodeURIComponent(n.conn) +
+          '&node=' + encodeURIComponent(n.node) + '&storage=local')).json(); }
+        catch (e) { continue; }
+        if (!d.ok) continue;
+        (d.images || []).filter(i => ext.test(i.name)).forEach(i => {
+          const cur = byVolid.get(i.volid) || {volid: i.volid, name: i.name, hosts: []};
+          if (!cur.hosts.includes(n.node)) cur.hosts.push(n.node);
+          byVolid.set(i.volid, cur);
+        });
+      }
+      return [...byVolid.values()];
+    }
+    // stage the OS image FROM the portal onto each target host over 8006 → {volid}|{err}.
+    async function rcStage(vms, say) {
+      const byConn = {};
+      vms.forEach(n => { (byConn[n.connection] = byConn[n.connection] || []).push(n.node); });
+      let volid = '';
+      for (const conn of Object.keys(byConn)) {
+        const hosts = [...new Set(byConn[conn])];
+        let start;
+        try {
+          start = await (await fetch('/provision/stage', {method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({connection: conn, nodes: hosts, os: R.os, ver: '', image_datastore: 'local'})})).json();
+        } catch (e) { return {err: String(e)}; }
+        if (!start.ok) return {err: start.error || 'could not start staging'};
+        for (let i = 0; ; i++) {
+          let st;
+          try { st = await (await fetch('/provision/stage/' + encodeURIComponent(start.job) + '.json')).json(); }
+          catch (e) { return {err: String(e)}; }
+          say('Staging image → ' + esc(hosts.join(', ')) + ' · ' + esc(st.msg || '') + (st.pct != null ? ' (' + st.pct + '%)' : ''));
+          if (st.status === 'ok') { volid = st.volid || volid; break; }
+          if (st.status === 'failed') return {err: st.msg || 'staging failed'};
+          if (i >= 2400) return {err: 'staging timed out'};
+          await new Promise(r => setTimeout(r, 1500));
+        }
+      }
+      return {volid: volid};
+    }
+
+    function suggestName(i) { return (R.os || 'vm').split('-')[0] + '-' + (i + 1); }
+    function nodeHead() { $('rcStep').textContent = 'VM ' + (ni + 1) + ' of ' + rcN(); }
+    // the node page's raw inputs (no validation) — the unit stored in drafts[]
+    function readNodeInputs() {
+      const ne = nodeByKey($('rcNode').value);    // key → the node's real name + its connection
+      return {hostname: $('rcHost').value.trim(), nodeKey: $('rcNode').value,
+        node: ne ? ne.node : '', conn: ne ? ne.conn : '', connName: ne ? ne.connName : '',
+        ip: $('rcIp').value.trim(), gateway: $('rcGw').value.trim(), dns: $('rcDns').value, vlan: $('rcVlan').value.trim(),
+        bridge: $('rcBridge').value.trim() || 'vmbr0',
+        cpu: $('rcCpu').value, mem: $('rcMem').value, disk: $('rcDisk').value};
+    }
+    function validateCurrentNode() {   // '' = ok, else an error string
+      const d = readNodeInputs();
+      if (!d.hostname) return 'give this VM a hostname';
+      if (!d.node) return 'pick a node for this VM';
+      if (!d.ip) return 'give this VM an IP / CIDR';
+      if (!d.gateway) return 'give this VM a gateway';
+      if ((+d.cpu || 0) < 1 || (+d.mem || 0) < 1 || (+d.disk || 0) < 5) return 'set vCPU, RAM (GB) and disk (≥5 GB)';
+      for (let j = 0; j < rcN(); j++) {
+        if (j === ni) continue; const o = drafts[j]; if (!o) continue;
+        if (o.hostname === d.hostname) return 'two VMs share the name ' + d.hostname;
+        if (o.ip === d.ip) return 'two VMs share the address ' + d.ip;
+      }
+      return '';
+    }
+    // fill the VM page for VM `i` — its saved draft, else carry the previous VM's
+    // network + resources forward with a fresh hostname/IP
+    function loadNodeInputs(i) {
+      nodeHead();
+      const d = drafts[i], prev = drafts[i - 1], S = (id, v) => { $(id).value = v; };
+      if (d) {
+        S('rcHost', d.hostname); $('rcNode').value = d.nodeKey || ''; ddRefresh($('rcNode'));
+        S('rcIp', d.ip); S('rcGw', d.gateway); S('rcDns', d.dns); S('rcVlan', d.vlan);
+        S('rcBridge', d.bridge); S('rcCpu', d.cpu); S('rcMem', d.mem); S('rcDisk', d.disk);
+      } else {
+        S('rcHost', suggestName(i)); S('rcIp', '');
+        S('rcGw', prev ? prev.gateway : ''); S('rcDns', prev ? prev.dns : '');
+        S('rcVlan', prev ? prev.vlan : ''); S('rcBridge', prev ? prev.bridge : 'vmbr0');
+        S('rcCpu', prev ? prev.cpu : (R.cores || 2));
+        S('rcMem', prev ? prev.mem : ((+R.mem || 4096) / 1024));
+        S('rcDisk', prev ? prev.disk : (R.disk || 40));
+        $('rcNode').value = prev ? (prev.nodeKey || '') : ''; ddRefresh($('rcNode'));
+      }
+      renderCap('rcCap', nodeByKey($('rcNode').value));
+      setMsg('');
+    }
+
+    // open the recipe modal for a recipe (a tile's dataset, or the chooser's).
+    // Assigned to the shared handle so the chooser can call it from any tab.
+    openRecipe = (data) => {
+      R = {...data};
+      $('rcTitle').textContent = 'Launch ' + R.label;
+      $('rcSpecNote').textContent = R.label + ' — pick the install method and where the image comes from below. '
+        + 'Each VM starts at ' + R.cores + ' vCPU · ' + (R.mem / 1024) + ' GB · ' + R.disk + ' GB, editable per VM.';
+      rcFillMethods();
+      $('rcMethod').value = (rcMethods().includes(R.method) ? R.method : rcMethods()[0]); ddRefresh($('rcMethod'));
+      $('rcImgSrc').value = 'download'; ddRefresh($('rcImgSrc')); RCIMGS = [];
+      ['rcHost','rcIp','rcGw','rcDns','rcVlan','rcUser','rcPass'].forEach(id => $(id).value = '');
+      $('rcBridge').value = 'vmbr0'; $('rcCount').value = 1;
+      $('rcCpu').value = R.cores || 2; $('rcMem').value = (+R.mem || 4096) / 1024; $('rcDisk').value = R.disk || 40;
+      $('rcAns').checked = false; $('rcAnsPick').hidden = true;
+      renderCap('rcCap', null);
+      $('rcProg').hidden = true; $('rcProg').innerHTML = '';
+      const lb = $('rcLaunch'); delete lb.dataset.done; lb.textContent = 'Next →'; lb.disabled = false;
+      ni = 0; drafts = []; nodes = []; applyRunId = ''; rcFillConns(); loadCluster();
+      rcApplyMethod();                          // initial control visibility (before nodes load)
+      showRcPage('setup'); setMsg('');
+      dlg.showModal();
+    };
+    document.querySelectorAll('[data-recipe]').forEach(b => b.addEventListener('click', () => openRecipe(b.dataset)));
+    $('rcConn').addEventListener('change', loadCluster);
+    $('rcMethod').addEventListener('change', rcApplyMethod);
+    $('rcImgSrc').addEventListener('change', rcApplySrc);
+    $('rcNode').addEventListener('change', () => renderCap('rcCap', nodeByKey($('rcNode').value)));
+    $('rcCount').addEventListener('input', () => { if (rpage === 'setup') showRcPage('setup'); });
+    $('rcAns').addEventListener('change', () => { $('rcAnsPick').hidden = !$('rcAns').checked; });
+    $('rcGen').addEventListener('click', () => {
+      const cs = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+      const a = new Uint32Array(18); crypto.getRandomValues(a);
+      $('rcPass').value = Array.from(a, x => cs[x % cs.length]).join('');
+    });
+
+    const sharedOK = () => !$('rcConn').value ? 'pick a host'
+      : ($('rcMethod').value === 'iso' && !$('rcImage').value) ? 'pick the installer ISO'
+      : ($('rcMethod').value === 'cloud' && $('rcImgSrc').value === 'onhost' && !$('rcImgPick').value) ? 'pick which cloud image on the host'
+      : ($('rcAns').checked && !$('rcAnsPb').value) ? 'pick the Ansible playbook to run after boot'
+      : ($('rcAns').checked && !$('rcUser').value.trim()) ? 'Ansible needs the OS user to log in as — fill it in'
+      : '';
+    // drafts → the vm list the generator expects, or null (+ message) if any is
+    // incomplete. Each VM carries its OWN host (d.conn) + node — a single-host run has
+    // them all equal; a multi-host run spans connections and the backend builds one
+    // aliased provider per connection. Passing this list to launch() keeps a failed
+    // retry validating a clean list, never a polluted one.
+    function buildVms() {
+      const t = rcN(), out = [];
+      for (let i = 0; i < t; i++) {
+        const d = drafts[i];
+        if (!d || !d.node || !d.conn) { setMsg('VM ' + (i + 1) + ' is incomplete — go back and finish it'); return null; }
+        out.push({hostname: d.hostname, connection: d.conn, node: d.node, ip: d.ip, gateway: d.gateway,
+          dns: (d.dns || '').split(',').map(s => s.trim()).filter(Boolean), vlan: d.vlan, bridge: d.bridge || 'vmbr0',
+          cores: +d.cpu || 0, mem_mb: Math.round((+d.mem || 0) * 1024), disk_gb: +d.disk || 0});
+      }
+      return out;
+    }
+    function buildReview() {
+      const rows = [], row = (k, v) => rows.push('<div class="tzrev-r"><span class="tzrev-k">' + esc(k) +
+        '</span><span class="tzrev-v">' + esc(v) + '</span></div>'),
+        H = t => rows.push('<div class="tzrev-h">' + esc(t) + '</div>');
+      const opt = sel => sel.value ? ((sel.options[sel.selectedIndex] || {}).textContent || sel.value) : '—';
+      H('Setup');
+      row('Host', opt($('rcConn')));
+      row('Method', opt($('rcMethod')));
+      if ($('rcMethod').value === 'iso') row('Installer ISO', opt($('rcImage')));
+      else { row('Image source', opt($('rcImgSrc')));
+        if ($('rcImgSrc').value === 'onhost') row('Image', opt($('rcImgPick'))); }
+      row('OS user', $('rcUser').value.trim() || '—');
+      if ($('rcAns').checked) row('Ansible', opt($('rcAnsPb')));
+      H('VMs');
+      const multi = RC_MULTI();
+      for (let i = 0; i < rcN(); i++) {
+        const d = drafts[i];
+        if (!d) { row('VM ' + (i + 1), '(incomplete)'); continue; }
+        const where = (multi ? (d.connName || '?') + ' · ' : '') + (d.node || '?');
+        row(d.hostname, where + ' · ' + d.ip + ' · ' + d.cpu + ' vCPU / ' + d.mem + ' GB / ' + d.disk + ' GB');
+      }
+      $('rcReview').innerHTML = '<div class="tzrev">' + rows.join('') + '</div>';
+    }
+    function showRcPage(p) {
+      rpage = p;
+      $('rcPgSetup').hidden = p !== 'setup'; $('rcPgNode').hidden = p !== 'node'; $('rcPgReview').hidden = p !== 'review';
+      $('rcBack').hidden = (p === 'setup');
+      const steps = 2 + rcN();
+      const no = p === 'setup' ? 1 : p === 'node' ? 2 + ni : steps;
+      $('rcCrumb').textContent = 'Step ' + no + ' of ' + steps;
+      const b = $('rcLaunch');
+      if (!b.dataset.done) b.textContent = (p === 'review') ? ('Create & launch ' + rcN() + ' →') : 'Next →';
+      if (p === 'node') nodeHead();
+      if (p === 'review') buildReview();
+      setMsg('');
+    }
+    function goNext() {
+      if (rpage === 'setup') { const e = sharedOK(); if (e) { setMsg(e); return; } ni = 0; showRcPage('node'); loadNodeInputs(0); return; }
+      if (rpage === 'node') {
+        const err = validateCurrentNode(); if (err) { setMsg(err); return; }
+        drafts[ni] = readNodeInputs();
+        if (ni < rcN() - 1) { ni++; showRcPage('node'); loadNodeInputs(ni); }
+        else showRcPage('review');
+        return;
+      }
+      if (rpage === 'review') { const vms = buildVms(); if (vms) launch(vms); }
+    }
+    function goBack() {
+      if (rpage === 'node') { drafts[ni] = readNodeInputs(); if (ni > 0) { ni--; showRcPage('node'); loadNodeInputs(ni); } else showRcPage('setup'); return; }
+      if (rpage === 'review') { ni = rcN() - 1; showRcPage('node'); loadNodeInputs(ni); }
+    }
+    $('rcLaunch').addEventListener('click', () => { const b = $('rcLaunch'); if (b.dataset.done) { dlg.close(); return; } goNext(); });
+    $('rcBack').addEventListener('click', goBack);
+    // reopen a running/finished install log from the completion message — the run
+    // keeps going server-side, so closing the wizard never loses it.
+    $('rcProg').addEventListener('click', e => {
+      const a = e.target.closest('.rc-loglink'); if (!a) return;
+      e.preventDefault(); dlg.close();
+      if (window.openTerraformOutput) openTerraformOutput(a.dataset.run, (R && R.label ? R.label : 'install') + ' — install log');
+    });
+
+    async function launch(nodes) {
+      const first = nodes[0];
+      const method = $('rcMethod').value, src = $('rcImgSrc').value;
+      const spec = {
+        os: R.os, method: method, connection: first.connection,
+        // iso → the picked ISO; cloud → resolved below (download leaves it empty)
+        image_volid: (method === 'iso' ? $('rcImage').value : ''), image_datastore: 'local', disk_datastore: 'local-lvm',
+        // spec-level network is only the fallback/default; each node overrides it
+        bridge: first.bridge, vlan: first.vlan, gateway: first.gateway, dns: first.dns,
+        os_user: $('rcUser').value.trim(), os_password: $('rcPass').value,
+        cores: +R.cores, mem_mb: +R.mem, disk_gb: +R.disk,
+        ansible_playbook: ($('rcAns').checked ? $('rcAnsPb').value : ''),
+        stack_name: first.hostname, is_prod: false, nodes: nodes
+      };
+      const prog = $('rcProg'); prog.hidden = false;
+      const say = t => { prog.innerHTML = t; };
+      const fail = t => { say('<span style="color:var(--danger-ink)">✕ ' + esc(t) + '</span>'); $('rcLaunch').disabled = false; };
+      const n = nodes.length, plural = n > 1 ? 's' : '';
+      $('rcLaunch').disabled = true; setMsg('');
+      // resolve the cloud image source before generating (download → the host pulls it)
+      if (method === 'cloud' && src === 'onhost') {
+        const volid = $('rcImgPick').value, rec = RCIMGS.find(im => im.volid === volid);
+        const targets = [...new Set(nodes.map(x => x.node))];
+        const missing = targets.filter(t => !(rec && rec.hosts.includes(t)));
+        if (missing.length) { fail('“' + (rec ? rec.name : volid) + '” is not on: ' + missing.join(', ') +
+          ' — upload it there, or place every VM on a host that has it'); return; }
+        spec.image_present = true; spec.image_volid = volid;
+      } else if (method === 'cloud' && src === 'stage') {
+        const s = await rcStage(nodes, say);
+        if (s.err) { fail('staging: ' + s.err); return; }
+        spec.image_present = true; spec.image_volid = s.volid;
+      }
+      say('Generating the stack…');
+      let sid;
+      try {
+        const d = await (await fetch('/provision/create', {method: 'POST',
+          headers: {'Content-Type': 'application/json'}, body: JSON.stringify(spec)})).json();
+        if (!d.ok) { fail(d.error || 'could not create'); return; }
+        sid = d.sid;
+      } catch (e) { fail(String(e)); return; }
+      const link = ' — <a href="/terraform?sec=stacks" style="color:var(--accent)">open the stack</a>';
+      const logLink = () => applyRunId
+        ? ' · <a href="#" class="rc-loglink" data-run="' + applyRunId + '" style="color:var(--accent)">⤢ reopen install log</a>' : '';
+      const run = async (action) => {
+        const fd = new FormData(); fd.set('sid', sid); fd.set('action', action);
+        const j = await (await fetch('/terraform/run', {method: 'POST', body: fd})).json();
+        if (!j.ok) return {err: j.error};
+        if (action === 'apply') applyRunId = j.run_id;   // remembered so the log stays reopenable
+        let p = {};
+        for (let i = 0; i < 400; i++) {
+          p = await (await fetch('/terraform/run/' + j.run_id + '.json?since=0')).json();
+          say(action + ' · ' + (p.done ? p.status : 'running…') + (p.took ? (' ' + p.took) : ''));
+          if (p.done) break;
+          await new Promise(r => setTimeout(r, 1500));
+        }
+        return p;
+      };
+      const ini = await run('init');
+      if (ini.err || ini.status !== 'ok') { fail('init: ' + (ini.err || ini.status)); prog.innerHTML += link; return; }
+      say('init ok — applying (creating ' + n + ' VM' + plural + ')… ' +
+        '<span style="color:var(--muted)">— safe to close; it keeps running &amp; reopens from the Runs tab</span>');
+      const ap = await run('apply');
+      if (ap.err || ap.status !== 'ok') { fail('apply ' + (ap.err || ap.status)); prog.innerHTML += link + logLink(); return; }
+      say('<span style="color:var(--ok-ink)">✓ launched — ' + n + ' VM' + plural +
+        ' created &amp; booting the installer</span>' + link + logLink());
+      // the VM is baked with our provision key + NOPASSWD sudo; run the chosen
+      // playbook on it as soon as it answers on SSH (the ISO install takes minutes)
+      if (spec.ansible_playbook) await runAnsible(sid, prog);
+      const b = $('rcLaunch'); b.dataset.done = '1'; b.textContent = 'Close'; b.disabled = false;
+    }
+
+    // WATCH the post-boot playbook — it is armed and driven SERVER-SIDE the moment
+    // apply starts, so closing this wizard never aborts it. Here we only poll the
+    // status endpoint to show progress, then follow the run's output once it starts.
+    // Everything below is reopenable from Ansible → Runs.
+    async function runAnsible(sid, prog) {
+      const head = prog.innerHTML;
+      const runsLink = ' · <a href="/ansible?sec=runs" style="color:var(--accent)">open in Ansible → Runs</a>';
+      const setA = html => {
+        prog.innerHTML = head;
+        const d = document.createElement('div'); d.style.marginTop = '10px';
+        d.innerHTML = '<div style="font-size:11px;color:var(--muted);text-transform:uppercase;' +
+          'letter-spacing:.4px;margin-bottom:4px">Ansible · runs on the server, safe to close</div>' + html;
+        prog.appendChild(d);
+      };
+      setA('<span style="color:var(--muted)">the playbook will run automatically once the VMs answer on SSH…</span>');
+      let runId = '';
+      for (let i = 0; i < 500 && !runId; i++) {   // poll the SERVER's status
+        let r;
+        try { r = await (await fetch('/provision/ansible/status?sid=' + encodeURIComponent(sid))).json(); }
+        catch (e) { setA('<span style="color:var(--danger-ink)">could not reach the portal: ' + esc(String(e)) + '</span>'); return; }
+        if (r.run_id) { runId = r.run_id; break; }
+        if (r.phase === 'failed') { setA('<span style="color:var(--danger-ink)">✕ ' + esc(r.error || 'the playbook could not start') + '</span>'); return; }
+        const msg = r.phase === 'waiting_ssh'
+          ? 'waiting for ' + esc(r.host || 'the VM') + ' to answer on SSH…'
+          : r.phase === 'waiting_apply' ? 'waiting for the VMs to finish creating…'
+          : 'arming the playbook…';
+        setA('<span style="color:var(--muted)">' + msg + '</span>');
+        await new Promise(res => setTimeout(res, 5000));
+      }
+      if (!runId) { setA('<span style="color:var(--muted)">still bringing the VMs up — the playbook will run on the server when they answer. Check' + runsLink + '.</span>'); return; }
+      for (let i = 0; i < 1200; i++) {            // follow the run's output
+        let p;
+        try { p = await (await fetch('/ansible/run/' + encodeURIComponent(runId) + '.json?since=0')).json(); }
+        catch (e) { setA('<span style="color:var(--danger-ink)">lost the run — reopen it' + runsLink + '</span>'); return; }
+        const tail = (p.text || '').split('\n').slice(-40).join('\n');
+        const st = p.done
+          ? '<span style="color:var(--' + (p.status === 'ok' ? 'ok' : 'danger') + '-ink)">playbook ' + esc(p.status) + '</span>' + runsLink
+          : '<span style="color:var(--muted)">running the playbook…</span>' + runsLink;
+        setA(st + (tail ? '<pre class="rc-out">' + esc(tail) + '</pre>' : ''));
+        if (p.done) return;
+        await new Promise(res => setTimeout(res, 2000));
+      }
+    }
+
+  }
+
+  /* ── shared: escaper + the VM power action ── */
+  const MAY_ACT = {{ 'true' if (may_apply and cfg.allow_apply) else 'false' }};
+  const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g,
+    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+  // the picked node's free capacity, as three usage bars — shared by both wizards'
+  // "This VM / This node" page so you can size the VM against what the host has left.
+  // `n` is a discover node row (cpu_cores/cpu_pct, mem_*_gb/mem_pct, disk_*_gb/disk_pct).
+  function nodeCapHtml(n) {
+    const tone = p => p >= 90 ? ' bad' : p >= 75 ? ' warn' : '';
+    const row = (p, k, v) => '<div class="rc-cap-row"><span class="rc-cap-k">' + k + '</span>' +
+      '<span class="rc-cap-bar' + tone(p) + '"><i style="width:' + Math.min(100, Math.max(3, p || 0)) + '%"></i></span>' +
+      '<span class="rc-cap-v">' + v + '</span></div>';
+    const s = t => '<span class="rc-cap-s">' + t + '</span>';
+    const cap = g => g >= 1024 ? (g / 1024).toFixed(g >= 10240 ? 0 : 1) + ' TB' : (Math.round(g * 10) / 10) + ' GB';
+    // Disk = the VM-disk datastore (where the disk actually lands), NOT the node
+    // root fs — the root fs (~90 GB) is misleading next to a multi-TB VM pool.
+    const dd = n.diskDs;
+    const disk = dd
+      ? row(dd.total_gb ? Math.round((dd.total_gb - dd.free_gb) / dd.total_gb * 100) : 0, 'Disk',
+          cap(dd.free_gb) + ' free ' + s('/ ' + cap(dd.total_gb) + ' · ' + esc(dd.id || 'local-lvm')))
+      : row(n.disk_pct, 'Disk', cap(n.disk_free_gb || 0) + ' free ' + s('/ ' + cap(n.disk_gb || 0) + ' · root fs'));
+    return '<div class="rc-cap-h">' + esc(n.node) + ' · free to allocate</div>' +
+      row(n.cpu_pct, 'CPU', (n.cpu_cores || 0) + ' cores ' + s('· ' + (n.cpu_pct || 0) + '% used')) +
+      row(n.mem_pct, 'RAM', cap(n.mem_free_gb || 0) + ' free ' + s('/ ' + cap(n.mem_gb || 0))) +
+      disk;
+  }
+  function renderCap(id, n) {
+    const el = document.getElementById(id); if (!el) return;
+    if (!n) { el.hidden = true; el.innerHTML = ''; return; }
+    el.innerHTML = nodeCapHtml(n); el.hidden = false;
+  }
+
+  // which power verbs apply to a VM in a given state — bulk actions skip the rest
+  function actionOK(status, action) {
+    if (action === 'start' || action === 'delete') return status === 'stopped';
+    return status === 'running';   // shutdown / reboot / stop
+  }
+  // the bare POST, no confirm — shared by the single-row vmAction and bulkAction
+  async function postAction(v, action) {
+    try {
+      const r = await (await fetch('/provision/vm/action', {method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({connection: v.connection_id, node: v.node, vmid: v.vmid, action})})).json();
+      return r.ok ? {ok: true} : {ok: false, error: r.error};
+    } catch (e) { return {ok: false, error: String(e)}; }
+  }
+  async function vmAction(v, action) {
+    if (action === 'delete') {   // typed-"Delete" confirmation — it destroys the VM and its disks
+      if (!(await window.confirmDelete(v.name + ' (#' + v.vmid + ') — the VM and its disks'))) return false;
+    } else if (action !== 'start') {
+      let msg = action.toUpperCase() + ' “' + v.name + '” (#' + v.vmid + ') on ' + v.node + '?';
+      if (action === 'stop') msg += '\n\nStop pulls the virtual power — anything unsaved in the guest is lost.';
+      if (!confirm(msg + '\n\nThis changes real infrastructure now.')) return false;
+    }
+    const r = await postAction(v, action);
+    if (!r.ok) { alert(action + ' failed: ' + r.error); return false; }
+    return true;
+  }
+
+  // one fixed set of VM action buttons, shared by the Instances table and the
+  // host-detail rows. Buttons are never hidden — the ones that don't apply to the
+  // current power state are DISABLED, so the row's controls never shift around.
+  // `attr` is the click hook the caller's wiring reads (data-act / data-va); pass
+  // `i` (the inventory index) only for the Instances table.
+  function vmBtns(status, attr, i) {
+    const running = status === 'running', stopped = status === 'stopped';
+    const di = (i == null ? '' : ' data-i="' + i + '"');
+    const btn = (act, cls, label, on, tip) =>
+      '<button class="abtn' + (cls ? ' ' + cls : '') + '" ' + attr + '="' + act + '"' + di +
+      (on ? '' : ' disabled') + (tip ? ' title="' + tip + '"' : '') + '>' + label + '</button>';
+    return btn('start', 'go', 'start', stopped) +
+      btn('shutdown', 'danger', 'shutdown', running) +
+      btn('reboot', '', 'reboot', running) +
+      btn('stop', 'danger', 'stop', running, 'force power off') +
+      btn('console', 'go', 'console', true, 'open the VM console (VNC)') +
+      btn('delete', 'danger', 'delete', stopped, stopped ? 'destroy this VM and its disks' : 'stop the VM before deleting');
+  }
+
+  /* ── VM hardware detail + edit modal ── */
+  const vmDlg = document.getElementById('vmDlg');
+  if (vmDlg) {
+    const $ = id => document.getElementById(id);
+    let cur = null;                               // the loaded detail dict
+    const fmtUp = s => { if (!s) return '—'; const d = Math.floor(s / 86400),
+      h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+      return (d ? d + 'd ' : '') + (d || h ? h + 'h ' : '') + (d ? '' : m + 'm'); };
+    const msg = (t, cls) => { const m = $('vmdMsg'); m.textContent = t || ''; m.className = 'rc-msg' + (cls ? ' ' + cls : ''); };
+
+    // opened from the Instances table and the host-detail rows; `v` carries at least
+    // {connection_id, node, vmid, name}. The full hardware is fetched live.
+    window.openVmDetail = async (v) => {
+      cur = null; vmDlg._v = v;
+      $('vmdTitle').textContent = v.name || ('VM ' + v.vmid);
+      $('vmdSub').textContent = '#' + v.vmid + ' · ' + v.node;
+      $('vmdBody').innerHTML = '<div class="sec-note" style="padding:14px 2px;">Loading hardware…</div>';
+      $('vmdSave').disabled = true; msg('');
+      vmDlg.showModal();
+      try {
+        const r = await (await fetch('/provision/vm/detail?connection=' + encodeURIComponent(v.connection_id) +
+          '&node=' + encodeURIComponent(v.node) + '&vmid=' + encodeURIComponent(v.vmid))).json();
+        if (!r.ok) { $('vmdBody').innerHTML = '<div class="flash err">' + esc(r.error) + '</div>'; return; }
+        cur = r.detail; renderVmd(cur);
+      } catch (e) { $('vmdBody').innerHTML = '<div class="flash err">' + esc(String(e)) + '</div>'; }
+    };
+
+    function renderVmd(d) {
+      const ro = !MAY_ACT;
+      const live = '<div class="vmd-live"><span class="inv-dot ' + esc(d.status) + '"></span><b>' +
+        esc(d.status || 'unknown') + '</b>' + (d.status === 'running'
+          ? '<span class="vmd-sep">·</span>up ' + esc(fmtUp(d.uptime)) +
+            '<span class="vmd-sep">·</span>CPU ' + esc(d.cpu_pct) + '%' +
+            '<span class="vmd-sep">·</span>RAM ' + esc(d.mem_used_gb) + ' / ' + esc(d.mem_max_gb) + ' GB' : '') + '</div>';
+      const fact = (k, v) => '<div class="vmd-fact"><span>' + k + '</span><b>' + v + '</b></div>';
+      const facts = '<div class="vmd-facts">' +
+        fact('OS type', esc(d.ostype || '—')) + fact('Guest agent', d.agent_on ? 'on' : 'off') +
+        fact('CPU type', esc(d.cpu_type)) + fact('Start on boot', d.onboot ? 'yes' : 'no') +
+        fact('Balloon', d.balloon_mb != null ? esc((d.balloon_mb / 1024).toFixed(1)) + ' GB' : '—') +
+        fact('Boot order', esc(d.boot || '—')) + '</div>';
+      const inp = (id, val, at) => '<input id="' + id + '" value="' + esc(val) + '"' + (ro ? ' disabled' : '') + ' ' + (at || '') + '>';
+      const edit =
+        '<div class="vmd-sec">Hardware' + (ro ? ' <span class="rc-opt">read-only for your role</span>' : '') + '</div>' +
+        '<div class="vmd-edit">' +
+          '<label>vCPU cores' + inp('vmdCores', d.cores, 'type="number" min="1" max="512"') + '</label>' +
+          '<label>CPU sockets' + inp('vmdSockets', d.sockets, 'type="number" min="1" max="8"') + '</label>' +
+          '<label>Memory (GB)' + inp('vmdMem', (d.memory_mb / 1024), 'type="number" min="0.03" step="0.5"') + '</label>' +
+        '</div>' +
+        '<div class="vmd-sec">Identity</div>' +
+        '<div class="vmd-edit">' +
+          '<label class="vmd-wide">Name' + inp('vmdName', d.name, 'type="text" spellcheck="false" autocomplete="off"') + '</label>' +
+          '<label class="vmd-wide">Tags <span class="rc-opt">comma or space separated</span>' +
+            inp('vmdTags', d.tags.join(', '), 'type="text" spellcheck="false" autocomplete="off"') + '</label>' +
+          '<label class="vmd-wide">Description<textarea id="vmdDesc" rows="2"' + (ro ? ' disabled' : '') + '>' + esc(d.description) + '</textarea></label>' +
+        '</div>';
+      const disks = d.disks.length
+        ? '<table class="jenkins vmd-tbl"><thead><tr><th>Disk</th><th>Storage</th><th style="width:90px;">Size</th></tr></thead><tbody>' +
+          d.disks.map(x => '<tr><td>' + esc(x.id) + '</td><td>' + esc(x.storage) + '</td><td class="inv-num">' + esc(x.size_gb) + ' GB</td></tr>').join('') + '</tbody></table>'
+        : '<div class="sec-note">No disks.</div>';
+      const nics = d.nics.length
+        ? '<table class="jenkins vmd-tbl"><thead><tr><th>NIC</th><th>Model</th><th>Bridge</th><th>VLAN</th><th>MAC</th><th style="width:44px;">FW</th></tr></thead><tbody>' +
+          d.nics.map(n => '<tr><td>' + esc(n.id) + '</td><td>' + esc(n.model) + '</td><td>' + esc(n.bridge || '—') + '</td><td>' +
+            esc(n.vlan || '—') + '</td><td class="sec-note">' + esc(n.mac || '—') + '</td><td>' + (n.firewall ? 'on' : 'off') + '</td></tr>').join('') + '</tbody></table>'
+        : '<div class="sec-note">No network interfaces.</div>';
+      $('vmdBody').innerHTML = live + facts + edit +
+        '<div class="vmd-sec">Disks <span class="rc-opt">resize on the host for now</span></div>' + disks +
+        '<div class="vmd-sec">Network</div>' + nics;
+      $('vmdSave').disabled = ro;
+      $('vmdSave').title = ro ? 'read-only for your role, or apply is switched off' : '';
+    }
+
+    // only the fields that actually differ from the loaded VM are sent
+    function changes() {
+      const d = cur, ch = {};
+      const cores = +$('vmdCores').value; if (cores && cores !== d.cores) ch.cores = cores;
+      const sock = +$('vmdSockets').value; if (sock && sock !== d.sockets) ch.sockets = sock;
+      const memMb = Math.round(parseFloat($('vmdMem').value) * 1024);
+      if (memMb && memMb !== d.memory_mb) ch.memory_mb = memMb;
+      const name = $('vmdName').value.trim(); if (name !== d.name) ch.name = name;
+      const tags = $('vmdTags').value.split(/[,;\s]+/).map(t => t.trim()).filter(Boolean);
+      if (tags.join(';').toLowerCase() !== d.tags.join(';').toLowerCase()) ch.tags = tags;
+      const desc = $('vmdDesc').value; if (desc !== d.description) ch.description = desc;
+      return ch;
+    }
+    $('vmdSave').addEventListener('click', async () => {
+      if (!cur || $('vmdSave').disabled) return;
+      const ch = changes();
+      if (!Object.keys(ch).length) { msg('nothing changed'); return; }
+      const v = vmDlg._v;
+      if (!confirm('Apply to “' + (cur.name || ('#' + cur.vmid)) + '”?\n\nchanging: ' +
+        Object.keys(ch).join(', ') + '\n\nThis changes real infrastructure now.')) return;
+      $('vmdSave').disabled = true; msg('saving…');
+      try {
+        const r = await (await fetch('/provision/vm/edit', {method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({connection: v.connection_id, node: v.node, vmid: v.vmid, changes: ch})})).json();
+        if (!r.ok) { msg('✕ ' + r.error, 'err'); $('vmdSave').disabled = false; return; }
+        const cpuRam = ('cores' in ch || 'memory_mb' in ch || 'sockets' in ch) && cur.status === 'running';
+        msg('✓ saved: ' + r.changed.join(', ') + (cpuRam ? ' · reboot to apply CPU/RAM' : ''), 'ok');
+        if (window.reloadInventory) setTimeout(window.reloadInventory, 1200);
+      } catch (e) { msg('✕ ' + String(e), 'err'); $('vmdSave').disabled = false; }
+    });
+    $('vmdConsole').addEventListener('click', () => {
+      const v = vmDlg._v; if (!v) return;
+      window.open('/provision/console?connection=' + encodeURIComponent(v.connection_id) +
+        '&node=' + encodeURIComponent(v.node) + '&vmid=' + encodeURIComponent(v.vmid) +
+        '&name=' + encodeURIComponent(v.name || ('vm-' + v.vmid)), 'console-' + v.vmid, 'width=1120,height=780');
+    });
+  }
+
+  /* ── the VM inventory (EC2-style) ── */
+  const invBody = document.getElementById('invBody');
+  if (invBody) {
+    const $ = id => document.getElementById(id);
+    let ALL = [], flt = {q: '', conn: '', proj: '', env: '', status: ''}, sort = {key: 'name', dir: 1};
+
+    // ── bulk selection (a Set keyed by connection|vmid so it survives every
+    //    re-render — sort, filter, quiet refresh) ──
+    const selected = new Set();
+    const vmKey = v => v.connection_id + '|' + v.vmid;
+    const bulkBar = $('invBulk');
+    function syncBulk() {
+      if (!bulkBar) return;
+      // drop keys whose VM is no longer present (e.g. a deleted VM after refresh)
+      const live = new Set(ALL.map(vmKey));
+      selected.forEach(k => { if (!live.has(k)) selected.delete(k); });
+      const n = selected.size;
+      bulkBar.hidden = !n;
+      const nEl = $('invBulkN'); if (nEl) nEl.textContent = n;
+      const all = $('invAll');
+      if (all) {
+        const boxes = invBody.querySelectorAll('.invpick');
+        const on = invBody.querySelectorAll('.invpick:checked').length;
+        all.checked = boxes.length && on === boxes.length;
+        all.indeterminate = on > 0 && on < boxes.length;
+      }
+    }
+    function clearSel() {
+      selected.clear();
+      invBody.querySelectorAll('.invpick').forEach(cb => { cb.checked = false; });
+      syncBulk();
+    }
+    // run one power verb across every ticked VM it applies to. One confirm for the
+    // batch (typed "Delete" for delete); invalid-state VMs are skipped and named.
+    async function bulkAction(action) {
+      const picks = Array.from(invBody.querySelectorAll('.invpick:checked'))
+        .map(cb => ALL[+cb.dataset.i]).filter(Boolean);
+      const valid = picks.filter(v => actionOK(v.status, action));
+      const skipped = picks.length - valid.length;
+      if (!valid.length) {
+        alert('None of the ' + picks.length + ' selected can be ' + action + 'ed in their current state.');
+        return;
+      }
+      const noun = valid.length + ' VM' + (valid.length === 1 ? '' : 's');
+      if (action === 'delete') {
+        if (!(await window.confirmDelete(noun + ' and their disks'))) return;
+      } else {
+        let msg = action.toUpperCase() + ' ' + noun + '?';
+        if (skipped) msg += ' (' + skipped + ' skipped — wrong state)';
+        if (action === 'stop') msg += '\n\nStop pulls the virtual power — anything unsaved in each guest is lost.';
+        if (!confirm(msg + '\n\nThis changes real infrastructure now.')) return;
+      }
+      bulkBar.querySelectorAll('button,a').forEach(b => b.style.pointerEvents = 'none');
+      valid.forEach(v => { const cb = invBody.querySelector('.invpick[data-k="' + CSS.escape(vmKey(v)) + '"]');
+        const tr = cb && cb.closest('tr'); if (tr) { tr.style.opacity = '.5'; tr.style.pointerEvents = 'none'; } });
+      const results = await Promise.all(valid.map(v => postAction(v, action)));
+      const bad = results.filter(r => !r.ok);
+      if (bad.length) alert(action + ' failed on ' + bad.length + ' of ' + valid.length + ':\n' +
+        bad.map(b => '• ' + b.error).slice(0, 5).join('\n'));
+      clearSel();
+      $('invShown').textContent = action + ' sent to ' + noun + ' — updating…';
+      let tries = 0;
+      (function settle() {
+        setTimeout(async () => { await load(true); if (++tries < 3) settle(); }, tries === 0 ? 1500 : 3500);
+      })();
+    }
+    if (bulkBar) {
+      bulkBar.querySelectorAll('[data-bulk]').forEach(b =>
+        b.addEventListener('click', () => bulkAction(b.dataset.bulk)));
+      $('invBulkClear').addEventListener('click', clearSel);
+    }
+
+    function passes(v) {
+      if (!inRegion(v)) return false;
+      if (flt.conn && v.connection_id !== flt.conn) return false;
+      if (flt.proj && v.project !== flt.proj) return false;
+      if (flt.env && v.env !== flt.env) return false;
+      if (flt.status === 'running' && v.status !== 'running') return false;
+      if (flt.status === 'stopped' && v.status !== 'stopped') return false;
+      if (flt.status === 'managed' && !v.managed_by) return false;
+      if (flt.status === 'unmanaged' && (v.managed_by || v.template)) return false;
+      if (flt.q) { const h = (v.name + ' ' + v.vmid + ' ' + v.node + ' ' +
+        v.tags.join(' ') + ' ' + v.pool).toLowerCase();
+        if (!h.includes(flt.q)) return false; }
+      return true;
+    }
+
+    const CMP = { name: v => (v.name || '').toLowerCase(), state: v => v.status || '',
+      node: v => v.node || '', cluster: v => v.connection || '', env: v => v.env || '',
+      vcpu: v => v.cores || 0, mem: v => v.mem_gb || 0, disk: v => v.disk_gb || 0 };
+    function sortRows(rows) {
+      const f = CMP[sort.key] || CMP.name;
+      return rows.sort((a, b) => { const x = f(a), y = f(b);
+        return (x < y ? -1 : x > y ? 1 : 0) * sort.dir; });
+    }
+
+    function actions(v, i) {
+      return MAY_ACT ? vmBtns(v.status, 'data-act', i) : '';
+    }
+
+    function render() {
+      const rows = sortRows(ALL.filter(passes));
+      $('invShown').textContent = rows.length + ' of ' + ALL.length + ' VMs';
+      $('invReset').hidden = !(flt.q || flt.conn || flt.proj || flt.env || flt.status);
+      if (!ALL.length) { invBody.innerHTML =
+        '<div class="sec-note" style="padding:14px 2px;">No VMs found on any connected cluster.</div>'; return; }
+      if (!rows.length) { invBody.innerHTML =
+        '<div class="sec-note" style="padding:14px 2px;">Nothing matches the filter.</div>'; return; }
+      const body = rows.map(v => {
+        const i = ALL.indexOf(v);
+        const mng = v.managed_by
+          ? '<a class="badge" href="/terraform?sec=stacks" title="managed by stack ' + esc(v.managed_by.stack_name) + '">' + esc(v.managed_by.stack_name) + '</a>'
+          : (v.template ? '<span class="hint">template</span>' : '<span class="hint">—</span>');
+        const env = v.env_label ? '<span class="envtag ' + esc(v.env_tone) + '">' + esc(v.env_label) + '</span>' : '<span class="na">—</span>';
+        const tags = v.tags.length ? '<div class="inv-tags">' + v.tags.map(t => '<span class="inv-tag">' + esc(t) + '</span>').join('') + '</div>' : '<span class="hint">—</span>';
+        const pick = MAY_ACT ? '<td class="inv-pickcol"><input type="checkbox" class="invpick" data-i="' + i + '" data-k="' + esc(vmKey(v)) + '"></td>' : '';
+        return '<tr>' + pick + '<td class="jname vmopen" data-i="' + i + '" title="hardware detail &amp; edit"><b>' + esc(v.name || '(no name)') + '</b>' +
+          '<span class="sec-note"> #' + esc(v.vmid) + (v.kind === 'lxc' ? ' · CT' : '') + '</span></td>' +
+          '<td><span class="inv-dot ' + esc(v.status) + '"></span>' + esc(v.status || '—') + '</td>' +
+          '<td>' + esc(v.node) + '</td>' +
+          '<td>' + esc(v.connection) + '<span class="sec-note"><br>' + esc(v.project) + ' · ' + esc(v.region) + '</span></td>' +
+          '<td>' + env + '</td>' +
+          '<td class="inv-num">' + esc(v.cores) + '</td>' +
+          '<td class="inv-num">' + esc(v.mem_gb) + ' GB</td>' +
+          '<td class="inv-num">' + esc(v.disk_gb) + ' GB</td>' +
+          '<td>' + tags + '</td><td>' + mng + '</td>' +
+          (MAY_ACT ? '<td class="mid actcol inv-act">' + actions(v, i) + '</td>' : '') + '</tr>';
+      }).join('');
+      const arrow = k => sort.key === k ? (sort.dir > 0 ? ' ▲' : ' ▼') : '';
+      const th = (k, label, style) => '<th class="inv-th" data-sort="' + k + '" style="cursor:pointer;' + style + '">' + label + arrow(k) + '</th>';
+      invBody.innerHTML = '<div style="overflow-x:auto;"><table class="jenkins"><thead><tr>' +
+        (MAY_ACT ? '<th class="inv-pickcol no-sort"><input type="checkbox" id="invAll" title="select all shown"></th>' : '') +
+        th('name', 'Name', 'min-width:150px;') + th('state', 'State', 'width:96px;') +
+        th('node', 'Node', 'width:80px;') + th('cluster', 'Cluster', 'min-width:130px;') +
+        th('env', 'Env', 'width:96px;') + th('vcpu', 'vCPU', 'width:56px;') +
+        th('mem', 'Mem', 'width:80px;') + th('disk', 'Disk', 'width:80px;') +
+        '<th style="min-width:110px;">Tags</th><th style="min-width:120px;">Managed</th>' +
+        (MAY_ACT ? '<th class="actcol" style="min-width:160px;">Actions</th>' : '') +
+        '</tr></thead><tbody>' + body + '</tbody></table></div>';
+      invBody.querySelectorAll('.inv-th').forEach(h => h.addEventListener('click', () => {
+        const k = h.dataset.sort;
+        if (sort.key === k) sort.dir = -sort.dir; else { sort.key = k; sort.dir = 1; }
+        render();
+      }));
+      // re-apply the persisted selection (the table is rebuilt on every sort /
+      // filter / refresh, so ticks live in `selected`, keyed by connection|vmid)
+      invBody.querySelectorAll('.invpick').forEach(cb => {
+        cb.checked = selected.has(cb.dataset.k);
+        cb.addEventListener('click', e => e.stopPropagation());   // don't open the modal
+        cb.addEventListener('change', () => {
+          if (cb.checked) selected.add(cb.dataset.k); else selected.delete(cb.dataset.k);
+          syncBulk();
+        });
+      });
+      const allcb = document.getElementById('invAll');
+      if (allcb) allcb.addEventListener('change', () => {
+        invBody.querySelectorAll('.invpick').forEach(cb => {
+          cb.checked = allcb.checked;
+          if (allcb.checked) selected.add(cb.dataset.k); else selected.delete(cb.dataset.k);
+        });
+        syncBulk();
+      });
+      syncBulk();
+      invBody.querySelectorAll('[data-act]').forEach(btn => btn.addEventListener('click', async () => {
+        if (btn.disabled) return;
+        const v = ALL[+btn.dataset.i]; if (!v) return;
+        if (btn.dataset.act === 'console') {
+          window.open('/provision/console?connection=' + encodeURIComponent(v.connection_id) +
+            '&node=' + encodeURIComponent(v.node) + '&vmid=' + encodeURIComponent(v.vmid) +
+            '&name=' + encodeURIComponent(v.name || ('vm-' + v.vmid)),
+            'console-' + v.vmid, 'width=1120,height=780');
+          return;
+        }
+        btn.disabled = true;
+        const tr = btn.closest('tr');
+        const ok = await vmAction(v, btn.dataset.act);
+        if (!ok) { btn.disabled = false; return; }
+        // optimistic: dim just this row + freeze its controls, no page blank
+        if (tr) { tr.style.opacity = '.5'; tr.style.pointerEvents = 'none'; }
+        $('invShown').textContent = btn.dataset.act + ' sent — updating…';
+        // quiet refresh keeps the table, scroll and filters in place; poll a
+        // couple of times so a graceful shutdown (which takes a few seconds) is
+        // caught once it settles, without ever blanking the fleet.
+        let tries = 0;
+        (function settle() {
+          setTimeout(async () => { await load(true); if (++tries < 3) settle(); }, tries === 0 ? 1500 : 3500);
+        })();
+      }));
+      // clicking a VM name opens the hardware detail/edit modal
+      invBody.querySelectorAll('.vmopen').forEach(c => c.addEventListener('click', () => {
+        const v = ALL[+c.dataset.i]; if (v && window.openVmDetail) window.openVmDetail(v);
+      }));
+    }
+
+    window.reloadInventory = () => load(true);    // quiet refresh after a modal save — no blank
+
+    function tiles(counts) {
+      const box = $('invTiles');
+      const T = [
+        {k: '', big: counts.total, cap: 'VMs'},
+        {k: 'running', big: counts.running, cap: 'running'},
+        {k: 'stopped', big: counts.stopped, cap: 'stopped'},
+        {k: 'managed', big: counts.managed, cap: 'portal-managed'},
+        {k: 'unmanaged', big: counts.unmanaged, cap: 'unmanaged'},
+      ];
+      box.innerHTML = T.map(t => '<button type="button" class="inv-pill" data-st="' + t.k + '">' +
+        '<b>' + t.big + '</b> <span>' + t.cap + '</span></button>').join('');
+      box.hidden = false;
+      box.querySelectorAll('.inv-pill').forEach(b => b.addEventListener('click', () => {
+        flt.status = (flt.status === b.dataset.st) ? '' : b.dataset.st;
+        $('invStatus').value = flt.status;
+        box.querySelectorAll('.inv-pill').forEach(x =>
+          x.classList.toggle('on', x.dataset.st === flt.status && flt.status !== ''));
+        render();
+      }));
+    }
+
+    function fillSelect(sel, values) {
+      const keep = sel.value;
+      const first = sel.querySelector('option').outerHTML;
+      sel.innerHTML = first + [...new Set(values)].filter(Boolean).sort()
+        .map(v => '<option value="' + esc(v) + '">' + esc(v) + '</option>').join('');
+      sel.value = keep;
+    }
+
+    // quiet=true refreshes IN PLACE — no "Loading…" blank, so a power action does
+    // not read as a full-page reload; the table is only swapped once fresh data
+    // is in hand (render() replaces innerHTML instantly, keeping scroll/filters).
+    async function load(quiet) {
+      if (!quiet) invBody.innerHTML = '<div class="sec-note" style="padding:14px 2px;">Loading the fleet…</div>';
+      try {
+        const d = await (await fetch('/provision/inventory')).json();
+        if (!d.ok) { if (!quiet) invBody.innerHTML = '<div class="flash err">' + esc(d.error) + '</div>'; return; }
+        ALL = d.vms || [];
+        tiles(d.counts || {});
+        // rebuild the filter selects only on a FULL load — a quiet refresh keeps
+        // the user's current cluster/project/env/state filter untouched.
+        if (!quiet) {
+          $('invFilter').hidden = false;
+          const cs = $('invConn'); cs.innerHTML = '<option value="">all clusters</option>' +
+            (d.connections || []).map(c => '<option value="' + esc(c.id) + '">' + esc(c.name) + '</option>').join('');
+          ddRefresh(cs);
+          fillSelect($('invProj'), ALL.map(v => v.project));
+          fillSelect($('invEnv'), ALL.map(v => v.env).filter(Boolean));
+        }
+        let note = '';
+        if ((d.errors || []).length) note = '<div class="flash warn" style="margin-bottom:10px;">' +
+          d.errors.map(e => esc(e.connection) + ': ' + esc(e.error)).join('<br>') + '</div>';
+        render();
+        if (note) invBody.insertAdjacentHTML('afterbegin', note);
+      } catch (e) { if (!quiet) invBody.innerHTML = '<div class="flash err">' + esc(e) + '</div>'; }
+    }
+
+    const resync = () => document.querySelectorAll('.inv-pill').forEach(x =>
+      x.classList.toggle('on', x.dataset.st === flt.status && flt.status !== ''));
+    $('invSearch').addEventListener('input', e => { flt.q = e.target.value.trim().toLowerCase(); render(); });
+    $('invConn').addEventListener('change', e => { flt.conn = e.target.value; render(); });
+    $('invProj').addEventListener('change', e => { flt.proj = e.target.value; render(); });
+    $('invEnv').addEventListener('change', e => { flt.env = e.target.value; render(); });
+    $('invStatus').addEventListener('change', e => { flt.status = e.target.value; resync(); render(); });
+    $('invReset').addEventListener('click', () => {
+      flt = {q: '', conn: '', proj: '', env: '', status: ''};
+      ['invSearch', 'invConn', 'invProj', 'invEnv', 'invStatus'].forEach(id => $(id).value = '');
+      resync(); render();
+    });
+    $('invReload').addEventListener('click', load);
+    load();
+  }
+
+  /* ── the Hosts overview (grouped by cluster; click a node for VMs + disks) ── */
+  const hostBody = document.getElementById('hostBody');
+  if (hostBody) {
+    const tone = pct => pct >= 90 ? 'bad' : pct >= 75 ? 'warn' : 'ok';
+    const bar = pct => '<div class="hbar"><div class="hbar-f ' + tone(pct) +
+      '" style="width:' + Math.min(100, pct) + '%"></div></div>';
+    const mini = (label, pct) => '<span class="hstat">' + label + ' <span class="mbar"><span class="mbar-f ' +
+      tone(pct) + '" style="width:' + Math.min(100, pct) + '%"></span></span> ' + pct + '%</span>';
+
+    function tiles(c) {
+      const box = document.getElementById('hostTiles');
+      const T = [['nodes', c.nodes], ['online', c.online], ['vCPU total', c.vcpu],
+        ['GB RAM free', c.mem_free], ['GB disk free', c.disk_free], ['VMs', c.vms]];
+      box.innerHTML = T.map(t => '<span class="inv-pill" style="cursor:default"><b>' +
+        t[1] + '</b> <span>' + t[0] + '</span></span>').join('');
+      box.hidden = false;
+    }
+
+    const nodeRow = h =>
+      '<div class="hnode" data-conn="' + esc(h.connection_id) + '" data-node="' + esc(h.node) + '">' +
+      '<div class="hnode-row"><span class="inv-dot ' + (h.online ? 'running' : 'stopped') + '"></span>' +
+      '<b class="hnode-name">' + esc(h.node) + '</b>' +
+      mini('CPU', h.cpu_pct) + mini('RAM', h.mem_pct) + mini('Disk', h.disk_pct) +
+      '<span class="hchip">' + h.cpu_cores + ' vCPU</span>' +
+      '<span class="hchip">' + h.mem_free_gb + ' GB free</span>' +
+      '<span class="hchip">' + h.vms + ' VMs</span>' +
+      '<span style="flex:1"></span><span class="hcaret">▾</span></div>' +
+      '<div class="hdetail" hidden></div></div>';
+
+    function render(hs) {
+      const shown = hs.filter(inRegion);
+      const on = shown.filter(h => h.online);
+      const sum = (a, f) => a.reduce((s, h) => s + (h[f] || 0), 0);
+      tiles({nodes: shown.length, online: on.length, vcpu: sum(shown, 'cpu_cores'),
+        mem_free: Math.round(sum(on, 'mem_free_gb')), disk_free: Math.round(sum(on, 'disk_free_gb')),
+        vms: sum(shown, 'vms')});
+      document.getElementById('hostShown').textContent = shown.length + ' node' + (shown.length === 1 ? '' : 's');
+      if (!shown.length) {
+        hostBody.innerHTML = '<div class="sec-note" style="padding:14px 2px;">No hosts' +
+          (REGION ? ' in this region' : '') + '. <a href="#" id="hEmptyAdd">Add one →</a></div>';
+        const a = document.getElementById('hEmptyAdd');
+        if (a) a.addEventListener('click', e => { e.preventDefault(); document.getElementById('hostAdd').click(); });
+        return;
+      }
+      const groups = {};
+      shown.forEach(h => { (groups[h.connection_id] = groups[h.connection_id] || {c: h, nodes: []}).nodes.push(h); });
+      hostBody.innerHTML = Object.values(groups).map(g => {
+        const c = g.c, kind = c.is_cluster ? 'cluster' : 'standalone host';
+        return '<div class="hcluster"><div class="hcl-head"><b>' + esc(c.connection) + '</b>' +
+          '<span class="hint"> · ' + esc(c.region) + ' · ' + kind + ' · ' + g.nodes.length +
+            ' node' + (g.nodes.length > 1 ? 's' : '') + '</span>' +
+          (c.env_label ? ' <span class="envtag ' + esc(c.env_tone) + '">' + esc(c.env_label) + '</span>' : '') +
+          '<span style="flex:1"></span>' +
+          '<button class="abtn hcl-edit" data-conn="' + esc(c.connection_id) +
+            '" title="edit the endpoint or replace the credential">edit</button>' +
+          '<button class="abtn danger hcl-rm" data-conn="' + esc(c.connection_id) + '" data-name="' +
+            esc(c.connection) + '" data-n="' + g.nodes.length + '">remove from portal</button></div>' +
+          g.nodes.map(nodeRow).join('') + '</div>';
+      }).join('');
+      wire();
+    }
+
+    function hostVmActs(v) {   // mirrors the Instances tab's actions, wired via data-va
+      return MAY_ACT ? vmBtns(v.status, 'data-va') : '';
+    }
+    function detailHtml(d) {
+      const actCol = MAY_ACT ? '<th style="min-width:150px;">Actions</th>' : '';
+      const vms = d.vms.length ? '<div class="hvms"><table class="jenkins"><thead><tr><th>VM</th><th style="width:88px;">State</th>' +
+        '<th style="width:54px;">vCPU</th><th style="width:72px;">Mem</th><th style="width:72px;">Disk</th>' + actCol + '</tr></thead><tbody>' +
+        d.vms.map(v => '<tr data-vmid="' + esc(v.vmid) + '" data-name="' + esc(v.name || ('vm-' + v.vmid)) +
+          '" data-status="' + esc(v.status) + '"><td class="jname vmopen" title="' + esc(v.name || '(no name)') + ' — hardware detail &amp; edit"><b class="vmname">' + esc(v.name || '(no name)') + '</b> <span class="sec-note">#' +
+          esc(v.vmid) + (v.kind === 'lxc' ? ' · CT' : '') + '</span></td>' +
+          '<td><span class="inv-dot ' + esc(v.status) + '"></span>' + esc(v.status) + '</td>' +
+          '<td class="inv-num">' + v.cores + '</td><td class="inv-num">' + v.mem_gb + ' GB</td>' +
+          '<td class="inv-num">' + v.disk_gb + ' GB</td>' +
+          (MAY_ACT ? '<td class="mid actcol inv-act">' + hostVmActs(v) + '</td>' : '') + '</tr>').join('') + '</tbody></table></div>'
+        : '<div class="sec-note" style="padding:6px 2px;">No VMs on this node.</div>';
+      const stores = d.storages.length ? d.storages.map(s =>
+        '<div class="hstore"><div class="hstore-h"><b>' + esc(s.id) + '</b> <span class="hint">' + esc(s.type) + '</span>' +
+          '<span style="flex:1"></span><span class="sec-note">' + s.free_gb + ' / ' + s.total_gb +
+          ' GB free · ' + s.used_pct + '% used</span></div>' + bar(s.used_pct) + '</div>').join('')
+        : '<div class="sec-note">No datastores.</div>';
+      return '<div class="hdetail-in"><div class="hdetail-col"><div class="hdetail-t">VMs on this node</div>' + vms +
+        '</div><div class="hdetail-col"><div class="hdetail-t">Datastores &amp; disks</div>' + stores + '</div></div>';
+    }
+
+    async function loadDetail(el, box) {
+      box.innerHTML = '<div class="sec-note" style="padding:10px 2px;">Loading…</div>';
+      try {
+        const d = await (await fetch('/provision/host/detail?connection=' + encodeURIComponent(el.dataset.conn) +
+          '&node=' + encodeURIComponent(el.dataset.node))).json();
+        if (!d.ok) { box.innerHTML = '<div class="flash err">' + esc(d.error) + '</div>'; return; }
+        box.innerHTML = detailHtml(d); box.dataset.loaded = '1';
+        wireDetail(el, box);
+      } catch (e) { box.innerHTML = '<div class="flash err">' + esc(e) + '</div>'; }
+    }
+    function wireDetail(el, box) {
+      box.querySelectorAll('[data-va]').forEach(btn => btn.addEventListener('click', async e => {
+        e.stopPropagation();
+        const tr = btn.closest('tr'), act = btn.dataset.va;
+        const v = {connection_id: el.dataset.conn, node: el.dataset.node,
+                   vmid: tr.dataset.vmid, name: tr.dataset.name};
+        if (act === 'console') {
+          window.open('/provision/console?connection=' + encodeURIComponent(v.connection_id) +
+            '&node=' + encodeURIComponent(v.node) + '&vmid=' + encodeURIComponent(v.vmid) +
+            '&name=' + encodeURIComponent(v.name), 'console-' + v.vmid, 'width=1120,height=780');
+          return;
+        }
+        btn.disabled = true;
+        const ok = await vmAction(v, act);
+        if (ok) setTimeout(() => loadDetail(el, box), 1200);   // reflect the new state
+        else btn.disabled = false;
+      }));
+      // clicking a VM name here opens the same hardware detail/edit modal
+      box.querySelectorAll('.vmopen').forEach(c => c.addEventListener('click', e => {
+        e.stopPropagation();
+        const tr = c.closest('tr');
+        if (window.openVmDetail) window.openVmDetail({connection_id: el.dataset.conn,
+          node: el.dataset.node, vmid: tr.dataset.vmid, name: tr.dataset.name});
+      }));
+    }
+    async function expand(el) {
+      const box = el.querySelector('.hdetail');
+      el.classList.toggle('open');
+      if (!el.classList.contains('open')) { box.hidden = true; return; }
+      box.hidden = false;
+      if (box.dataset.loaded) return;
+      await loadDetail(el, box);
+    }
+
+    async function removeConn(sid, name, n) {
+      if (!(await window.confirmDelete(name + ' (' + n + ' node' + (n > 1 ? 's' : '') +
+        ') from the portal — the Proxmox itself is left untouched'))) return;
+      fetch('/provision/host/remove', {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({connection: sid})}).then(r => r.json()).then(r => {
+        if (!r.ok) alert('remove failed: ' + r.error); else load();
+      }).catch(e => alert(String(e)));
+    }
+
+    function wire() {
+      hostBody.querySelectorAll('.hnode-row').forEach(r => r.addEventListener('click', () => expand(r.closest('.hnode'))));
+      hostBody.querySelectorAll('.hcl-edit').forEach(b => b.addEventListener('click', e => {
+        e.stopPropagation(); window.openEditHost(b.dataset.conn);
+      }));
+      hostBody.querySelectorAll('.hcl-rm').forEach(b => b.addEventListener('click', e => {
+        e.stopPropagation(); removeConn(b.dataset.conn, b.dataset.name, +b.dataset.n);
+      }));
+    }
+
+    async function load() {
+      hostBody.innerHTML = '<div class="sec-note" style="padding:14px 2px;">Loading hosts…</div>';
+      try {
+        const d = await (await fetch('/provision/hosts')).json();
+        if (!d.ok) { hostBody.innerHTML = '<div class="flash err">' + esc(d.error) + '</div>'; return; }
+        render(d.hosts || []);
+        // A connection that failed to authenticate has no nodes, so it appears
+        // ONLY here — give each errored connection its own edit / remove so a bad
+        // credential can be fixed without leaving the page.
+        if ((d.errors || []).length) {
+          hostBody.insertAdjacentHTML('afterbegin',
+            '<div class="flash warn" style="display:block;margin-bottom:12px;">' +
+            d.errors.map(e => '<div style="display:flex;justify-content:space-between;' +
+              'align-items:center;gap:12px;padding:3px 0;">' +
+              '<span><b>' + esc(e.connection) + '</b> — ' + esc(e.error) + '</span>' +
+              (e.sid ? '<span style="display:flex;gap:6px;flex:0 0 auto;">' +
+                '<button class="abtn herr-edit" data-conn="' + esc(e.sid) + '">edit</button>' +
+                '<button class="abtn danger herr-rm" data-conn="' + esc(e.sid) + '" data-name="' +
+                  esc(e.connection) + '">remove</button></span>' : '') +
+              '</div>').join('') + '</div>');
+          hostBody.querySelectorAll('.herr-edit').forEach(b =>
+            b.addEventListener('click', () => window.openEditHost(b.dataset.conn)));
+          hostBody.querySelectorAll('.herr-rm').forEach(b =>
+            b.addEventListener('click', () => removeConn(b.dataset.conn, b.dataset.name, 0)));
+        }
+      } catch (e) { hostBody.innerHTML = '<div class="flash err">' + esc(e) + '</div>'; }
+    }
+    document.getElementById('hostReload').addEventListener('click', load);
+    load();
+  }
+
+  /* ── the Images / ISO subtab (per-host: space, upload, delete) ── */
+  const imgBody = document.getElementById('imgBody');
+  if (imgBody) {
+    const connSel = document.getElementById('imgConn');
+    const fileInput = document.getElementById('isoFile');
+    let pendingNode = null, byNode = {};
+    // only the clusters in the selected region are offered here (fixes the bug
+    // where a region with no cluster still showed another region's images)
+    const avail = (IMG_CLUSTERS || []).filter(inRegion);
+    const curConn = () => connSel.value || (avail[0] && avail[0].id) || '';
+
+    if (avail.length > 1) {
+      connSel.hidden = false;
+      connSel.innerHTML = avail.map(c => '<option value="' + esc(c.id) + '">' + esc(c.name) +
+        (c.region ? ' · ' + esc(c.region) : '') + '</option>').join('');
+      ddRefresh(connSel);   // reflect the un-hide + options on the themed wrapper
+    }
+
+    async function delIso(conn, node, im) {
+      if (!(await window.confirmDelete(im.name + ' from ' + node + ' (removes the file from the datastore)'))) return;
+      const r = await (await fetch('/provision/iso/delete', {method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({connection: conn, node, storage: (im.volid.split(':')[0] || 'local'), volid: im.volid})})).json();
+      if (!r.ok) { alert('delete failed: ' + r.error); return; }
+      loadImg();
+    }
+
+    async function loadImg() {
+      const conn = curConn();
+      if (!avail.length) { imgBody.innerHTML = '<div class="sec-note" style="padding:14px 2px;">No cluster' +
+        (REGION ? ' in this region' : '') + '. Add one from the <a href="/terraform?sec=hosts">Hosts</a> tab.</div>'; return; }
+      imgBody.innerHTML = '<div class="sec-note" style="padding:14px 2px;">Loading images…</div>';
+      try {
+        const d = await (await fetch('/provision/iso?connection=' + encodeURIComponent(conn))).json();
+        if (!d.ok) { imgBody.innerHTML = '<div class="flash err">' + esc(d.error) + '</div>'; return; }
+        byNode = {}; (d.hosts || []).forEach(h => byNode[h.node] = h.images);
+        imgBody.innerHTML = (d.hosts || []).map(h => {
+          const c = h.capacity;
+          const cap = c ? '<span class="hchip" title="datastore space">' + c.free_gb + ' GB free of ' +
+            c.total_gb + ' GB · ' + c.used_pct + '% used</span>' : '';
+          const list = h.error ? '<div class="flash err">' + esc(h.error) + '</div>'
+            : (h.images.length ? '<table class="jenkins"><tbody>' + h.images.map((im, i) =>
+                '<tr><td class="jname">' + esc(im.name) + '</td>' +
+                '<td style="width:78px;"><span class="badge">' + esc(im.content) + '</span></td>' +
+                '<td class="inv-num" style="width:78px;">' + esc(im.size_gb) + ' GB</td>' +
+                '<td class="mid" style="width:70px;"><button class="abtn danger img-del" data-node="' + esc(h.node) +
+                  '" data-i="' + i + '">delete</button></td></tr>').join('') + '</tbody></table>'
+              : '<div class="sec-note" style="padding:8px 2px;">No ISO or image on this node yet.</div>');
+          return '<div class="img-host"><div class="img-host-h"><b>' + esc(h.node) + '</b>' +
+            (h.online ? '' : ' <span class="sv sv-medium">offline</span>') +
+            ' <span class="hint">· ' + esc(h.storage) + '</span>' + cap + '<span style="flex:1"></span>' +
+            '<button type="button" class="btn-ghost tbtn img-up" data-node="' + esc(h.node) + '">⤒ Upload</button></div>' +
+            list +
+            '<div class="img-prog" data-node="' + esc(h.node) + '" hidden><div class="img-bar"></div><span></span></div></div>';
+        }).join('') || '<div class="sec-note">No nodes.</div>';
+        imgBody.querySelectorAll('.img-up').forEach(b => b.addEventListener('click', () => {
+          pendingNode = b.dataset.node;
+          const c = document.getElementById('imgContent').value;   // narrow the file dialog to the kind
+          fileInput.accept = c === 'import' ? '.raw,.img,.qcow2,.vmdk'
+            : c === 'vztmpl' ? '.tar.gz,.tgz,.tar.xz,.tar.zst' : '.iso,.img';
+          fileInput.click();
+        }));
+        imgBody.querySelectorAll('.img-del').forEach(b => b.addEventListener('click', () =>
+          delIso(conn, b.dataset.node, byNode[b.dataset.node][+b.dataset.i])));
+      } catch (e) { imgBody.innerHTML = '<div class="flash err">' + esc(e) + '</div>'; }
+    }
+
+    if (fileInput) fileInput.addEventListener('change', () => {
+      const f = fileInput.files[0], node = pendingNode; pendingNode = null;
+      if (!f || !node) return;
+      const prog = imgBody.querySelector('.img-prog[data-node="' + CSS.escape(node) + '"]');
+      const bar = prog.querySelector('.img-bar'), lab = prog.querySelector('span');
+      prog.hidden = false; bar.style.width = '0%'; lab.textContent = 'uploading ' + f.name + '…';
+      const fd = new FormData();
+      fd.set('file', f); fd.set('connection', curConn()); fd.set('node', node); fd.set('storage', 'local');
+      fd.set('content', document.getElementById('imgContent').value || 'iso');
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/provision/iso/upload');
+      xhr.upload.onprogress = e => { if (e.lengthComputable) { const p = Math.round(e.loaded / e.total * 100);
+        bar.style.width = p + '%'; lab.textContent = f.name + ' — ' + p + '% (through the portal)'; } };
+      xhr.onload = () => { let r = {}; try { r = JSON.parse(xhr.responseText); } catch (e) {}
+        if (r.ok) { lab.textContent = '✓ uploaded ' + f.name; setTimeout(loadImg, 900); }
+        else { lab.textContent = '✕ ' + (r.error || ('HTTP ' + xhr.status)); bar.style.background = 'var(--danger)'; } };
+      xhr.onerror = () => { lab.textContent = '✕ upload failed'; bar.style.background = 'var(--danger)'; };
+      xhr.send(fd);
+      fileInput.value = '';
+    });
+
+    if (connSel) connSel.addEventListener('change', loadImg);
+    document.getElementById('imgReload').addEventListener('click', loadImg);
+    loadImg();
+  }
+
+  /* ── add-host wizard (register a Proxmox connection) ── */
+  const hostDlg = document.getElementById('hostDlg'), hostAddBtn = document.getElementById('hostAdd');
+  if (hostDlg && hostAddBtn) {
+    const $ = id => document.getElementById(id);
+    const hmsg = (t, ok) => { const m = $('hMsg'); m.textContent = t || ''; m.classList.toggle('ok', !!ok); };
+    const typeMode = () => (document.querySelector('input[name=htype]:checked') || {}).value || 'cluster';
+    const authTok = () => document.querySelector('input[name=hauth]:checked').value === 'token';
+    const applyAuthToRow = (row) => {
+      const t = authTok();
+      row.querySelector('.hm-token').hidden = !t;
+      row.querySelector('.hm-user').hidden = t;
+      row.querySelector('.hm-pass').hidden = t;
+    };
+    const authToggle = () => {
+      const tok = authTok();
+      $('hTokenBox').style.display = tok ? '' : 'none';
+      $('hUserBox').style.display = tok ? 'none' : '';
+      $('hPassBox').style.display = tok ? 'none' : '';
+      $('hRows').querySelectorAll('.hmrow').forEach(applyAuthToRow);
+    };
+    const updateAddBtn = () => {
+      if (typeMode() === 'standalone') {
+        const n = $('hRows').children.length;
+        if (hostDlg._sid) {                       // editing: row 1 is the edit, the rest are new
+          const added = n - 1;
+          $('hAdd').textContent = added > 0
+            ? ('Save + add ' + added + ' host' + (added === 1 ? '' : 's') + ' →') : 'Save changes';
+        } else $('hAdd').textContent = 'Add ' + n + ' host' + (n === 1 ? '' : 's') + ' →';
+        return;
+      }
+      $('hAdd').textContent = hostDlg._sid ? 'Save changes' : 'Add host →';
+    };
+    // pre = {name,endpoint,insecure,username} to fill; sid = this row EDITS that
+    // connection (its credential is kept unless retyped), else it ADDS a new one.
+    const newHostRow = (pre, sid) => {
+      const row = document.createElement('div');
+      row.className = 'hmrow';
+      if (sid) row.dataset.sid = sid;
+      row.innerHTML =
+        '<input class="hm-name" placeholder="name" spellcheck="false" autocomplete="off">' +
+        '<input class="hm-ep" placeholder="https://10.0.0.5:8006" spellcheck="false" autocomplete="off">' +
+        '<button type="button" class="abtn danger hm-del" title="remove this host">✕</button>' +
+        '<div class="hm-cred">' +
+          '<input class="hm-token" placeholder="root@pam!portal=xxxxxxxx-…" spellcheck="false" autocomplete="off">' +
+          '<input class="hm-user" placeholder="root@pam" spellcheck="false" autocomplete="off" hidden>' +
+          '<input class="hm-pass" type="password" placeholder="password" autocomplete="new-password" hidden>' +
+          '<label style="display:inline-flex;gap:6px;align-items:center;white-space:nowrap;font-size:12px;color:var(--muted);flex:0 0 auto;">' +
+            '<input type="checkbox" class="hm-ins" style="width:auto;"> skip TLS</label>' +
+        '</div>';
+      if (pre) {
+        row.querySelector('.hm-name').value = pre.name || '';
+        row.querySelector('.hm-ep').value = pre.endpoint || '';
+        row.querySelector('.hm-ins').checked = !!pre.insecure;
+        if (pre.username) row.querySelector('.hm-user').value = pre.username;
+      }
+      if (sid) {                                  // editing this one — credential kept unless retyped
+        row.querySelector('.hm-token').placeholder = 'blank = keep current token';
+        row.querySelector('.hm-pass').placeholder = 'blank = keep';
+        row.querySelector('.hm-del').title = 'drop this host from the batch (does not delete it)';
+      }
+      row.querySelector('.hm-del').addEventListener('click', () => {
+        if ($('hRows').children.length > 1) { row.remove(); updateAddBtn(); }
+        else hmsg('keep at least one host');
+      });
+      $('hRows').appendChild(row);
+      applyAuthToRow(row); updateAddBtn();
+    };
+    const typeToggle = () => {
+      const multi = typeMode() === 'standalone';
+      $('hSingle').hidden = multi; $('hMulti').hidden = !multi;
+      if (multi && !$('hRows').children.length) {
+        if (hostDlg._sid)                         // editing → seed row 1 with the connection being edited
+          newHostRow({ name: $('hName').value, endpoint: $('hEndpoint').value,
+            insecure: $('hInsecure').checked, username: $('hUser').value }, hostDlg._sid);
+        else newHostRow();
+      }
+      updateAddBtn();
+    };
+    document.querySelectorAll('input[name=htype]').forEach(r => r.addEventListener('change', typeToggle));
+    document.querySelectorAll('input[name=hauth]').forEach(r => r.addEventListener('change', authToggle));
+    $('hAddRow').addEventListener('click', () => newHostRow());
+
+    hostAddBtn.addEventListener('click', () => {
+      hostDlg._sid = '';                                    // ADD mode
+      $('hDlgTitle').textContent = 'Add a Proxmox host';
+      $('hTypeRow').hidden = false; $('hEditNote').hidden = true;
+      document.querySelector('input[name=htype][value=cluster]').checked = true;
+      $('hRows').innerHTML = '';
+      ['hName', 'hEndpoint', 'hToken', 'hUser', 'hPass', 'hEnv'].forEach(id => $(id).value = '');
+      $('hInsecure').checked = false; $('hRegion').value = ''; ddRefresh($('hRegion'));
+      document.querySelector('input[name=hauth][value=token]').checked = true;
+      authToggle(); typeToggle();
+      hmsg(''); hostDlg.showModal();
+    });
+    // EDIT mode — opens on the single form for THIS connection, but the
+    // cluster/standalone chooser stays visible: switch to Standalone to keep
+    // editing this host AND register more under the same region/env in one save.
+    // The token/password come back blank (never returned) and are only sent if retyped.
+    window.openEditHost = async (sid) => {
+      try {
+        const d = await (await fetch('/provision/host/get?sid=' + encodeURIComponent(sid))).json();
+        hostDlg.showModal();
+        if (!d.ok) { hmsg('✕ ' + d.error); return; }
+        hostDlg._sid = sid;
+        $('hDlgTitle').textContent = 'Edit ' + (d.name || 'host');
+        $('hTypeRow').hidden = false; $('hEditNote').hidden = false;
+        document.querySelector('input[name=htype][value=cluster]').checked = true;
+        $('hRows').innerHTML = '';
+        $('hSingle').hidden = false; $('hMulti').hidden = true;
+        $('hName').value = d.name || ''; $('hEndpoint').value = d.endpoint || '';
+        $('hToken').value = ''; $('hUser').value = d.username || ''; $('hPass').value = '';
+        $('hEnv').value = d.env || ''; $('hInsecure').checked = !!d.insecure;
+        document.querySelector('input[name=hauth][value=' + (d.auth === 'pass' ? 'pass' : 'token') + ']').checked = true;
+        authToggle();
+        $('hRegion').value = d.rgid || ''; ddRefresh($('hRegion'));
+        $('hAdd').textContent = 'Save changes'; hmsg('');
+      } catch (e) { hostDlg.showModal(); hmsg('✕ ' + e); }
+    };
+    const shared = () => {
+      const ro = $('hRegion').selectedOptions[0];
+      return { rgid: $('hRegion').value, pid: (ro && ro.dataset.pid) || '', env: $('hEnv').value.trim() };
+    };
+    const hspec = () => {
+      const auth = document.querySelector('input[name=hauth]:checked').value;
+      return { sid: hostDlg._sid || '',
+        name: $('hName').value.trim(), endpoint: $('hEndpoint').value.trim(),
+        api_token: auth === 'token' ? $('hToken').value.trim() : '',
+        username: auth === 'pass' ? $('hUser').value.trim() : '',
+        password: auth === 'pass' ? $('hPass').value : '',
+        insecure: $('hInsecure').checked, ...shared() };
+    };
+    const multiSpecs = () => {
+      const auth = document.querySelector('input[name=hauth]:checked').value, sh = shared();
+      return Array.from($('hRows').children).map(r => {
+        const q = s => r.querySelector(s);
+        return { sid: r.dataset.sid || '',
+          name: q('.hm-name').value.trim(), endpoint: q('.hm-ep').value.trim(),
+          api_token: auth === 'token' ? q('.hm-token').value.trim() : '',
+          username: auth === 'pass' ? q('.hm-user').value.trim() : '',
+          password: auth === 'pass' ? q('.hm-pass').value : '',
+          insecure: q('.hm-ins').checked, ...sh };
+      }).filter(s => s.sid || s.name || s.endpoint);
+    };
+    const testOne = async (spec) => (await (await fetch('/provision/host/test', {method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify(spec)})).json());
+    $('hTest').addEventListener('click', async () => {
+      $('hTest').disabled = true;
+      try {
+        if (typeMode() === 'standalone') {
+          // only rows with an entered credential are testable — an edit row left
+          // blank keeps its sealed credential, which the test cannot re-supply.
+          const specs = multiSpecs().filter(s => s.api_token || (s.username && s.password));
+          if (!specs.length) { hmsg('enter a credential on a host to test it (edited hosts keep theirs)'); $('hTest').disabled = false; return; }
+          hmsg('testing ' + specs.length + '…', true);
+          const bad = [];
+          for (const s of specs) {
+            try { const r = await testOne(s); if (!r.ok) bad.push((s.name || s.endpoint || '?') + ': ' + r.error); }
+            catch (e) { bad.push((s.name || s.endpoint || '?') + ': ' + e); }
+          }
+          hmsg(bad.length ? ('✕ ' + bad.join(' · ')) : ('✓ all ' + specs.length + ' reachable'), !bad.length);
+        } else {
+          hmsg('testing…', true);
+          const r = await testOne(hspec());
+          if (r.ok) hmsg('✓ Proxmox ' + r.version + ' · ' + r.nodes + ' node' + (r.nodes === 1 ? '' : 's') +
+            (r.cluster ? ' (cluster)' : ' (standalone)'), true);
+          else hmsg('✕ ' + r.error);
+        }
+      } catch (e) { hmsg('✕ ' + e); }
+      $('hTest').disabled = false;
+    });
+    $('hAdd').addEventListener('click', async () => {
+      const editing = !!hostDlg._sid;
+      if (typeMode() === 'standalone') {          // works for add AND edit (row 1 = the edit)
+        const specs = multiSpecs();
+        if (!specs.length) return hmsg('add at least one host');
+        for (const s of specs) {
+          if (!s.name) return hmsg('every host needs a name');
+          if (!s.endpoint) return hmsg('every host needs an endpoint');
+          // a NEW host (no sid) must carry a credential; an edit row may keep its own
+          if (!s.sid && !s.api_token && !(s.username && s.password)) return hmsg('every new host needs a credential');
+        }
+        hmsg('saving ' + specs.length + ' host' + (specs.length === 1 ? '' : 's') + '…', true); $('hAdd').disabled = true;
+        try {
+          const r = await (await fetch('/provision/host/add-many', {method: 'POST',
+            headers: {'Content-Type': 'application/json'}, body: JSON.stringify({hosts: specs})})).json();
+          $('hAdd').disabled = false;
+          if (!r.ok) return hmsg('✕ ' + r.error);
+          const bad = (r.results || []).filter(x => !x.ok);
+          if (bad.length) return hmsg('✕ ' + bad.map(b => b.name + ': ' + b.error).join(' · '));
+          hostDlg.close(); location.href = '/terraform?sec=hosts';
+        } catch (e) { hmsg('✕ ' + e); $('hAdd').disabled = false; }
+        return;
+      }
+      const s = hspec();
+      if (!s.name) return hmsg('give the host a name');
+      if (!s.endpoint) return hmsg('the endpoint is required');
+      if (!editing && !s.api_token && !(s.username && s.password))
+        return hmsg('enter an API token, or a username + password');
+      hmsg(editing ? 'saving…' : 'adding…', true); $('hAdd').disabled = true;
+      try {
+        const r = await (await fetch(editing ? '/provision/host/edit' : '/provision/host/add',
+          {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(s)})).json();
+        if (!r.ok) { hmsg('✕ ' + r.error); $('hAdd').disabled = false; return; }
+        hostDlg.close(); location.href = '/terraform?sec=hosts';
+      } catch (e) { hmsg('✕ ' + e); $('hAdd').disabled = false; }
+    });
+  }
+
+  /* ── Talos cluster wizard (control-plane + worker stepper → auto-launch) ── */
+  const tzDlg = document.getElementById('talosDlg'), tzTile = document.getElementById('talosTile');
+  if (tzDlg) {   // the modal is always present; the overview tile (tzTile) is optional
+    const $ = id => document.getElementById(id);
+    // page wizard: cluster → image → node 0 → node 1 → … → review. `drafts[i]` holds
+    // each node's raw inputs so Back keeps everything; vms are built at create time.
+    let TR = {}, page = 'cluster', ni = 0, drafts = [], TZNODES = [];
+    const tmsg = (t, ok) => { const m = $('tzMsg'); m.textContent = t || ''; m.classList.toggle('ok', !!ok); };
+    const tcp = () => Math.max(1, +$('tzCp').value || 1);
+    const total = () => tcp() + Math.max(0, +$('tzW').value || 0);
+    const roleOf = i => i < tcp() ? 'controlplane' : 'worker';   // i is 0-based
+
+    // the Host (Proxmox connection) is chosen once on the Cluster page — same as
+    // the Linux recipe — and the whole cluster lands on it. TZNODES are that host's
+    // nodes; each node page then picks WHICH node. The config-drive store is that
+    // host's snippet-capable datastores.
+    const TZ_MULTI = () => $('tzConn').value === '__multi__';
+    function tzFillConns() {
+      const cs = (IMG_CLUSTERS || []).filter(inRegion);
+      // ≥2 hosts → offer spreading the cluster across them: the standard Talos HA shape
+      // is one control-plane node per physical Proxmox, so no single host takes the cluster down.
+      const multi = cs.length > 1
+        ? '<option value="__multi__">⁂ Multiple hosts — pick a host per node</option>' : '';
+      $('tzConn').innerHTML = '<option value="">' +
+        (cs.length ? 'choose a host…' : ('no host' + (REGION ? ' in this region' : '') + ' — add one on the Hosts tab')) +
+        '</option>' + multi + cs.map(c => '<option value="' + esc(c.id) + '">' + esc(c.name) + '</option>').join('');
+      ddRefresh($('tzConn'));
+    }
+    // discover ONE connection's nodes, tagged with their host and snippet datastores
+    async function tzDiscover(cid) {
+      const cname = ((IMG_CLUSTERS || []).find(c => c.id === cid) || {}).name || cid;
+      const d = await (await fetch('/provision/discover?connection=' + encodeURIComponent(cid))).json();
+      if (!d.ok) throw new Error(d.error || 'could not read ' + cname);
+      // the VM disk lands on 'local-lvm' — carry that datastore's capacity onto every
+      // node for the Disk row (read once from node[0]; datastores uniform per connection)
+      const dds = ((d.nodes[0] || {}).storages || []).find(s => s.id === 'local-lvm') || null;
+      return (d.nodes || []).map(n => ({
+        ...n, conn: cid, connName: cname, online: n.online !== false, diskDs: dds,
+        cpu: n.cpu_cores, mem: n.mem_free_gb,
+        snips: (n.storages || []).filter(s => (s.content || []).includes('snippets')).map(s => s.id),
+      }));
+    }
+    async function tzLoadNodes() {
+      const nsel = $('tzNode'), ssel = $('tzSnip'), multi = TZ_MULTI();
+      const put = (el, h) => { el.innerHTML = h; ddRefresh(el); };
+      const conn = $('tzConn').value;
+      TZNODES = [];
+      if (!conn) {
+        put(nsel, '<option value="">choose a host first</option>');
+        put(ssel, '<option value="">choose a host first</option>');
+        return;
+      }
+      put(nsel, '<option value="">discovering nodes…</option>');
+      put(ssel, '<option value="">discovering…</option>');
+      try {
+        if (multi) {                              // fan out over every region host; skip any that won't answer
+          for (const c of (IMG_CLUSTERS || []).filter(inRegion)) {
+            try { TZNODES.push(...await tzDiscover(c.id)); } catch (e) { /* one host down ≠ dead picker */ }
+          }
+          if (!TZNODES.length) { put(nsel, '<option value="">no host answered — check the Hosts tab</option>'); return; }
+        } else {
+          TZNODES = await tzDiscover(conn);
+        }
+      } catch (e) { put(nsel, '<option value="">' + esc(String(e.message || e)) + '</option>'); return; }
+      put(nsel, TZNODES.length
+        ? '<option value="">choose a node…</option>' + TZNODES.map((n, i) =>
+            '<option value="' + i + '"' + (n.online ? '' : ' disabled') + '>' +
+            (multi ? esc(n.connName) + ' · ' : '') + esc(n.node) +
+            (n.cpu != null ? ' — ' + n.cpu + 'c · ' + n.mem + ' GB RAM free' : '') +
+            (n.online ? '' : ' (offline)') + '</option>').join('')
+        : '<option value="">no reachable node on this host</option>');
+      // the config drive store is one value applied to every node, so in multi-host mode
+      // offer only datastores snippets-enabled on EVERY host (intersection), not the union
+      const byConn = {}; TZNODES.forEach(n => { byConn[n.conn] = n.snips; });   // datastores uniform per connection
+      const cids = Object.keys(byConn);
+      let snips = cids.length ? byConn[cids[0]].slice() : [];
+      for (const c of cids.slice(1)) snips = snips.filter(s => byConn[c].includes(s));
+      put(ssel, snips.length
+        ? snips.map(s => '<option value="' + esc(s) + '">' + esc(s) + '</option>').join('')
+        : '<option value="">' + (multi ? 'no datastore has snippets on every host — enable it in Proxmox first'
+                                       : 'no datastore has snippets — enable it in Proxmox first') + '</option>');
+    }
+
+    const suggestName = (i) => {   // i is 0-based
+      const name = $('tzName').value.trim() || 'talos';
+      return i < tcp() ? (name + '-cp-' + (i + 1)) : (name + '-w-' + (i - tcp() + 1));
+    };
+    function nodeHead() {          // label the "This node" page for node `ni`
+      const isCP = roleOf(ni) === 'controlplane';
+      const role = isCP ? 'control-plane' : 'worker';
+      const rNum = isCP ? ni + 1 : ni + 1 - tcp();
+      const rTot = isCP ? tcp() : Math.max(0, +$('tzW').value || 0);
+      $('tzStep').textContent = role + ' — ' + rNum + ' of ' + rTot;
+    }
+
+    // open the Talos wizard (from the tile's dataset, or the chooser's). Assigned
+    // to the shared handle so the chooser can call it from any tab.
+    openTalos = (data) => {
+      TR = {...data};
+      ['tzHost','tzIp','tzGw','tzDns','tzVlan'].forEach(id => $(id).value = '');
+      $('tzBridge').value = 'vmbr0'; $('tzVer').value = 'v1.13.8'; $('tzName').value = 'talos';
+      $('tzCp').value = 1; $('tzW').value = 2;
+      $('tzPod').value = '10.244.0.0/16'; $('tzSvc').value = '10.96.0.0/12'; $('tzVip').value = ''; $('tzNtp').value = '';
+      $('tzImg').value = 'download'; ddRefresh($('tzImg'));
+      $('tzImgPickRow').hidden = true; TZIMGS = []; tzImgHint();
+      $('tzCpu').value = TR.cores || 4; $('tzMem').value = (+TR.mem || 4096) / 1024; $('tzDisk').value = TR.disk || 20;
+      renderCap('tzCap', null);
+      $('tzProg').hidden = true; $('tzProg').innerHTML = '';
+      const lb = $('tzLaunch'); delete lb.dataset.done; lb.disabled = false;
+      tzFillConns();                              // the region's hosts; pick one on this page
+      ni = 0; drafts = []; TZNODES = []; tzLoadNodes();
+      showPage('cluster'); tmsg(''); tzDlg.showModal();
+    };
+    if (tzTile) tzTile.addEventListener('click', () => openTalos(tzTile.dataset));
+    $('tzConn').addEventListener('change', tzLoadNodes);   // reload this host's nodes + snippet stores
+    function tzImgHint() {
+      const v = $('tzImg').value, n = $('tzImgNote');
+      // only the two paths with a real caveat show a note; download/on-host stay quiet
+      if (v === 'stage') {
+        n.hidden = false; n.classList.remove('rc-warn');
+        n.textContent = 'Pushes the full ~image to every host you place a node on — slow over a VPN. '
+          + 'Place all nodes on one host to upload once.';
+      } else if (v === 'iso') {
+        n.hidden = false; n.classList.add('rc-warn');
+        n.textContent = '⚠ Experimental & unverified. Config is applied over the network, so the node needs '
+          + 'DHCP + reachability in maintenance mode — it will not work on a static-only VLAN.';
+      } else {
+        n.hidden = true; n.textContent = ''; n.classList.remove('rc-warn');
+      }
+    }
+    $('tzImg').addEventListener('change', tzImgChange);
+    const tzPick = () => $('tzNode').value === '' ? null : TZNODES[+$('tzNode').value];
+    $('tzNode').addEventListener('change', () => renderCap('tzCap', tzPick()));
+
+    // the node page's raw inputs (no validation) — the unit stored in drafts[]
+    function readNodeInputs() {
+      return {hostname: $('tzHost').value.trim(), connIdx: $('tzNode').value,
+        ip: $('tzIp').value.trim(), gateway: $('tzGw').value.trim(), dns: $('tzDns').value,
+        vlan: $('tzVlan').value.trim(), bridge: $('tzBridge').value.trim() || 'vmbr0',
+        cpu: $('tzCpu').value, mem: $('tzMem').value, disk: $('tzDisk').value};
+    }
+    function validateCurrentNode() {   // '' = ok, else an error string
+      const d = readNodeInputs();
+      if (!d.hostname) return 'give this node a hostname';
+      if (d.connIdx === '' || !TZNODES[+d.connIdx]) return 'pick a node for this Talos node';
+      if (!d.ip) return 'give this node an IP / CIDR';
+      if (!d.gateway) return 'give this node a gateway';
+      if ((+d.cpu || 0) < 1 || (+d.mem || 0) < 1 || (+d.disk || 0) < 5) return 'set vCPU, RAM (GB) and disk (≥5 GB)';
+      for (let j = 0; j < total(); j++) {
+        if (j === ni) continue; const o = drafts[j]; if (!o) continue;
+        if (o.hostname === d.hostname) return 'two nodes share the name ' + d.hostname;
+        if (o.ip === d.ip) return 'two nodes share the IP ' + d.ip;
+      }
+      return '';
+    }
+    // fill the node page for node `i` — its saved draft, else carry the previous
+    // node's network + resources forward with a fresh hostname/IP
+    function loadNodeInputs(i) {
+      nodeHead();
+      const d = drafts[i], prev = drafts[i - 1], S = (id, v) => { $(id).value = v; };
+      if (d) {
+        S('tzHost', d.hostname); $('tzNode').value = d.connIdx; ddRefresh($('tzNode'));
+        S('tzIp', d.ip); S('tzGw', d.gateway); S('tzDns', d.dns); S('tzVlan', d.vlan);
+        S('tzBridge', d.bridge); S('tzCpu', d.cpu); S('tzMem', d.mem); S('tzDisk', d.disk);
+      } else {
+        S('tzHost', suggestName(i)); S('tzIp', '');
+        S('tzGw', prev ? prev.gateway : ''); S('tzDns', prev ? prev.dns : '');
+        S('tzVlan', prev ? prev.vlan : ''); S('tzBridge', prev ? prev.bridge : 'vmbr0');
+        S('tzCpu', prev ? prev.cpu : (TR.cores || 4));
+        S('tzMem', prev ? prev.mem : ((+TR.mem || 4096) / 1024));
+        S('tzDisk', prev ? prev.disk : (TR.disk || 20));
+        $('tzNode').value = prev ? prev.connIdx : ''; ddRefresh($('tzNode'));
+      }
+      renderCap('tzCap', tzPick());
+      tmsg('');
+    }
+
+    // stage the Talos disk image FROM the portal to each target host over 8006 —
+    // the portal has internet, the node does not. Progress goes to `say`. Returns
+    // {volid} on success (image_present volid) or {err}.
+    async function tzStage(nodes, ver, say) {
+      const byConn = {};
+      nodes.forEach(n => { (byConn[n.connection] = byConn[n.connection] || []).push(n.node); });
+      let volid = '';
+      for (const conn of Object.keys(byConn)) {
+        const hosts = [...new Set(byConn[conn])];
+        let start;
+        try {
+          start = await (await fetch('/provision/stage', {method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({connection: conn, nodes: hosts, os: 'talos', ver: ver, image_datastore: 'local'})})).json();
+        } catch (e) { return {err: String(e)}; }
+        if (!start.ok) return {err: start.error || 'could not start staging'};
+        for (let i = 0; ; i++) {
+          let st;
+          try { st = await (await fetch('/provision/stage/' + encodeURIComponent(start.job) + '.json')).json(); }
+          catch (e) { return {err: String(e)}; }
+          say('Staging image → ' + esc(hosts.join(', ')) + ' · ' + esc(st.msg || '') +
+            (st.pct != null ? ' (' + st.pct + '%)' : ''));
+          if (st.status === 'ok') { volid = st.volid || volid; break; }
+          if (st.status === 'failed') return {err: st.msg || 'staging failed'};
+          if (i >= 2400) return {err: 'staging timed out'};
+          await new Promise(r => setTimeout(r, 1500));
+        }
+      }
+      return {volid: volid};
+    }
+
+    // list the Talos images of a kind (`ext`) present across the region's hosts,
+    // deduped by volid, each carrying which hosts have it — feeds the "Which image"
+    // picker. Cached in TZIMGS so the launch can verify the pick is on every target.
+    let TZIMGS = [];
+    async function tzHostImages(ext) {
+      const hosts = new Map();
+      TZNODES.forEach(n => hosts.set(n.conn + '|' + n.node, n));
+      const byVolid = new Map();
+      for (const n of hosts.values()) {
+        let d;
+        try { d = await (await fetch('/provision/images?connection=' + encodeURIComponent(n.conn) +
+          '&node=' + encodeURIComponent(n.node) + '&storage=local')).json(); }
+        catch (e) { continue; }
+        if (!d.ok) continue;
+        (d.images || []).filter(i => ext.test(i.name)).forEach(i => {
+          const cur = byVolid.get(i.volid) || {volid: i.volid, name: i.name, hosts: []};
+          if (!cur.hosts.includes(n.node)) cur.hosts.push(n.node);
+          byVolid.set(i.volid, cur);
+        });
+      }
+      return [...byVolid.values()];
+    }
+
+    // populate the dependent "Which image" picker when a host-image source is chosen
+    async function tzImgChange() {
+      tzImgHint();
+      const v = $('tzImg').value, row = $('tzImgPickRow'), sel = $('tzImgPick');
+      TZIMGS = [];
+      if (v !== 'onhost' && v !== 'iso') { row.hidden = true; return; }
+      row.hidden = false;
+      sel.innerHTML = '<option value="">discovering images…</option>'; ddRefresh(sel);
+      TZIMGS = await tzHostImages(v === 'iso' ? /\.iso$/i : /\.(img|raw)$/i);
+      if (!TZIMGS.length) {
+        sel.innerHTML = '<option value="">no Talos ' + (v === 'iso' ? 'ISO' : 'disk image') +
+          ' found on the host(s) — upload one, or pick another source</option>';
+      } else {
+        sel.innerHTML = '<option value="">choose an image…</option>' + TZIMGS.map(im =>
+          '<option value="' + esc(im.volid) + '">' + esc(im.name) + ' · on ' + esc(im.hosts.join(', ')) +
+          '</option>').join('');
+        const want = ($('tzVer').value || '').replace(/^v/, '');   // default to the version match
+        const m = TZIMGS.find(im => im.name.indexOf(want) >= 0);
+        if (m) sel.value = m.volid;
+      }
+      ddRefresh(sel);
+    }
+
+    // the final vm list (built from drafts on the Review page) — cluster + image
+    // settings are read live from their inputs, which persist across the pages.
+    async function tLaunch(nodes) {
+      if (!$('tzSnip').value) { tmsg('pick a config-drive datastore (needs snippets)'); return; }
+      const first = nodes[0];
+      const spec = {
+        os: 'talos', connection: first.connection,
+        talos_version: $('tzVer').value.trim() || 'v1.13.8', cluster_name: $('tzName').value.trim() || 'talos',
+        pod_cidr: $('tzPod').value.trim(), svc_cidr: $('tzSvc').value.trim(), vip: $('tzVip').value.trim(),
+        ntp_servers: $('tzNtp').value.split(',').map(s => s.trim()).filter(Boolean),
+        snippet_datastore: $('tzSnip').value, disk_datastore: 'local-lvm', image_datastore: 'local',
+        bridge: first.bridge, vlan: first.vlan, gateway: first.gateway, dns: first.dns,
+        cores: +TR.cores, mem_mb: +TR.mem, disk_gb: +TR.disk,
+        stack_name: ($('tzName').value.trim() || 'talos') + '-cluster', is_prod: false, nodes: nodes
+      };
+      const prog = $('tzProg'); prog.hidden = false;
+      const say = t => { prog.innerHTML = t; };
+      const fail = t => { say('<span style="color:var(--danger-ink)">✕ ' + esc(t) + '</span>'); $('tzLaunch').disabled = false; };
+      const nN = nodes.length, pl = nN > 1 ? 's' : '';
+      $('tzLaunch').disabled = true; tmsg('');
+      // resolve the disk image FIRST, per the chosen source
+      const imgSrc = $('tzImg').value;
+      if (imgSrc === 'onhost' || imgSrc === 'iso') {
+        const volid = $('tzImgPick').value;
+        if (!volid) { fail('pick a Talos ' + (imgSrc === 'iso' ? 'ISO' : 'disk image') + ' on the host'); return; }
+        const rec = TZIMGS.find(im => im.volid === volid);
+        const targets = [...new Set(nodes.map(n => n.node))];
+        const missing = targets.filter(t => !(rec && rec.hosts.includes(t)));
+        if (missing.length) {
+          fail('“' + (rec ? rec.name : volid) + '” is not on: ' + missing.join(', ') +
+               ' — upload it there, or place every node on a host that has it'); return;
+        }
+        spec.image_present = true; spec.image_volid = volid;
+        if (imgSrc === 'iso') spec.talos_method = 'iso';
+      } else if (imgSrc === 'stage') {
+        const s = await tzStage(nodes, spec.talos_version, say);
+        if (s.err) { fail('staging: ' + s.err); return; }
+        spec.image_present = true; spec.image_volid = s.volid;
+      }
+      // else 'download' — leave image_present unset so each host pulls it itself
+      // (_gen_talos emits the download_file resource)
+      say('Generating the cluster…');
+      let sid;
+      try {
+        const d = await (await fetch('/provision/create', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(spec)})).json();
+        if (!d.ok) { fail(d.error || 'could not create'); return; }
+        sid = d.sid;
+      } catch (e) { fail(String(e)); return; }
+      const link = ' — <a href="/terraform?sec=stacks" style="color:var(--accent)">open the stack</a>';
+      const run = async (action) => {
+        const fd = new FormData(); fd.set('sid', sid); fd.set('action', action);
+        const j = await (await fetch('/terraform/run', {method: 'POST', body: fd})).json();
+        if (!j.ok) return {err: j.error};
+        let p = {};
+        for (let i = 0; i < 600; i++) {
+          p = await (await fetch('/terraform/run/' + j.run_id + '.json?since=0')).json();
+          say(action + ' · ' + (p.done ? p.status : 'running…') + (p.took ? (' ' + p.took) : ''));
+          if (p.done) break;
+          await new Promise(r => setTimeout(r, 1800));
+        }
+        return p;
+      };
+      const ini = await run('init');
+      if (ini.err || ini.status !== 'ok') { fail('init: ' + (ini.err || ini.status)); prog.innerHTML += link; return; }
+      say('init ok — applying (bringing up ' + nN + ' Talos node' + pl + ' &amp; bootstrapping)…');
+      const ap = await run('apply');
+      if (ap.err || ap.status !== 'ok') { fail('apply ' + (ap.err || ap.status)); prog.innerHTML += link; return; }
+      const dl = '/provision/cluster/download?sid=' + encodeURIComponent(sid) + '&which=';
+      say('<span style="color:var(--ok-ink)">✓ cluster launched — ' + nN + ' node' + pl + '</span>' + link +
+        '<div class="rc-dls">Download: ' +
+        '<a class="abtn go" href="' + dl + 'kubeconfig">kubeconfig</a> ' +
+        '<a class="abtn" href="' + dl + 'talosconfig">talosconfig</a></div>');
+      const b = $('tzLaunch'); b.dataset.done = '1'; b.textContent = 'Close'; b.disabled = false;
+    }
+
+    // drafts → the vm list _gen_talos expects, or null (+ message) if any is incomplete
+    function buildVms() {
+      const t = total(), out = [];
+      for (let i = 0; i < t; i++) {
+        const d = drafts[i], host = d && TZNODES[+d.connIdx];
+        if (!d || !host) { tmsg('node ' + (i + 1) + ' is incomplete — go back and finish it'); return null; }
+        out.push({hostname: d.hostname, connection: host.conn, node: host.node, ip: d.ip, gateway: d.gateway,
+          dns: (d.dns || '').split(',').map(s => s.trim()).filter(Boolean), vlan: d.vlan, bridge: d.bridge || 'vmbr0',
+          role: roleOf(i), cores: +d.cpu || 0, mem_mb: Math.round((+d.mem || 0) * 1024), disk_gb: +d.disk || 0});
+      }
+      return out;
+    }
+    function buildReview() {
+      const rows = [],
+        R = (k, v) => rows.push('<div class="tzrev-r"><span class="tzrev-k">' + esc(k) +
+          '</span><span class="tzrev-v">' + esc(v) + '</span></div>'),
+        H = t => rows.push('<div class="tzrev-h">' + esc(t) + '</div>');
+      H('Cluster');
+      R('Host', ($('tzConn').options[$('tzConn').selectedIndex] || {}).textContent || '—');
+      R('Name · version', ($('tzName').value.trim() || 'talos') + '  ·  Talos ' + $('tzVer').value.trim());
+      R('Nodes', tcp() + ' control-plane · ' + Math.max(0, +$('tzW').value || 0) + ' worker');
+      R('Pod · Service CIDR', $('tzPod').value.trim() + '  ·  ' + $('tzSvc').value.trim());
+      if ($('tzVip').value.trim()) R('API VIP', $('tzVip').value.trim());
+      if ($('tzNtp').value.trim()) R('NTP servers', $('tzNtp').value.trim());
+      H('Image');
+      R('Source', $('tzImg').options[$('tzImg').selectedIndex].textContent);
+      if (($('tzImg').value === 'onhost' || $('tzImg').value === 'iso') && $('tzImgPick').value) {
+        const rec = TZIMGS.find(im => im.volid === $('tzImgPick').value);
+        R('Image', rec ? rec.name : $('tzImgPick').value);
+      }
+      R('Config-drive store', $('tzSnip').value || '—');
+      H('Nodes');
+      const multi = TZ_MULTI();
+      for (let i = 0; i < total(); i++) {
+        const d = drafts[i];
+        if (!d) { R('node ' + (i + 1), '(incomplete)'); continue; }
+        const host = TZNODES[+d.connIdx];
+        const where = host ? ((multi ? host.connName + ' · ' : '') + host.node) : '?';
+        R(d.hostname + ' · ' + roleOf(i), where + ' · ' + d.ip +
+          ' · ' + d.cpu + ' vCPU / ' + d.mem + ' GB / ' + d.disk + ' GB');
+      }
+      $('tzReview').innerHTML = '<div class="tzrev">' + rows.join('') + '</div>';
+    }
+    function showPage(p) {
+      page = p;
+      $('tzPgCluster').hidden = p !== 'cluster'; $('tzPgImage').hidden = p !== 'image';
+      $('tzPgNode').hidden = p !== 'node'; $('tzPgReview').hidden = p !== 'review';
+      $('tzBack').hidden = (p === 'cluster');
+      const steps = 3 + total();
+      const no = p === 'cluster' ? 1 : p === 'image' ? 2 : p === 'node' ? 3 + ni : steps;
+      $('tzCrumb').textContent = 'Step ' + no + ' of ' + steps;
+      const b = $('tzLaunch');
+      if (!b.dataset.done) b.textContent = (p === 'review') ? 'Create cluster →' : 'Next →';
+      if (p === 'node') nodeHead();
+      if (p === 'review') buildReview();
+      tmsg('');
+    }
+    function goNext() {
+      if (page === 'cluster') {
+        if (!$('tzConn').value) { tmsg('pick a host for the cluster'); return; }
+        showPage('image'); return;
+      }
+      if (page === 'image') {
+        if (!$('tzSnip').value) { tmsg('pick a config-drive datastore (needs snippets)'); return; }
+        const src = $('tzImg').value;
+        if ((src === 'onhost' || src === 'iso') && !$('tzImgPick').value) { tmsg('pick which image on the host'); return; }
+        ni = 0; showPage('node'); loadNodeInputs(0); return;
+      }
+      if (page === 'node') {
+        const err = validateCurrentNode(); if (err) { tmsg(err); return; }
+        drafts[ni] = readNodeInputs();
+        if (ni < total() - 1) { ni++; showPage('node'); loadNodeInputs(ni); }
+        else showPage('review');
+        return;
+      }
+      if (page === 'review') { const vms = buildVms(); if (vms) tLaunch(vms); }
+    }
+    function goBack() {
+      if (page === 'image') { showPage('cluster'); return; }
+      if (page === 'node') {
+        drafts[ni] = readNodeInputs();          // keep whatever's typed, even partial
+        if (ni > 0) { ni--; showPage('node'); loadNodeInputs(ni); } else showPage('image');
+        return;
+      }
+      if (page === 'review') { ni = total() - 1; showPage('node'); loadNodeInputs(ni); }
+    }
+    $('tzLaunch').addEventListener('click', () => {
+      const b = $('tzLaunch');
+      if (b.dataset.done) { tzDlg.close(); return; }
+      goNext();
+    });
+    $('tzBack').addEventListener('click', goBack);
+  }
+
+  /* ── "Provision a VM" chooser: category → OS → the matching wizard ── */
+  const pickDlg = document.getElementById('pickDlg'), provisionBtn = document.getElementById('provisionBtn');
+  if (pickDlg && provisionBtn) {
+    const P = id => document.getElementById(id);
+    const showCat = () => { P('pickCat').hidden = false; P('pickOs').hidden = true; P('pickBack').hidden = true; };
+    const showOs = (cat) => {
+      P('pickCat').hidden = true; P('pickOs').hidden = false; P('pickBack').hidden = false;
+      P('pickOsLbl').textContent = cat === 'k8s' ? 'Kubernetes distribution' : 'Linux image';
+      const list = (RECIPES || []).filter(r => (r.os === 'talos') === (cat === 'k8s'));
+      P('pickOsGrid').innerHTML = list.length ? list.map(r =>
+        '<button type="button" class="pick-card">' +
+        '<span class="pick-t">' + esc(r.label) + '</span>' +
+        '<span class="pick-s">' + esc(r.blurb || '') + '</span>' +
+        '<span class="pick-spec">' + r.cores + ' vCPU · ' + (r.mem_mb / 1024) + ' GB · ' + r.disk_gb + ' GB</span>' +
+        '</button>').join('') : '<div class="sec-note" style="padding:8px 2px;">nothing available yet</div>';
+      Array.from(P('pickOsGrid').querySelectorAll('.pick-card')).forEach((btn, i) => btn.addEventListener('click', () => {
+        const r = list[i]; pickDlg.close();
+        if (r.os === 'talos') { if (openTalos) openTalos({cores: r.cores, mem: r.mem_mb, disk: r.disk_gb}); }
+        else if (openRecipe) openRecipe({os: r.os, method: r.method, family: r.family, label: r.label, key: r.key,
+          cores: r.cores, mem: r.mem_mb, disk: r.disk_gb});
+      }));
+    };
+    provisionBtn.addEventListener('click', () => { showCat(); pickDlg.showModal(); });
+    P('pickCat').querySelectorAll('.pick-card').forEach(c => c.addEventListener('click', () => showOs(c.dataset.cat)));
+    P('pickBack').addEventListener('click', showCat);
+    // opened from the header "Provision a VM" button on any page (?provision=1)
+    if (new URLSearchParams(location.search).get('provision')) { showCat(); pickDlg.showModal(); }
+  }
+})();
+</script>
+
+{% include "_tf_run.html" %}
+{% endblock %}

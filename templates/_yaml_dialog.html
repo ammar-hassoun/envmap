@@ -1,0 +1,292 @@
+{# One object's YAML, editable, in a window over the page.
+
+   WHY A WINDOW
+       Same reason as the log and describe windows: you are looking at one thing
+       out of a list of a hundred, and a navigation costs you the list, the
+       namespace filter and your place in it.
+
+   WHY THERE IS A CHECK BUTTON AND NOT JUST A SAVE
+       This is the most powerful thing in the product. Every other write is a
+       fixed verb on a named object — restart that, scale this to three — and an
+       applied document can do anything the API server allows, typed by hand.
+
+       `--dry-run=server` runs the whole admission path and changes nothing, so a
+       typo is a message rather than an outage. It is offered first and costs one
+       click; the apply is deliberately the second button, not the default.
+
+   The identity guard lives on the server (kmanage.apply_yaml): the submitted
+   document has to still be the object the editor was opened on. The button says
+   "edit this deployment", not "apply arbitrary YAML to my cluster", and without
+   that check those are the same feature.
+#}
+<dialog id="ymDlg" class="psh ymwin">
+  <div class="psh-bar">
+    <span class="psh-dots"><b title="close" data-ymdot="close">✕</b><b
+      title="minimise" data-ymdot="mini">–</b><b title="maximise" data-ymdot="maxi">+</b></span>
+    <b>yaml</b>
+    <span class="psh-ns" id="ymWhat"></span>
+    <span style="flex:1"></span>
+    <span class="psh-state" id="ymState"></span>
+    <button type="button" class="psh-x" id="ymClose">close</button>
+  </div>
+  <div class="lgbar">
+    {# The window opens as a VIEWER. Reading an object's YAML is the common
+       reason to open it — from a pod row, a node row, a CRD — and a textarea
+       that is live from the first keystroke means a stray character in a
+       production Deployment is one click from being applied. Editing is a
+       deliberate second act. #}
+    <button type="button" class="psh-x" id="ymEdit"
+            title="unlock the document so it can be changed">✎ edit</button>
+    <button type="button" class="psh-x" id="ymCheck" hidden
+            title="run it through the API server without changing anything">
+      check</button>
+    <button type="button" class="psh-x danger" id="ymApply" hidden
+            title="write it to the cluster">save</button>
+    <span class="ymconfirm" id="ymConfirmWrap" hidden>
+      <input type="text" id="ymConfirm" class="psh-find" spellcheck="false"
+             autocomplete="off" placeholder="type the cluster name">
+    </span>
+    <button type="button" class="psh-x" id="ymRevert"
+            title="read it again from the cluster">↻ re-read</button>
+    <button type="button" class="psh-x" id="ymCopy">copy</button>
+    <span style="flex:1"></span>
+    <span class="psh-state" id="ymDirty"></span>
+  </div>
+  <div class="ymv" id="ymWrap">
+    <textarea id="ymText" spellcheck="false" autocomplete="off"
+              autocapitalize="off" wrap="off"></textarea>
+  </div>
+  <div class="ymout" id="ymOut" hidden></div>
+</dialog>
+
+<style>
+  dialog.ymwin { width:min(1000px,95vw); height:min(700px,88vh); }
+  /* The window is a column and the editor is the part that gives — the same two
+     rules the log and describe windows need. `min-height:0` is what lets it
+     shrink below its content so the textarea scrolls instead of growing. */
+  dialog.psh.ymwin[open] { display:flex; flex-direction:column; }
+  .ymwin .ymv { flex:1 1 auto; min-height:0; display:flex; }
+  /* Locked, it is a document being read: the caret would say it can be typed
+     into, and a reader pressing keys at a box that ignores them is the fault this
+     window used to have in reverse. */
+  .ymv textarea.locked { cursor:default; caret-color:transparent;
+    background:#0a0d14; }
+  .ymv textarea { flex:1; width:100%; border:0; outline:none; resize:none;
+    background:#0b0f16; color:#cfe0f5; font-family:var(--mono); font-size:12px;
+    line-height:1.55; padding:11px 14px; tab-size:2; white-space:pre;
+    overflow:auto; }
+  .ymout { flex:none; max-height:26%; overflow:auto; padding:9px 14px;
+    border-top:1px solid #202839; font-family:var(--mono); font-size:11.5px;
+    white-space:pre-wrap; color:#9fb4cf; }
+  .ymout[hidden] { display:none; }
+  .ymout.ok { color:var(--ok-ink); }
+  .ymout.bad { color:var(--danger-ink); }
+  .psh-x.danger { color:var(--danger-ink); border-color:var(--danger-line); }
+  .ymconfirm { display:inline-flex; }
+  .ymconfirm[hidden] { display:none; }
+  .ymconfirm input { width:170px; }
+</style>
+
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  const dlg = document.getElementById('ymDlg');
+  const box = document.getElementById('ymText');
+  const what = document.getElementById('ymWhat');
+  const state = document.getElementById('ymState');
+  const dirty = document.getElementById('ymDirty');
+  const out = document.getElementById('ymOut');
+  const confirmWrap = document.getElementById('ymConfirmWrap');
+  const confirmIn = document.getElementById('ymConfirm');
+  const applyBtn = document.getElementById('ymApply');
+  const checkBtn = document.getElementById('ymCheck');
+  const editBtn = document.getElementById('ymEdit');
+  const revertBtn = document.getElementById('ymRevert');
+  // `may` is what the cluster and the role allow; `editing` is what the reader
+  // has asked for. Both have to be true before the document can be typed into,
+  // and only the second one is a button.
+  let where = null, original = '', may = false, editing = false;
+
+  function setEditing(on) {
+    editing = !!on && may;
+    box.readOnly = !editing;
+    box.classList.toggle('locked', !editing);
+    // Nothing that writes exists while the document is locked. A disabled save
+    // button invites the click; an absent one says what state this is.
+    editBtn.hidden = editing || !may;
+    checkBtn.hidden = !editing;
+    applyBtn.hidden = !editing;
+    confirmWrap.hidden = !(editing && where && where.confirm);
+    revertBtn.textContent = editing ? 'revert' : '↻ re-read';
+    revertBtn.title = editing ? 'throw away the edits and read it again'
+                              : 'read it again from the cluster';
+    marked();
+  }
+
+  function say(text, tone) {
+    out.hidden = !text;
+    out.className = 'ymout' + (tone ? ' ' + tone : '');
+    out.textContent = text || '';
+  }
+
+  function marked() {
+    const changed = box.value !== original;
+    dirty.textContent = !editing ? (may ? 'read-only — press edit' : 'read-only')
+                      : changed ? 'edited' : 'editing';
+    return changed;
+  }
+
+  function post(dry) {
+    const body = {project: where.project, cluster: where.cluster,
+                  kind: where.kind, namespace: where.ns, name: where.name,
+                  yaml: box.value, confirm: confirmIn.value};
+    if (dry) body.dry = '1';
+    return fetch('/clusters/yaml/apply',
+                 {method: 'POST', body: new URLSearchParams(body)})
+      .then(r => r.json());
+  }
+
+  function load() {
+    state.textContent = 'reading…';
+    box.value = '';
+    say('');
+    const url = '/clusters/yaml.json?' + new URLSearchParams({
+      project: where.project, cluster: where.cluster, kind: where.kind,
+      namespace: where.ns, name: where.name});
+    fetch(url).then(r => r.json()).then(doc => {
+      if (doc.error && !doc.text) {
+        state.textContent = '';
+        say(doc.error, 'bad');
+        return;
+      }
+      original = doc.text || '';
+      box.value = original;
+      state.textContent = 'read at ' + new Date().toLocaleTimeString();
+      // Read-only is a state of the WINDOW, not a refusal after the work: the
+      // buttons go away rather than failing once something has been typed.
+      may = !!doc.may_write;
+      where.confirm = doc.confirm || '';
+      confirmIn.placeholder = 'type ' + (doc.confirm || 'the cluster name');
+      // Always locked after a read — including after a save, so a second write
+      // is a second deliberate act rather than a leftover unlocked box.
+      setEditing(false);
+      if (!may) {
+        say('Read-only: changing a document needs Cluster management, and the '
+            + 'cluster must allow management in Settings.', '');
+      } else {
+        say('');
+      }
+    }).catch(err => { state.textContent = ''; say(String(err), 'bad'); });
+  }
+
+  editBtn.addEventListener('click', () => {
+    // The button is hidden without the permission, but hidden is not gone: a
+    // keyboard or a console can still reach it, and without this guard it printed
+    // "Editing…" over the sentence explaining why the window is read-only.
+    if (!may) return;
+    setEditing(true);
+    // The production warning belongs HERE rather than on open: it is advice about
+    // writing, and a window somebody opened to read a manifest should not lead
+    // with a warning about a thing they are not doing.
+    if (where && where.confirm) {
+      say('This cluster serves production. Type its name — ' + where.confirm
+          + ' — before saving.', '');
+    } else {
+      say('Editing. `check` runs it through the API server and changes nothing; '
+          + '`save` writes it.', '');
+    }
+    box.focus();
+  });
+
+  checkBtn.addEventListener('click', () => {
+    checkBtn.disabled = true;
+    say('checking against the API server…');
+    post(true).then(d => {
+      checkBtn.disabled = false;
+      if (!d.ok) { say(d.error || 'the API server refused it', 'bad'); return; }
+      say((d.output || 'accepted') + '\n\nNothing was changed — this was a dry '
+          + 'run. Press apply to make it real.', 'ok');
+    }).catch(e => { checkBtn.disabled = false; say(String(e), 'bad'); });
+  });
+
+  function save() {
+    if (!marked()) { say('Nothing has been changed yet.', ''); return; }
+    if (!confirm('Save this document to ' + where.kind + '/' + where.name
+                 + '? It takes effect immediately.')) return;
+    applyBtn.disabled = true;
+    say('saving…');
+    post(false).then(d => {
+      applyBtn.disabled = false;
+      if (!d.ok) { say(d.error || 'the cluster refused it', 'bad'); return; }
+      original = box.value;
+      // Locked again: the write landed, and the copy on screen is now the older
+      // of the two — the server adds and defaults fields on the way in. A second
+      // save has to start with a fresh read.
+      setEditing(false);
+      say((d.output || 'saved') + '\n\nSaved. Press ↻ re-read to see what the '
+          + 'server actually stored, and reload the page for the lists to catch '
+          + 'up.', 'ok');
+    }).catch(e => { applyBtn.disabled = false; say(String(e), 'bad'); });
+  }
+  applyBtn.addEventListener('click', save);
+  // ⌘S / Ctrl-S while editing, because this is an editor and everybody tries it.
+  // It goes through the same confirm as the button.
+  box.addEventListener('keydown', e => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
+      e.preventDefault();
+      if (editing) save();
+    }
+  });
+
+  revertBtn.addEventListener('click', () => {
+    if (editing && marked()
+        && !confirm('Throw away your edits and read it again?')) return;
+    load();
+  });
+  document.getElementById('ymCopy').addEventListener('click', e => {
+    navigator.clipboard.writeText(box.value).then(() => {
+      const b = e.currentTarget, was = b.textContent;
+      b.textContent = 'copied';
+      setTimeout(() => { b.textContent = was; }, 1200);
+    }).catch(() => {});
+  });
+  box.addEventListener('input', marked);
+
+  function shut() {
+    if (editing && marked()
+        && !confirm('Close without saving? Your edits are lost.')) return;
+    dlg.close();
+  }
+  document.getElementById('ymClose').addEventListener('click', shut);
+  dlg.querySelector('[data-ymdot="close"]').addEventListener('click', shut);
+  dlg.querySelector('[data-ymdot="mini"]').addEventListener('click', shut);
+  dlg.querySelector('[data-ymdot="maxi"]').addEventListener('click',
+    () => dlg.classList.toggle('maxi'));
+  dlg.addEventListener('cancel', e => { e.preventDefault(); shut(); });
+
+  // Delegated, so a row on any page opens this by carrying data- attributes and
+  // nothing else — the same contract the log and describe windows use.
+  document.addEventListener('click', e => {
+    const a = e.target.closest && e.target.closest('[data-podyaml]');
+    if (!a || e.metaKey || e.ctrlKey || e.shiftKey || e.button) return;
+    e.preventDefault();
+    openYaml({project: a.dataset.ymproject, cluster: a.dataset.ymcluster,
+              kind: a.dataset.ymkind || 'pod', namespace: a.dataset.ns,
+              name: a.dataset.pod});
+  });
+
+  window.openYaml = function (opts) {
+    where = {project: opts.project, cluster: opts.cluster,
+             kind: opts.kind || 'pod', ns: opts.namespace, name: opts.name};
+    original = '';
+    confirmIn.value = '';
+    what.textContent = (where.ns ? where.ns + '/' : '') + where.name;
+    // Locked before the read as well as after it: the window is briefly empty
+    // while the object is fetched, and an unlocked empty box that then fills with
+    // somebody else's manifest is the wrong thing to hand a reader.
+    may = false;
+    setEditing(false);
+    if (!dlg.open) dlg.showModal();
+    load();
+  };
+})();
+</script>

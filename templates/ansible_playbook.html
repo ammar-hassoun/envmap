@@ -1,0 +1,261 @@
+{% extends "base.html" %}
+{% import "_bits.html" as bits %}
+{% block crumbs %}<a href="/ansible">Ansible</a> <span class="sep">/</span>
+  <b>{{ pb.name if pb else 'New playbook' }}</b>{% endblock %}
+{% block content %}
+
+<div class="page-head">
+  <div>
+    <h1>{{ pb.name if pb else 'New playbook' }}</h1>
+    <p class="sub">{% if pb %}saved {{ pb.updated[:16]|replace('T', ' ') }} by
+      {{ pb.updated_by }} · {{ revs|length }} earlier version{{ 's' if revs|length != 1 }}
+      {% else %}The example below is a working playbook. Change it into yours, or
+      paste one you already have.{% endif %}</p>
+  </div>
+  <div style="display:flex;gap:9px;align-items:center;">
+    {% if pb %}
+    <button type="button" class="btn btn-ghost"
+            {{ bits.ansrun_attrs(pb.id, pb.name, pb.group_id) }}>▷ Run</button>
+    {% endif %}
+    <a class="btn btn-ghost" href="/ansible">← All playbooks</a>
+  </div>
+</div>
+
+{% if msg %}<div class="flash ok">✓ {{ msg }}</div>{% endif %}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+
+<form method="post" action="/ansible/playbook/save" id="pbform">
+  <input type="hidden" name="pb_id" value="{{ pb.id if pb else '' }}">
+  <div class="card">
+    <div class="card-h" style="flex-wrap:wrap;">The playbook
+      <span class="hint" id="pbcount"></span>
+      <span style="flex:1"></span>
+      {# A syntax check that does not save, so it can be run on a buffer full of
+         edits. It is the cheapest possible feedback loop: no hosts are touched
+         and nothing is written. #}
+      <button type="button" class="btn btn-ghost" id="pbcheck"
+              style="padding:4px 13px;font-size:11.5px;">Check syntax</button>
+      <button type="submit" class="btn" style="padding:4px 15px;font-size:11.5px;">
+        Save</button>
+    </div>
+    <div class="card-b">
+      <div class="field-row"><label>name</label>
+        <input type="text" name="name" required value="{{ pb.name if pb else '' }}"
+               placeholder="install the node exporter" spellcheck="false"></div>
+      <div class="field-row"><label>what it is for</label>
+        <input type="text" name="notes" value="{{ pb.notes if pb else '' }}"
+               placeholder="one line, so the list is readable"></div>
+      {{ bits.place_fields(pb.pid if pb else '', pb.rgid if pb else '', place_options,
+                           pb.env if pb else '', env_suggest) }}
+      <div class="field-row"><label>usual target</label>
+        <div><select name="group_id" style="min-width:0;">
+            <option value="">— choose when running —</option>
+            {% for g in groups %}
+            <option value="{{ g.id }}" {% if pb and pb.group_id == g.id %}selected{% endif %}>
+              {{ g.name }} ({{ g.hosts|length }} host{{ 's' if g.hosts|length != 1 }})</option>
+            {% endfor %}
+          </select>
+          <div class="sec-note">Only a default for the run window — it can always
+            be pointed somewhere else, and this is never what decides where a run
+            lands.</div>
+        </div></div>
+      <div class="pbedit">
+        <div class="pbgutter" id="pbnums" aria-hidden="true"></div>
+        <textarea name="body" id="pbbody" spellcheck="false" autocomplete="off"
+                  autocapitalize="off" wrap="off"
+                  placeholder="---">{{ pb.body if pb else example }}</textarea>
+      </div>
+      <div class="pbout" id="pbout" hidden></div>
+      <div class="sec-note" style="margin-top:9px;">Tab inserts two spaces —
+        YAML has no tabs, and a real tab character is the most common reason a
+        playbook will not parse.</div>
+    </div>
+  </div>
+</form>
+
+{% if pb %}
+<div class="grid" style="grid-template-columns:minmax(0,1.1fr) minmax(300px,1fr);">
+  <div class="card" style="margin:0;">
+    <div class="card-h">Runs of this playbook
+      <span class="hint">newest first</span></div>
+    {% if runs %}
+    <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+      <table class="jenkins">
+        <thead><tr><th style="width:110px;">Result</th>
+          <th style="width:130px;">Group</th><th style="width:75px;">Mode</th>
+          <th style="min-width:130px;">Who, when</th>
+          <th class="actcol" style="width:100px;"></th></tr></thead>
+        <tbody>
+        {% for r in runs %}
+        <tr>
+          <td>{{ bits.runpill(r) }}</td>
+          <td>{{ r.group_name or '—' }}</td>
+          <td>{% if r.check_mode %}<span class="badge">check</span>
+              {% else %}<span class="sv sv-medium">real</span>{% endif %}</td>
+          <td><div class="sec-note" style="margin:0;">{{ r.by }}<br>{{ r.ago }}</div></td>
+          <td class="mid actcol">
+            <button type="button" class="abtn" data-ansout="{{ r.id }}"
+                    data-anstitle="{{ r.pb_name }} → {{ r.group_name }}">output</button>
+          </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="card-b" style="color:var(--muted);font-size:13px;">
+      Not run yet. A check run changes nothing and tells you whether it would
+      work.</div>
+    {% endif %}
+  </div>
+
+  <div class="card" style="margin:0;">
+    <div class="card-h">Earlier versions
+      <span class="hint">every save keeps the text it replaced</span></div>
+    {% if revs %}
+    <div class="card-b" style="padding:0 0 6px;">
+      <table class="jenkins">
+        <thead><tr><th style="min-width:150px;">Saved</th>
+          <th style="width:80px;">Size</th>
+          <th class="actcol" style="width:110px;"></th></tr></thead>
+        <tbody>
+        {% for v in revs %}
+        <tr>
+          <td><div class="sec-note" style="margin:0;">{{ v.at[:16]|replace('T', ' ') }}
+            <br>{{ v.by }}</div></td>
+          <td>{{ v.len }}B</td>
+          <td class="mid actcol">
+            <form method="post" action="/ansible/playbook/restore" style="display:inline;">
+              <input type="hidden" name="pb_id" value="{{ pb.id }}">
+              <input type="hidden" name="rev_id" value="{{ v.id }}">
+              <button type="submit" class="abtn"
+                      data-confirm="Make this version the current one? The text on screen is kept as a version too."
+                      >restore</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="card-b" style="color:var(--muted);font-size:13px;">
+      This is the first version.</div>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+<style>
+  /* An editor, not a form field: monospace, no reflow, and a line-number gutter
+     that scrolls with it — a YAML error names a line, and counting by hand in a
+     hundred-line playbook is the whole reason people give up on a web editor. */
+  .pbedit { display:flex; border:1px solid #263149; border-radius:9px;
+    overflow:hidden; background:#0b0f16; margin-top:12px; }
+  .pbgutter { flex:none; width:52px; overflow:hidden; text-align:right;
+    padding:11px 8px 11px 0; font-family:var(--mono); font-size:12px;
+    line-height:1.55; color:#3d4a63; background:#0a0d14;
+    border-right:1px solid #1a2231; user-select:none; white-space:pre; }
+  .pbedit textarea { flex:1; min-width:0; min-height:440px; border:0;
+    outline:none; resize:vertical; background:transparent; color:#cfe0f5;
+    font-family:var(--mono); font-size:12px; line-height:1.55; padding:11px 14px;
+    tab-size:2; white-space:pre; overflow:auto; }
+  .pbout { margin-top:10px; padding:9px 12px; border-radius:8px;
+    border:1px solid #202839; font-family:var(--mono); font-size:11.5px;
+    white-space:pre-wrap; color:#9fb4cf; max-height:220px; overflow:auto; }
+  .pbout[hidden] { display:none; }
+  .pbout.ok { color:var(--ok-ink); border-color:var(--ok-line); }
+  .pbout.bad { color:var(--danger-ink); border-color:var(--danger-line); }
+</style>
+
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  const box = document.getElementById('pbbody');
+  const nums = document.getElementById('pbnums');
+  const out = document.getElementById('pbout');
+  const info = document.getElementById('pbcount');
+  if (!box) return;
+
+  function gutter() {
+    const n = box.value.split('\n').length;
+    let text = '';
+    for (let i = 1; i <= n; i++) text += i + '\n';
+    nums.textContent = text;
+    // The same rule as ansible.py's _count_tasks: a play's own name is the
+    // shallowest `- name:`, so a task is one indented deeper than that. The two
+    // have to agree or the count changes when the page reloads.
+    const depths = [...box.value.matchAll(/^([ \t]*)-\s+name:\s*\S/gm)]
+      .map(m => m[1].length);
+    const tasks = depths.length
+      ? depths.filter(d => d > Math.min(...depths)).length : 0;
+    info.textContent = n + ' lines · ' + tasks + ' task' + (tasks === 1 ? '' : 's');
+  }
+  box.addEventListener('input', gutter);
+  // The gutter is a separate element, so it has to be told to follow.
+  box.addEventListener('scroll', () => { nums.scrollTop = box.scrollTop; });
+  gutter();
+
+  // Tab is indentation here, not "leave the field". YAML forbids tab characters
+  // outright, so inserting two spaces is the only correct behaviour — and a
+  // playbook pasted from a terminal is the main way a real tab gets in.
+  box.addEventListener('keydown', e => {
+    if (e.key !== 'Tab' || e.ctrlKey || e.metaKey || e.altKey) return;
+    e.preventDefault();
+    const s = box.selectionStart, t = box.selectionEnd, v = box.value;
+    if (s === t) {
+      box.value = v.slice(0, s) + '  ' + v.slice(t);
+      box.selectionStart = box.selectionEnd = s + 2;
+      return;
+    }
+    // A selection indents or outdents whole lines, which is what a block of
+    // tasks needs when it moves under a `when:`.
+    const from = v.lastIndexOf('\n', s - 1) + 1;
+    const body = v.slice(from, t);
+    const done = e.shiftKey ? body.replace(/^ {1,2}/gm, '')
+                            : body.replace(/^/gm, '  ');
+    box.value = v.slice(0, from) + done + v.slice(t);
+    box.selectionStart = from;
+    box.selectionEnd = from + done.length;
+    gutter();
+  });
+
+  document.getElementById('pbcheck').addEventListener('click', e => {
+    const btn = e.currentTarget, was = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'checking…';
+    out.hidden = false;
+    out.className = 'pbout';
+    out.textContent = 'asking ansible to parse it…';
+    fetch('/ansible/playbook/check',
+          {method: 'POST', body: new URLSearchParams({body: box.value})})
+      .then(r => r.json())
+      .then(d => {
+        btn.disabled = false;
+        btn.textContent = was;
+        out.className = 'pbout ' + (d.ok ? 'ok' : 'bad');
+        out.textContent = d.ok
+          ? 'ansible parses this playbook. That is a syntax check, not a '
+            + 'promise about the hosts — run it with Check for that.'
+          : (d.error || 'ansible could not parse it')
+            + (d.checked ? '' : '\n\n(the check itself could not run)');
+      })
+      .catch(err => {
+        btn.disabled = false;
+        btn.textContent = was;
+        out.className = 'pbout bad';
+        out.textContent = String(err);
+      });
+  });
+
+  // Ctrl/⌘-S saves, because this is an editor and everybody tries it.
+  document.addEventListener('keydown', e => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
+      e.preventDefault();
+      document.getElementById('pbform').submit();
+    }
+  });
+})();
+</script>
+
+{% include "_ansible_run.html" %}
+{% endblock %}

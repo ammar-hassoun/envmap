@@ -1,0 +1,76 @@
+{#- Everything a sync would change, in one place.
+
+    WHY THIS EXISTS
+        Argo CD's own UI answers "what would this sync do?" one resource at a
+        time: open a node, read its diff, close it, open the next. That is the
+        question anybody asks BEFORE syncing production, and it should be one
+        page. One managed-resources call carries the target and live state of
+        every object, so the whole answer costs one round-trip.
+
+        Each row also says WHICH KIND of change it is — an object git wants and
+        the cluster lacks (it will be created), one the cluster has and git does
+        not (prune would remove it), or a plain change — because those three
+        carry very different risk and the diff text alone does not say.
+-#}
+{% if not d.rows %}
+<div class="card"><div class="card-b">
+  <p class="sub" style="margin:0;">Nothing differs — the cluster matches git for
+    every object this application manages. A sync now would change nothing.</p>
+</div></div>
+{% else %}
+<div class="card">
+  <div class="card-h" style="flex-wrap:wrap;gap:8px;">
+    <b style="font-size:14px;">{{ d.count }} object{{ 's' if d.count != 1 }} differ{{ '' if d.count != 1 else 's' }} from git</b>
+    {% set n_new = d.rows|selectattr('state', 'equalto', 'missing')|list|length %}
+    {% set n_extra = d.rows|selectattr('state', 'equalto', 'extra')|list|length %}
+    {% if n_new %}<span class="sv sv-medium">{{ n_new }} to create</span>{% endif %}
+    {% if n_extra %}<span class="sv sv-high">{{ n_extra }} only in the cluster</span>{% endif %}
+    <span style="flex:1"></span>
+    <span class="hint">− git · + cluster</span>
+  </div>
+  <div class="card-b" style="padding-top:6px;">
+    {# a selective sync straight from the review: tick what to apply. Argo takes
+       a resource list, so "these three, not the other eight" is one call. #}
+    <form method="post" id="gdiffSync"
+          action="/gitops/app/sync?conn={{ conn.id }}&name={{ app_name|urlencode }}">
+      {% for r in d.rows %}
+      <div class="gdrow">
+        <label class="gdhead">
+          <input type="checkbox" name="res" class="gdpick"
+                 value="{{ r.group }}|{{ r.kind }}|{{ r.name }}|{{ r.namespace }}">
+          <span class="badge">{{ r.kind }}</span>
+          <b>{{ r.name }}</b>
+          {% if r.namespace %}<span class="hint">{{ r.namespace }}</span>{% endif %}
+          <span class="sv {{ 'sv-medium' if r.state == 'missing'
+                else 'sv-high' if r.state == 'extra' else 'sv-low' }}">{{
+            'not in the cluster yet' if r.state == 'missing'
+            else 'not in git' if r.state == 'extra' else 'changed' }}</span>
+          <span style="flex:1"></span>
+          <span class="hint" style="font-family:var(--mono);">
+            {% if r.added %}<span class="df-a">+{{ r.added }}</span>{% endif %}
+            {% if r.removed %}<span class="df-r">−{{ r.removed }}</span>{% endif %}
+          </span>
+        </label>
+        <pre class="ddl gdbody">{% for l in r.diff.split('\n') %}<span class="{{ 'df-a' if l[:1] == '+' else 'df-r' if l[:1] == '-' else 'df-h' if l[:2] == '@@' else '' }}">{{ l }}</span>
+{% endfor %}</pre>
+      </div>
+      {% endfor %}
+      <div class="kv" style="gap:9px;margin-top:12px;flex-wrap:wrap;align-items:center;">
+        <button type="button" class="btn-ghost" id="gdAll"
+                style="padding:6px 14px;font-size:12px;">select all</button>
+        <span class="sec-note" id="gdCount" style="margin:0;">none selected</span>
+        <span style="flex:1"></span>
+        <input name="confirm" autocomplete="off" placeholder="type sync"
+               style="width:120px;font-family:var(--mono);font-size:12px;">
+        <label class="chk" style="font-size:12px;">
+          <input type="checkbox" name="prune"> prune</label>
+        <button class="btn" type="submit" id="gdGo"
+                style="padding:7px 18px;font-size:12.5px;">Sync selected</button>
+      </div>
+      <div class="sec-note" style="margin-top:8px;">Selecting nothing syncs the
+        whole application, which is what the Sync button above does. Pruning
+        deletes the objects marked <b>not in git</b>.</div>
+    </form>
+  </div>
+</div>
+{% endif %}

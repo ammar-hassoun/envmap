@@ -1,0 +1,406 @@
+{% extends "base.html" %}
+{% import "_bits.html" as bits %}
+{% from "_set_head.html" import head %}
+{% import "_mcp_tokens.html" as tokbits %}
+{% block crumbs %}<a href="/settings">Settings</a> <span class="sep">/</span>
+  <b>AI clients</b>{% endblock %}
+{% block content %}
+{#- Settings → AI clients (MCP).
+
+    ORDERED THE WAY IT IS USED, not the way the data is shaped: where the
+    installation stands, then turn it on, then get a token, then paste one line.
+    The register comes after all of that, because nobody arrives here to read a
+    list of tokens — they arrive to connect something.
+
+    The long rationale for each switch is in a `<details>` rather than under it.
+    Five paragraphs of prose above the control is what made this page read as a
+    document; the reason still has to be somewhere, so it is one click away.
+
+    NOTE the width: no max-width on the cards. `.content` caps the page at
+    --measure and `.field-row` caps the value column at 620px — a third cap
+    makes it cramped. See CLAUDE.md → "Settings and form width". -#}
+{{ head("AI clients",
+        "Let somebody's own Claude — or any MCP client — ask this portal the
+         questions these pages answer, and do the things they are allowed to do.",
+        msg, err) }}
+
+{{ tokbits.styles() }}
+<style>
+  /* the one-time secret: the only place this page shouts */
+  .mcp-fresh { border:1px solid var(--ok-line); border-radius:14px;
+    background:color-mix(in srgb, var(--ok) 9%, transparent);
+    padding:16px 18px; margin-bottom:18px; }
+  .mcp-fresh-h { display:flex; align-items:center; gap:9px; font-size:14px;
+    font-weight:700; color:var(--ok-ink); margin-bottom:4px; }
+  .mcp-secret { display:flex; gap:10px; align-items:center; margin:11px 0 6px; }
+  .mcp-secret code { flex:1; min-width:0; font-size:12.5px;
+    background:var(--panel); border:1px solid var(--ok-line);
+    border-radius:9px; padding:10px 13px; overflow-wrap:anywhere; }
+  .mcp-endpoint { font-family:var(--mono); font-size:12px; color:var(--text2); }
+  .mcp-cardhead { display:flex; align-items:baseline; gap:12px;
+    flex-wrap:wrap; }
+  .mcp-cardhead .hint { margin-left:auto; }
+  /* the verb inventory, straight from the catalogue so it cannot go stale */
+  .mcp-verbs { display:grid; gap:18px;
+    grid-template-columns:repeat(auto-fit,minmax(min(100%,290px),1fr)); }
+  .mcp-verb { display:flex; align-items:baseline; gap:9px; padding:5px 0;
+    border-top:1px dashed var(--line); font-size:12px; }
+  .mcp-verb:first-of-type { border-top:0; }
+  .mcp-verb code { font-family:var(--mono); font-size:11.5px;
+    color:var(--accent-ink); flex:none; }
+  .mcp-verb span { color:var(--faint); min-width:0; }
+  .mcp-off { border:1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+    background:color-mix(in srgb, var(--warn) 8%, transparent);
+    border-radius:10px; padding:11px 14px; font-size:12.5px;
+    color:var(--warn-ink); margin-bottom:14px; }
+</style>
+
+{% set live = rows|selectattr('live')|list|length %}
+{# ── where this installation stands, in one line of tiles ───────────────
+   Each tile is the answer to a question somebody opens this page asking, and
+   each one links to the thing that changes it. #}
+<div class="ex-tiles">
+  <a class="ex-tile {{ 'ok' if cfg.enabled else 'bad' }}"
+     href="/settings/mcp?sec=server">
+    <span class="ico">{{ glyph('square-terminal', 17) }}</span>
+    <span><span class="big">{{ 'on' if cfg.enabled else 'off' }}</span>
+      <span class="cap">MCP endpoint</span>
+      <span class="sub">{{ 'serving ' ~ endpoint.split('://')[-1] if cfg.enabled
+                          else 'nothing can connect yet' }}</span></span>
+  </a>
+  <a class="ex-tile {{ 'warn' if cfg.allow_actions else '' }}"
+     href="/settings/mcp?sec=server">
+    <span class="ico">{{ glyph('zap', 17) }}</span>
+    <span><span class="big">{{ 'yes' if cfg.allow_actions else 'no' }}</span>
+      <span class="cap">may change things</span>
+      <span class="sub">{{ 'tokens scoped for it can act' if cfg.allow_actions
+                          else 'read and troubleshoot only' }}</span></span>
+  </a>
+  <a class="ex-tile {{ 'act' if live else 'quiet' }}"
+     href="/settings/mcp?sec=tokens">
+    <span class="ico">{{ glyph('key-round', 17) }}</span>
+    <span><span class="big">{{ live }}</span>
+      <span class="cap">live token{{ 's' if live != 1 }}</span>
+      <span class="sub">{{ rows|length }} issued in total</span></span>
+  </a>
+  <a class="ex-tile" href="/settings/mcp?sec=tools">
+    <span class="ico">{{ glyph('boxes', 17) }}</span>
+    <span><span class="big">{{ tool_count }}</span>
+      <span class="cap">tools with your access</span>
+      <span class="sub">{{ verbs|rejectattr('changes')|list|length }} read ·
+        {{ verbs|selectattr('changes')|list|length }} change</span></span>
+  </a>
+</div>
+
+{#- ── four tabs, not one long scroll ─────────────────────────────────
+    Four concerns read at different times: connecting a client is a
+    once-per-laptop job, the tokens are a register, the switches are an
+    installation decision, and the tool inventory is reference. Stacked, they
+    made one page nobody reached the bottom of.
+
+    The house `subtabs` component, driven by a `sec` query parameter the route
+    forwards — server-side like every other tabbed page here, so a tab is a
+    link somebody can share and the back button behaves. The status tiles stay
+    ABOVE the strip on every tab: "is the endpoint even on" is worth seeing
+    whichever tab is open. The fresh-token panel appears on the two tabs that
+    can produce one. -#}
+{{ bits.subtabs('/settings/mcp', 'sec', sec, [
+     {'key': 'connect', 'label': 'Connect a client',
+      'icon': 'square-terminal', 'count': none},
+     {'key': 'tokens', 'label': 'Tokens', 'icon': 'key-round', 'count': live},
+     {'key': 'server', 'label': 'Server', 'icon': 'settings', 'count': none},
+     {'key': 'tools', 'label': 'What it can do', 'icon': 'boxes',
+      'count': tool_count}], wide=true) }}
+
+{% if sec == 'tokens' %}
+{% if fresh %}
+{# Shown once, and only to the person who just minted it: held in their session
+   rather than passed through the URL, because a secret in a query string is a
+   secret in a proxy log and a browser history. #}
+<div class="mcp-fresh">
+  <div class="mcp-fresh-h">{{ glyph('circle-check', 17) }} Your new token</div>
+  <p class="mcp-note" style="margin:0;">Copy it now — it is stored hashed, so
+    this page cannot show it again. Lost one? Revoke it and mint another.</p>
+  <div class="mcp-secret">
+    <code>{{ fresh }}</code>
+    <button type="button" class="copy" data-copy="{{ fresh }}">copy</button>
+  </div>
+  <div class="mcp-code" style="margin:12px 0 0;">
+    <div class="mcp-code-h"><span>ready to paste — Claude Code</span>
+      <span class="mcp-spacer"></span>
+      <button type="button" class="copy" data-copy="{{ command }}">copy</button>
+    </div>
+    <pre>{{ command }}</pre>
+  </div>
+</div>
+{% endif %}
+
+{# ── 3. tokens ─────────────────────────────────────────────────────── #}
+<div class="card" id="tokens">
+  <div class="card-h"><div class="mcp-cardhead">
+    <b>Tokens</b>
+    <span class="hint">{{ rows|selectattr('live')|list|length }} live of
+      {{ rows|length }} · a token answers as the person who minted it</span>
+  </div></div>
+  <div class="card-b">
+    {% if not may_mcp %}
+    <p class="mcp-note">Your account does not hold the <b>MCP access</b> area,
+      so a token of yours would be refused. Grant it in
+      <a href="/admin/roles">Administration → Roles</a> first — to yourself, or
+      to whoever will connect a client.</p>
+    {% else %}
+    {% if not cfg.enabled %}
+    <div class="mcp-off">⚠ The endpoint is off, so a token minted now will not
+      connect until you turn it on under
+      <a href="/settings/mcp?sec=server">Server</a>.</div>
+    {% endif %}
+    {{ tokbits.mint(areas, modes, act_names, cfg.token_days, may_manage,
+                    'settings') }}
+    {% endif %}
+
+    {% if mine %}
+    <div class="mcp-lbl" style="margin-top:26px;">yours</div>
+    {{ tokbits.cards(mine, areas, modes, act_names, may_manage, 'settings') }}
+    {% endif %}
+
+    {% set others = rows|rejectattr('uid', 'equalto', me.id)|list %}
+    {% if others %}
+    <div class="mcp-lbl" style="margin-top:26px;">everybody else's
+      <span class="mcp-hint">revoke here; re-scoping is theirs to do</span></div>
+    <p class="mcp-note">A scope is its owner's to set — silently widening one
+      for somebody would put their name on calls they never authorised.</p>
+    {# Somebody else's credential can be REVOKED here but not re-scoped. #}
+    {{ tokbits.cards(others, areas, modes, act_names, may_manage, 'settings',
+                     owners=owners, revoke_to="/settings/mcp/revoke",
+                     editable=false) }}
+    {% endif %}
+  </div>
+</div>
+
+{% elif sec == 'server' %}
+{# ── 1. the server ─────────────────────────────────────────────────── #}
+<div class="card" id="server">
+  <div class="card-h"><div class="mcp-cardhead">
+    <b>The server</b>
+    <span class="hint mcp-endpoint">{{ endpoint }}</span>
+  </div></div>
+  <div class="card-b">
+    <form method="post" action="/settings/mcp">
+      <div class="field-row"><label>MCP endpoint</label>
+        <div>
+          <label class="mcp-radio" style="max-width:420px;">
+            <input type="checkbox" name="enabled" value="1"
+                   {% if cfg.enabled %}checked{% endif %}>
+            <span>serve MCP at this address</span></label>
+          <p class="mcp-note" style="margin:8px 0 0;">Off on a new
+            installation. While it is off, a client is told there is no MCP here
+            rather than being refused.</p>
+          <details class="mcp-note" style="margin-top:6px;">
+            <summary>why it is off by default</summary>
+            An installation that never wanted this should not advertise an
+            endpoint — so it answers 404 rather than 403. Turning it on grants
+            nobody anything: a person still needs a token of their own and the
+            <b>MCP access</b> area, and every answer is filtered by the rest of
+            their areas.
+          </details>
+        </div></div>
+
+      <div class="field-row"><label>making changes</label>
+        <div>
+          <label class="mcp-radio" style="max-width:420px;">
+            <input type="checkbox" name="allow_actions" value="1"
+                   {% if cfg.allow_actions %}checked{% endif %}>
+            <span>let a token change things, not only read them</span></label>
+          <p class="mcp-note" style="margin:8px 0 0;">One switch for every
+            change — hosts, playbooks, VMs, Terraform, certificates, GitOps,
+            clusters. With it off, a client can still read everything and
+            troubleshoot.</p>
+          <details class="mcp-note" style="margin-top:6px;">
+            <summary>what it does not waive</summary>
+            A token still has to be scoped for changes; the person still needs
+            the area each action demands (a playbook needs <b>Ansible: run</b>,
+            Terraform needs <b>Terraform: apply</b>, a cluster needs <b>Cluster
+            management</b>); a cluster still needs its own management tick; and
+            anything marked production still wants its name typed. Settings,
+            accounts and roles are never reachable over MCP at all.
+          </details>
+        </div></div>
+
+      <div class="field-row"><label>rows per answer</label>
+        <div>
+          <input type="number" name="row_limit" min="1" max="500"
+                 value="{{ cfg.row_limit }}" style="width:110px;">
+          <p class="mcp-note" style="margin:8px 0 0;">How many rows a query
+            returns before it is cut. The true total is always reported, so a
+            model knows it is looking at part of the answer. A client may ask
+            for more, up to 500.</p>
+        </div></div>
+
+      <div class="field-row"><label>token lifetime</label>
+        <div>
+          <div class="kv" style="gap:8px;">
+            <input type="number" name="token_days" min="0" max="3650"
+                   value="{{ cfg.token_days }}" style="width:110px;">
+            <span class="mcp-note" style="margin:0;">days</span>
+          </div>
+          <p class="mcp-note" style="margin:8px 0 0;">The expiry offered by
+            default when a token is minted. <b>0</b> pre-selects a lifetime
+            token — available because some installations have no way to rotate
+            one, and not the default because a token is a door past two-factor
+            authentication.</p>
+        </div></div>
+
+      <div class="mcp-foot">
+        <button class="btn" type="submit">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{% elif sec == 'tools' %}
+{# ── 4. what a client can actually do ──────────────────────────────
+   Read from the catalogues rather than written out, so it cannot drift from
+   what the server offers. #}
+<div class="card" id="can">
+  <div class="card-h"><div class="mcp-cardhead">
+    <b>What a client can do with your access</b>
+    <span class="hint">{{ tool_count }} tools</span>
+  </div></div>
+  <div class="card-b">
+    <div class="mcp-verbs">
+      <div>
+        <div class="mcp-lbl">reads — always available</div>
+        <p class="mcp-note">Every question the pages answer, as one tool each:
+          clusters, nodes, pods, workloads, services and host names, pipelines,
+          GitOps applications, workflows, playbook runs, inventory, hardware,
+          virtual machines, certificates, what expires, what changed, spend, the
+          audit trail — plus one call that describes the whole estate.</p>
+        {% for v in verbs if not v.changes %}
+        <div class="mcp-verb"><code>{{ v.name }}</code>
+          <span>{{ v.label }}</span></div>
+        {% endfor %}
+      </div>
+      <div>
+        <div class="mcp-lbl">changes — only when allowed</div>
+        <p class="mcp-note">
+          {% if cfg.allow_actions %}Available to a token scoped for it, and
+          still subject to every area and confirmation the portal demands.
+          {% else %}The switch under
+          <a href="/settings/mcp?sec=server">Server</a> is off, so no token can
+          run any of these however it is scoped. A client can still describe
+          what it would do.{% endif %}</p>
+        {% for v in verbs if v.changes %}
+        <div class="mcp-verb"><code>{{ v.name }}</code>
+          <span>{{ v.label }}</span></div>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="field-row" style="margin-top:20px;"><label>what is recorded</label>
+      <div><p class="mcp-note" style="margin:0;">Every token's use is counted
+        and stamped with the time and address of its last call. Changes are
+        audited like any other, and so is every refusal — a client reaching
+        past what its owner holds shows up in
+        <a href="/admin/audit">the audit log</a>. Reads are counted rather than
+        audited line by line: a model asks many questions in one conversation,
+        and a row per question would bury the entries that matter.</p></div>
+    </div>
+  </div>
+</div>
+
+{% else %}
+{% if fresh %}
+{# Shown once, and only to the person who just minted it: held in their session
+   rather than passed through the URL, because a secret in a query string is a
+   secret in a proxy log and a browser history. #}
+<div class="mcp-fresh">
+  <div class="mcp-fresh-h">{{ glyph('circle-check', 17) }} Your new token</div>
+  <p class="mcp-note" style="margin:0;">Copy it now — it is stored hashed, so
+    this page cannot show it again. Lost one? Revoke it and mint another.</p>
+  <div class="mcp-secret">
+    <code>{{ fresh }}</code>
+    <button type="button" class="copy" data-copy="{{ fresh }}">copy</button>
+  </div>
+  <div class="mcp-code" style="margin:12px 0 0;">
+    <div class="mcp-code-h"><span>ready to paste — Claude Code</span>
+      <span class="mcp-spacer"></span>
+      <button type="button" class="copy" data-copy="{{ command }}">copy</button>
+    </div>
+    <pre>{{ command }}</pre>
+  </div>
+</div>
+{% endif %}
+
+{# ── 2. connect ────────────────────────────────────────────────────── #}
+<div class="card">
+  <div class="card-h"><b>Connect a client</b></div>
+  <div class="card-b">
+    <div class="mcp-steps">
+      <div class="mcp-step {{ 'done' if cfg.enabled }}">
+        <span class="mcp-num">{{ '✓' if cfg.enabled else '1' }}</span>
+        <div class="mcp-step-b">
+          <div class="mcp-step-t">Turn the endpoint on
+            {% if cfg.enabled %}<span class="sv sv-clean">done</span>
+            {% else %}<span class="sv sv-medium">not yet</span>{% endif %}</div>
+          <p class="mcp-note" style="margin:0;">
+            {% if cfg.enabled %}Serving at
+              <span class="mcp-endpoint">{{ endpoint }}</span>.
+            {% else %}Tick <b>serve MCP</b> under
+              <a href="/settings/mcp?sec=server">Server</a> and save, or nothing
+              will connect.{% endif %}</p>
+        </div>
+      </div>
+
+      <div class="mcp-step {{ 'done' if mine|selectattr('live')|list }}">
+        <span class="mcp-num">{{ '✓' if mine|selectattr('live')|list
+                                 else '2' }}</span>
+        <div class="mcp-step-b">
+          <div class="mcp-step-t">Mint a token for yourself
+            {% set mylive = mine|selectattr('live')|list|length %}
+            {% if mylive %}<span class="sv sv-clean">{{ mylive }} live</span>
+            {% endif %}</div>
+          <p class="mcp-note" style="margin:0;">It carries your permissions and
+            nothing more, and it is shown once.
+            <a href="/settings/mcp?sec=tokens">Mint one on the Tokens tab →</a></p>
+        </div>
+      </div>
+
+      <div class="mcp-step">
+        <span class="mcp-num">3</span>
+        <div class="mcp-step-b">
+          <div class="mcp-step-t">Paste one line</div>
+          <div class="mcp-code">
+            <div class="mcp-code-h"><span>Claude Code</span>
+              <span class="mcp-spacer"></span>
+              <button type="button" class="copy" data-copy="{{ command }}"
+                      >copy</button></div>
+            <pre>{{ command }}</pre>
+          </div>
+          <details>
+            <summary class="mcp-note" style="cursor:pointer;">a client
+              configured by file instead — Claude Desktop, an editor, your own
+              script</summary>
+            <div class="mcp-code" style="margin-top:10px;">
+              <div class="mcp-code-h"><span>mcp.json</span>
+                <span class="mcp-spacer"></span>
+                <button type="button" class="copy" data-copy="{{ client_json }}"
+                        >copy</button></div>
+              <pre>{{ client_json }}</pre>
+            </div>
+          </details>
+          <p class="mcp-note" style="margin:10px 0 0;">
+            {% if base_set %}Built from the address configured for this
+            installation.{% else %}Built from the address you are reading this
+            page on — nobody has told this installation its public address, so
+            set <code>PORTAL_BASE_URL</code> or the address in
+            <a href="/settings/mail">Settings → Email</a> if a client connects
+            from somewhere else.{% endif %}</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% endif %}
+
+{{ tokbits.js() }}
+{% endblock %}

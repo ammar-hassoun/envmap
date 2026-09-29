@@ -1,0 +1,87 @@
+{#- The edges and boxes of the resource map, on their own so ONE definition
+    serves both the page and the live refresh (/gitops/app/graph.json).
+    Rendering the map twice from two copies is how the picture and the
+    thing it refreshes into start to disagree. -#}
+          {% for e in graph.edges %}
+          {# an elbow, not a straight line: a diagonal across four columns is
+             impossible to follow back to its parent #}
+          <path class="gedge" d="M{{ e.x1 }},{{ e.y1 }}
+            H{{ (e.x1 + e.x2) / 2 }} V{{ e.y2 }} H{{ e.x2 }}"/>
+          {# a second, dashed copy that FLOWS parent → child: the picture says
+             which way the application is applied, and it is alive rather than
+             a diagram of something that might have stopped working #}
+          <path class="gflow" d="M{{ e.x1 }},{{ e.y1 }}
+            H{{ (e.x1 + e.x2) / 2 }} V{{ e.y2 }} H{{ e.x2 }}"/>
+          {% endfor %}
+          {% for n in graph.nodes %}
+          <g class="gnode gh-{{ (n.health or 'none')|lower }} gk-{{ n.family }}{{ ' gapp' if n.is_app }}{{ ' gdrain' if n.terminating }}"
+             data-uid="{{ n.uid }}" data-app="{{ 1 if n.is_app else 0 }}"
+             data-kind="{{ n.kind }}" data-rname="{{ n.name }}"
+             data-ns="{{ n.namespace }}" data-health2="{{ n.health }}"
+             data-sync="{{ n.sync }}" data-group="{{ n.group }}"
+             data-version="{{ n.version }}"
+             data-restart="{{ 1 if n.restartable else 0 }}"
+             data-phase="{{ n.phase }}"
+             tabindex="0" role="button" transform="translate({{ n.x }},{{ n.y }})">
+            {# everything visual sits in an inner group: the outer <g> owns
+               translate() as an ATTRIBUTE, and a CSS transform on the same
+               element would replace it — every box would leap to the origin
+               the moment it animated. The inner group is free to scale. #}
+            <g class="gin">
+            <rect class="gbox" width="{{ graph.box_w }}" height="{{ graph.box_h }}"
+                  rx="10"/>
+            {# the spine is the KIND's colour, so the diagram reads by family
+               before it reads by word; health rides the box's own border #}
+            <rect class="gedgemark" width="5" height="{{ graph.box_h }}" rx="2.5"/>
+            {# the family's mark: recognised before any text is read, which is
+               what makes a map of ninety boxes navigable at low zoom #}
+            <g class="gicon" transform="translate(17,{{ (graph.box_h - 22) / 2 }})"
+               >{{ glyph(n.icon, 22) }}</g>
+            <text class="gkind" x="50" y="26">{{ n.kind|upper }}</text>
+            <text class="gname" x="50" y="44">{{ n.name[:24] }}{{ '…' if n.name|length > 24 }}</text>
+            {% if n.terminating %}
+            <text class="gstate2 gsdrain" x="50" y="59">terminating{{
+              ' · ' ~ n.ready if n.ready }}</text>
+            {% elif n.phase %}
+            {# The live phase, coloured by what it MEANS: settled is quiet,
+               in-flight is the accent, broken is red. Painting a pod that is
+               pulling an image the same red as one crash-looping reads as an
+               incident when it is an ordinary rollout. #}
+            {% set bad = n.phase.split(':')[0] in ('CrashLoopBackOff', 'Error',
+                 'ImagePullBackOff', 'ErrImagePull', 'Failed', 'OOMKilled',
+                 'Evicted', 'CreateContainerConfigError', 'InvalidImageName') %}
+            <text class="{{ 'gstate2' if bad else 'gchip'
+                  if n.health == 'Healthy' else 'gwork' }}"
+                  x="50" y="59">{{ (n.phase ~ (' · ' ~ n.ready if n.ready else ''))|truncate(28) }}</text>
+            {% elif n.sync == 'OutOfSync' %}
+            <text class="gsync" x="50" y="59">out of sync</text>
+            {% elif n.health and n.health != 'Healthy' %}
+            <text class="{{ 'gwork' if n.health == 'Progressing' else 'gstate2' }}"
+                  x="50" y="59">{{ n.health|lower }}</text>
+            {% elif n.chips %}
+            <text class="gchip" x="50" y="59">{{ n.chips|join(' · ')|truncate(28) }}</text>
+            {% endif %}
+            {# age, where Argo puts it: the corner, quiet, on every box #}
+            {% if n.age %}
+            <text class="gage" x="{{ graph.box_w - 14 }}" y="59"
+                  text-anchor="end">{{ n.age }}</text>
+            {% endif %}
+            {# what a sync did to THIS box, painted on it by the watcher #}
+            <g class="gmark" transform="translate({{ graph.box_w - 48 }},11)" opacity="0">
+              <circle class="gmark-d" r="5.5" cx="5" cy="5"/>
+            </g>
+            {# Argo's ⋮ — the actions a box can take, without leaving the map.
+               The application's own box has none: it is not a cluster object,
+               and its actions are the toolbar's. #}
+            {% if not n.is_app %}
+            <g class="gkebab" transform="translate({{ graph.box_w - 22 }},{{ graph.box_h / 2 - 9 }})"
+               role="button" tabindex="0" aria-label="Actions">
+              <rect class="gkebab-hit" width="18" height="18" rx="5"/>
+              <circle cx="9" cy="4" r="1.4"/><circle cx="9" cy="9" r="1.4"/>
+              <circle cx="9" cy="14" r="1.4"/>
+            </g>
+            {% endif %}
+            </g>
+            <title>{{ n.kind }}/{{ n.name }}{% if n.namespace %} in {{ n.namespace }}{% endif %}</title>
+          </g>
+          {% endfor %}

@@ -1,0 +1,49 @@
+{# Registered database servers. This panel makes no connection of its own — see
+   _dbs_roll: a server is registered by host and port with no stored credentials,
+   so there is nothing to authenticate with, and probing every one on every page
+   load would be a port scan on a timer. What is shown is the recorded result of
+   the last explicit test. #}
+{% set b = d.dbs %}
+{% if b and b.conns %}
+<div class="card" style="margin:0;">
+  <div class="card-h">🗃 <a href="/db" style="color:var(--text);">Databases</a>
+    <span class="hint">{{ b.conns }} server{{ 's' if b.conns != 1 }}</span>
+    <span style="flex:1"></span>
+    {% if b.failed %}
+    <a class="badge" style="color:var(--danger-ink);" href="/settings/conns/db"><b
+       style="color:var(--danger-ink);">{{ b.failed }}</b> failing its last test</a>
+    {% endif %}
+  </div>
+  <div class="card-b">
+    {% for e in b.engines %}
+    <div style="{{ 'border-top:1px solid var(--line);padding-top:9px;margin-top:9px;'
+         if not loop.first }}">
+      <div class="kv" style="gap:8px;flex-wrap:wrap;">
+        <b style="font-size:13px;">{{ logo(e.key, e.label, 15) }} {{ e.label }}</b>
+        <span style="flex:1"></span>
+        <span class="badge">{{ e.count }}</span>
+        {% if e.ok %}<span class="badge" style="color:var(--ok-ink);">{{ e.ok }} reachable</span>{% endif %}
+        {% if e.failed %}<span class="badge" style="color:var(--danger-ink);">{{ e.failed }} failing</span>{% endif %}
+        {% if e.untested %}<span class="badge">{{ e.untested }} never tested</span>{% endif %}
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:7px;">
+        {% for s in e.servers %}
+        <span class="badge" style="font-size:11px;{{
+          'color:var(--danger-ink);' if s.state == 'failed' }}"
+          {% if s.detail %}title="{{ s.detail }}"{% endif %}>{{ s.name }}
+          <span class="hint" style="font-family:var(--mono);">{{ s.where }}</span></span>
+        {% endfor %}
+      </div>
+    </div>
+    {% endfor %}
+    <div class="sec-note" style="margin-top:10px;">Reachability is whatever the
+      last explicit test recorded — this panel does not connect on its own.</div>
+  </div>
+</div>
+{% else %}
+<div class="card" style="margin:0;"><div class="card-b">
+  <p class="sub" style="margin:0;">No database server registered.
+    <a href="/settings/conns/db">Register PostgreSQL, MySQL or Couchbase</a> and
+    this panel keeps an eye on them.</p>
+</div></div>
+{% endif %}

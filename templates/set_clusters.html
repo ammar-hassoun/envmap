@@ -1,0 +1,972 @@
+{% extends "base.html" %}
+{% from "_set_head.html" import head %}
+{% block crumbs %}<a href="/settings">Settings</a> <span class="sep">/</span>
+  <b>Clusters</b>{% endblock %}
+{% block content %}
+{#- Settings → Kubernetes clusters.
+
+    WHY THIS IS A LIST AND NOT A STACK OF FORMS
+        Every cluster used to render its whole edit form — name, two textareas,
+        context, the management tick, two buttons — expanded, always. That is
+        pleasant at three clusters and about ten thousand pixels of scrolling at
+        twenty-five, and the environment mapping was underneath all of it.
+
+        So a cluster is now ONE ROW that answers the questions somebody scrolls
+        looking for: what it is called, which context, whether its credentials
+        are in, whether it may be changed, and WHICH ENVIRONMENT IT SERVES. The
+        form opens on that row when it is wanted, one at a time.
+
+    WHY THERE IS NO SEPARATE "ENVIRONMENT → CLUSTER" CARD ANY MORE
+        There used to be one — a grid of every environment in every region with
+        a dropdown each, shown deliberately alongside the cluster rows' own
+        chips so the same fact read from both directions. It was requested away:
+        with twenty-plus environments across a handful of regions it was a
+        second big always-open surface competing with the cluster list for
+        attention, and a cluster's own "serves environment" field already does
+        the assignment. What that card ALSO carried — declaring/undeclaring an
+        environment, scanning a repo for candidates, adding a region — moved
+        into a small per-project panel (`env_admin`, opened like "add a
+        cluster", not rendered open by default) rather than disappearing; the
+        one thing genuinely gone is the cross-project "N unmapped" tally, which
+        had nowhere honest left to point once the grid was gone.
+
+    NOTE the width: no max-width on the cards — `.content` caps the page and
+    `.field-row` caps the value column. See CLAUDE.md → settings form width. -#}
+{{ head("Kubernetes clusters",
+        "A kubeconfig and a sealing certificate per cluster. Clusters belong to a
+         project; each environment in a region points at one of them.",
+        msg, err) }}
+
+<style>
+  /* ── the filter bar ── */
+  .cl-bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap;
+    margin-bottom:16px; }
+  .cl-bar input[type=search] { flex:1 1 260px; min-width:0; }
+  .cl-chip { font-size:11.5px; padding:5px 12px; border-radius:20px;
+    border:1px solid var(--line); background:var(--panel); color:var(--muted);
+    text-decoration:none; white-space:nowrap; }
+  .cl-chip:hover { border-color:var(--line2); color:var(--text); }
+  .cl-chip.on { border-color:var(--accent); color:var(--accent-ink);
+    background:color-mix(in srgb, var(--accent) 10%, transparent); }
+
+  /* ── the cluster table ──
+     `table.jenkins` is the house list component: click-to-sort is wired once in
+     base.html and the sticky action column is skipped by the sorter, so nothing
+     here re-implements either. What is local is only what this table's columns
+     need. */
+  /* ── one project, one line, until it is opened ── */
+  .cl-projbar { display:flex; align-items:center; gap:9px; flex-wrap:wrap; }
+  .cl-projhead { display:flex; align-items:center; gap:9px; flex:0 1 auto;
+    min-width:0; background:none; border:0; padding:7px 4px; cursor:pointer;
+    color:var(--text); font:inherit; text-align:left; border-radius:8px; }
+  .cl-projhead:hover { background:var(--well); }
+  .cl-projhead b { font-size:13.5px; }
+  .cl-chev { display:inline-flex; color:var(--muted); flex:none;
+    transition:transform .13s ease; }
+  .cl-projhead[aria-expanded="true"] .cl-chev { transform:rotate(90deg); }
+  .cl-projsum { font-size:11.5px; color:var(--faint); white-space:nowrap; }
+  .cl-projsum .up { color:var(--ok-ink); }
+  .cl-projsum .down { color:var(--danger-ink); }
+  .cl-projbody[hidden] { display:none; }
+  .cl-projbody { padding-top:8px; }
+
+  /* ── the cluster table ──
+     TABLE-LAYOUT:FIXED with declared widths, because every project renders its
+     OWN table and an auto layout sizes each one to its own content: one project's
+     context column began 200px left of the next one's, which is the same
+     "nothing lines up" as before moved one level out. Fixed tracks make four
+     separate tables agree, and they agree with the header row too. */
+  .cl-tablewrap { overflow-x:auto; }
+  .cl-table { width:100%; table-layout:fixed; min-width:940px; }
+  .cl-table td { vertical-align:middle; }
+  .cl-table .c-name { width:24%; }
+  .cl-table .c-ctx  { width:21%; }
+  .cl-table .c-srv  { width:22%; }
+  .cl-table .c-st   { width:17%; }
+  /* Wide enough for edit + test + remove on ONE line: a fixed cell does not
+     grow, and buttons that overflow it smear across the neighbouring column —
+     which is why .actrow wraps by default and why this column is sized for the
+     full set rather than the set being trimmed to fit. */
+  .cl-table .c-act  { width:196px; }
+  .cl-cell { display:flex; align-items:center; gap:7px; min-width:0; }
+  .cl-nm { font-weight:650; color:var(--text); overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+  /* Three states, not two. A hollow ring is "the fleet snapshot has not said
+     yet" and must not read as "down" — which is exactly what a grey disc did
+     while the dot came from a test button nobody presses. */
+  .cl-dot { width:8px; height:8px; border-radius:50%; flex:none;
+    background:transparent; border:1.5px solid var(--line2);
+    box-sizing:border-box; }
+  .cl-dot.ok { background:var(--ok); border-color:var(--ok); }
+  .cl-dot.bad { background:var(--danger); border-color:var(--danger); }
+  /* What is MISSING, said quietly. These were uppercase bordered plates in
+     warning yellow, and sixteen of them down one column read as an incident
+     rather than as "no sealing certificate has been added yet". */
+  .cl-mark { font-size:10px; padding:1px 6px; border-radius:5px; flex:none;
+    color:var(--muted); background:var(--well); border:1px solid var(--line); }
+  .cl-mark.bad { color:var(--warn-ink);
+    border-color:color-mix(in srgb, var(--warn) 40%, transparent); }
+  .cl-mark.rw { color:var(--danger-ink);
+    border-color:color-mix(in srgb, var(--danger) 45%, transparent); }
+  .cl-ctx { font-family:var(--mono); font-size:11.5px; color:var(--muted);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .cl-serves { display:flex; gap:5px; flex-wrap:wrap; }
+  /* The branch badge is gone from the chip: every environment here is on the
+     same branch, so it was the same word repeated twenty-four times. It is in
+     the chip's title, with the repository and the path. */
+  .cl-env { font-size:11px; color:var(--text2); background:var(--well);
+    border:1px solid var(--line); border-radius:20px; padding:1px 9px;
+    white-space:nowrap; text-decoration:none; }
+  .cl-env:hover { border-color:var(--accent); color:var(--accent-ink); }
+  .cl-env.empty { border-style:dashed; color:var(--faint); }
+  .cl-none { color:var(--faint); }
+  .cl-status { font-size:11.5px; color:var(--muted); white-space:nowrap; }
+  .cl-status.ok { color:var(--ok-ink); }
+  .cl-status.bad { color:var(--danger-ink); }
+  .cl-edit { border-top:1px solid var(--line); background:var(--well);
+    padding:14px; }
+  .cl-note { font-size:11.5px; color:var(--faint); line-height:1.55;
+    margin:0; max-width:64ch; }
+
+  .cl-empty { font-size:12px; color:var(--faint); }
+  .mcp-lbl { font-size:10.5px; text-transform:uppercase; letter-spacing:.07em;
+    color:var(--muted); font-weight:700; }
+  .cl-foot { display:flex; gap:12px; align-items:center; margin-top:12px;
+    flex-wrap:wrap; }
+  /* the create-in-place row a dropdown's "＋ add …" sentinel opens */
+  .cl-inlinenew { display:flex; gap:8px; align-items:center; margin-top:8px;
+    flex-wrap:wrap; }
+  .cl-inlinenew input { flex:0 1 240px; }
+  .cl-inlineerr { font-size:11.5px; color:var(--danger-ink); }
+
+  /* ── regions & environments, inside the toggled panel ──
+     One region per block; the declared environments as a compact table rather
+     than a card each, because at four or five per region the cards were the
+     thing that made this page long. */
+  .cl-envregion { border:1px solid var(--line); border-radius:10px;
+    background:var(--panel2); padding:12px 13px; margin-bottom:10px; }
+  .cl-envregion b { font-size:13px; }
+  .cl-envtable { width:100%; border-collapse:collapse; font-size:12px; }
+  .cl-envtable th { text-align:left; font-size:10px; text-transform:uppercase;
+    letter-spacing:.06em; color:var(--muted); font-weight:700;
+    padding:0 8px 6px 0; border-bottom:1px solid var(--line); }
+  .cl-envtable td { padding:7px 8px 7px 0; border-bottom:1px solid var(--line);
+    vertical-align:middle; }
+  .cl-envtable tr:last-child td { border-bottom:0; }
+  .cl-envsrc { font-family:var(--mono); font-size:11px; color:var(--muted);
+    word-break:break-all; }
+  /* ── one block per environment the cluster serves ──
+     Each is visibly a thing in its own right, because that is what it is: its
+     own region, name, repository, branch, path and credentials. Stacked, not
+     side by side — the binding row inside is already three fields wide. */
+  .cl-envblocks { display:grid; gap:10px; }
+  .cl-envblock { border:1px solid var(--line); border-radius:9px;
+    background:var(--panel2); padding:11px 12px; }
+  .cl-envblock-h { display:flex; align-items:center; gap:8px;
+    margin-bottom:9px; font-size:12.5px; color:var(--text); }
+  .cl-envblock-new { color:var(--faint); font-weight:600; }
+  .cl-x { font-size:11px; background:none; border:1px solid var(--line);
+    color:var(--muted); border-radius:6px; padding:2px 9px; cursor:pointer; }
+  .cl-x:hover { border-color:var(--danger-line); color:var(--danger-ink); }
+  .cl-envadd { }
+  /* the clone source must never be visible, and never submitted — a <template>
+     is inert on both counts, which is why it is one rather than a hidden div */
+  .cl-envtpl { display:none; }
+
+  /* the environment's own-credentials block: closed by default, and visibly a
+     sub-section of "where its values live" rather than a peer of it */
+  .cl-gitops { margin-top:11px; }
+  .cl-ownrepo { margin-top:9px; border-top:1px solid var(--line);
+    padding-top:8px; }
+  .cl-ownrepo summary { font-size:11.5px; color:var(--muted); cursor:pointer; }
+  .cl-ownrepo summary:hover { color:var(--accent-ink); }
+  .cl-ownrepo textarea { width:100%; box-sizing:border-box;
+    font-family:var(--mono); font-size:11px; }
+
+  @media (max-width:900px) {
+    /* neither a five-column list nor a six-column env table fits a
+       phone; both scroll inside their own card rather than pushing
+       the page sideways */
+    .cl-envregion { overflow-x:auto; }
+  }
+</style>
+
+{#- The environment a cluster serves, offered on the cluster's OWN form.
+
+    It lives on the region (`env_clusters`), which is why it used to be a
+    separate card — and why a cluster in a region with no repository configured
+    could not be assigned at all: the environment list is scanned from the repo,
+    so an unconfigured region offered an empty dropdown and was skipped. The
+    name is TYPED here, with the known ones offered as suggestions, because
+    `map_env_cluster` never required it to exist on disk. Only the UI did. -#}
+{#- Environments are DECLARED, not discovered — and regions are managed here
+    too, since a region only exists to hold environments and this is now the
+    one page for both.
+
+    This used to be a big always-open card, shown for every region in the
+    project whether anyone was looking at it or not. It is a `.cl-toggle` panel
+    now, same shape as "add a cluster" — closed until asked for, and part of
+    the same "only one panel open at a time" behaviour, because a settings page
+    with two independently-scrolling open editors is the exact disease this
+    page was rebuilt to cure. -#}
+{% macro env_admin(pid, p) %}
+<div class="cl-edit" id="regenv-{{ pid }}" hidden>
+  {% if not p.regions %}
+  <p class="cl-note" style="margin-bottom:10px;">No regions yet.</p>
+  {% endif %}
+  {% for rgid, rg in p.regions.items() %}
+  <div class="cl-envregion">
+    <div class="kv" style="margin-bottom:9px;">
+      {{ project_icon(p.icon, 15) }}
+      <b>{{ rg.flag or flag_for(rg.name) }} {{ rg.name }}</b>
+      <span class="hint">{{ rg.envs|length }} environment{{ 's' if rg.envs|length != 1 }}
+        declared</span>
+      <span style="flex:1"></span>
+      <form method="post" style="display:inline;"
+            action="/settings/project/{{ pid }}/region/{{ rgid }}/delete"
+            data-del="region {{ rg.name }} and its clone">
+        <button class="abtn danger" type="submit">remove region</button></form>
+    </div>
+
+    {% if rg.envs %}
+    <table class="cl-envtable">
+      <tr><th>environment</th><th>repository</th><th>branch</th>
+          <th>path</th><th>files</th><th></th><th></th></tr>
+      {% for env, files in rg.envs.items() %}
+      {% set b = rg.bind.get(env) or {} %}
+      <tr>
+        <td><b>{{ env }}</b>
+          {% if not (rg.env_clusters or {}).get(env) %}
+          <span class="cl-mini no" title="no cluster serves this yet">unmapped</span>
+          {% endif %}</td>
+        <td class="cl-envsrc">{% if b.url %}{{ b.url|truncate(34) }}
+            {%- else %}<span class="sv sv-medium">no repository</span>{% endif %}
+          {%- if b.has_own_auth %} <span class="cl-mini" title="credentials are stored for this environment">creds ✓</span>{% endif %}</td>
+        <td class="cl-envsrc">{{ b.branch or '(default)' }}</td>
+        <td class="cl-envsrc">{{ b.path or '(root)' }}</td>
+        <td class="cl-envsrc">{% if files %}{{ files|length }}
+            {%- else %}<span class="sv sv-medium">none</span>{% endif %}</td>
+        <td style="text-align:right;white-space:nowrap;">
+          <form method="post" style="display:inline;"
+                action="/settings/project/{{ pid }}/region/{{ rgid }}/env/sync">
+            <input type="hidden" name="name" value="{{ env }}">
+            <button class="abtn" type="submit"
+                    title="pull the checkout {{ env }} reads from">↻</button>
+          </form></td>
+        <td style="text-align:right;white-space:nowrap;">
+          <form method="post" style="display:inline;"
+                action="/settings/project/{{ pid }}/region/{{ rgid }}/env/hide"
+                data-confirm="Stop declaring “{{ env }}” in {{ rg.name }}? Nothing in the repository is touched.">
+            <input type="hidden" name="name" value="{{ env }}">
+            <button class="abtn" type="submit" title="undeclare {{ env }}">✕</button>
+          </form></td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}
+    <div class="sec-note" style="margin-bottom:10px;">Nothing declared here yet.
+      Declare one below, or add a cluster and declare it there in the same
+      form.</div>
+    {% endif %}
+
+    {% if rg.scannable %}
+    <div class="kv" style="margin:10px 0 0;gap:8px;">
+      <button type="button" class="abtn envscan" data-p="{{ pid }}"
+              data-r="{{ rgid }}">scan {{ rg.name }}'s checkout for
+        environments</button>
+      <span class="hint">a suggestion — nothing is declared until you say so</span>
+    </div>
+    <div class="envcand" id="cand-{{ rgid }}" hidden></div>
+    {% endif %}
+
+    <div class="mcp-lbl" style="margin:12px 0 6px;">declare an environment</div>
+    <form method="post"
+          action="/settings/project/{{ pid }}/region/{{ rgid }}/env/add"
+          class="kv" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
+      <input type="text" name="name" required maxlength="60"
+             placeholder="name — e.g. preprod" style="flex:0 1 150px;">
+      <input type="text" name="gitops_url" style="flex:1 1 210px;"
+             placeholder="GitOps repo — blank copies the siblings'">
+      <input type="text" name="gitops_branch" style="flex:0 1 120px;"
+             placeholder="branch">
+      <input type="text" name="gitops_path" style="flex:1 1 190px;"
+             placeholder="path from the repo root — deploy/ke/preprod">
+      <button class="abtn" type="submit">declare</button>
+    </form>
+    <p class="cl-note" style="margin-top:7px;">A blank repository copies the
+      one this region's other environments share — when they all use the same
+      one — and stores it on the new row, where you can see it. A declared
+      environment is listed straight away, before any values file exists, so
+      it can be pointed at a cluster.</p>
+  </div>
+  {% endfor %}
+
+  {#- The project is NAMED on the label and the button. This form acts on the
+      block it sits in, and acting "near a cluster" is not the same as acting
+      on its project — a region meant for a brand-new project was once created
+      here, landed in the block's project, and everything downstream was
+      consistent-but-wrong. A control that commits to a scope says the scope. -#}
+  <div class="mcp-lbl" style="margin:{{ '6px' if p.regions else '0' }} 0 6px;">
+    add a region to {{ p.name }}</div>
+  <form method="post" action="/settings/project/{{ pid }}/region/new"
+        class="kv" style="gap:8px;flex-wrap:wrap;">
+    <input type="hidden" name="back" value="/settings/clusters">
+    <input type="text" name="name" required placeholder="region — e.g. TZ"
+           style="flex:0 1 140px;">
+    <input type="text" name="label" placeholder="label — Tanzania (optional)"
+           style="flex:0 1 200px;">
+    <input type="text" name="flag" maxlength="4"
+           placeholder="flag — auto from the name" style="flex:0 1 170px;">
+    <button class="abtn" type="submit">add to {{ p.name }}</button>
+  </form>
+  <p class="cl-note" style="margin-top:6px;">For a region in a <b>different</b>
+    project, use the cluster form: pick the project there, then
+    <b>＋ add a region…</b> in its region dropdown.</p>
+</div>
+{% endmacro %}
+
+{#- ONE form for a cluster: what it is, and what it serves.
+
+    "kubeconfig, GitOps repo, GitOps branch, environment, path, credentials,
+    region" used to be FIVE screens — the cluster here, the repository under
+    Settings → GitOps repos, the values path and the credentials with it, the
+    environment mapping in a card at the bottom of this page. Each one was
+    reachable and none of them told you the others existed, so a new cluster
+    was a scavenger hunt. It is one form now: fill it in, add the cluster, and
+    the environment it serves — including its own credentials, if it needs
+    any that differ from the region's — is declared and bound in the same
+    submit. There is no separate repository settings page any more: the FIRST
+    environment declared with a full repository becomes that region's default,
+    the same way it always would have from a settings page, just typed here
+    instead.
+
+    The GitOps fields are OPTIONAL and they inherit. Blank repository and blank
+    branch mean the region's, which is the common case; typing them is for the
+    environment that lives on its own branch or in its own repository. `uid`
+    scopes the protocol toggle's CSS/JS to one row — this macro renders once
+    per project's "add a cluster" panel and once per cluster's "edit" panel, and
+    a shared class name would toggle every row's fields at once. -#}
+
+
+{% if not projects %}
+<div class="empty">
+  <div class="big">{{ glyph("folder-git-2", 40) }}</div><h2>No projects yet</h2>
+  <p>Create a project before connecting clusters.</p>
+  <a class="btn" href="/settings/projects">Add a project</a>
+</div>
+{% else %}
+
+{# ── the numbers somebody arrives asking about, each one a filter ────────
+   A tile's number equals the rows its link opens — the clickable-tiles rule. #}
+<div class="ex-tiles">
+  <a class="ex-tile {{ 'on' if not show }}" href="/settings/clusters#clusters">
+    <span class="ico">{{ logo('kubernetes', 'Kubernetes', 17) }}</span>
+    <span><span class="big">{{ totals.clusters }}</span>
+      <span class="cap">cluster{{ 's' if totals.clusters != 1 }}</span>
+      <span class="sub">in {{ totals.projects }}
+        project{{ 's' if totals.projects != 1 }}</span></span>
+  </a>
+  <a class="ex-tile {{ 'bad' if totals.manage }} {{ 'quiet' if not totals.manage }} {{ 'on' if show == 'manage' }}"
+     href="/settings/clusters?show=manage#clusters">
+    <span class="ico">{{ glyph('zap', 17) }}</span>
+    <span><span class="big">{{ totals.manage }}</span>
+      <span class="cap">may be changed</span>
+      <span class="sub">the rest are read-only</span></span>
+  </a>
+  <a class="ex-tile {{ 'warn' if totals.nokey }} {{ 'quiet' if not totals.nokey }} {{ 'on' if show == 'nokey' }}"
+     href="/settings/clusters?show=nokey#clusters">
+    <span class="ico">{{ glyph('lock', 17) }}</span>
+    <span><span class="big">{{ totals.nokey }}</span>
+      <span class="cap">without a sealing key</span>
+      <span class="sub">cannot seal a secret</span></span>
+  </a>
+  {#- Only once the snapshot has an opinion. Before then every cluster is
+      "unknown", and a "0 not answering" tile would be claiming the fleet is
+      healthy on the strength of having asked nobody. -#}
+  <a class="ex-tile {{ 'bad' if totals.down }} {{ 'quiet' if not totals.down }} {{ 'on' if show == 'down' }}"
+     href="/settings/clusters?show=down#clusters">
+    <span class="ico">{{ glyph('triangle-alert', 17) }}</span>
+    <span><span class="big">{{ totals.down }}</span>
+      <span class="cap">not answering</span>
+      <span class="sub">live, from the fleet snapshot</span></span>
+  </a>
+</div>
+
+{# ── the clusters ──────────────────────────────────────────────────── #}
+<div class="card" id="clusters">
+  <div class="card-h">
+    <b>Clusters</b>
+    <span class="hint" id="clcount">{{ totals.clusters }} shown</span>
+    <span style="flex:1"></span>
+    <a class="btn btn-ghost" style="padding:4px 13px;font-size:11.5px;"
+       href="/clusters">Live status →</a>
+  </div>
+  <div class="card-b">
+    <div class="cl-bar">
+      <input type="search" id="clfind" placeholder="filter by name, context or environment…"
+             value="{{ q }}" autocomplete="off">
+      {% if show %}
+      <a class="cl-chip on" href="/settings/clusters#clusters">
+        {{ 'management on' if show == 'manage'
+           else 'no sealing key' if show == 'nokey'
+           else 'not answering' if show == 'down' else 'unused' }} ✕</a>
+      {% else %}
+      <a class="cl-chip" href="/settings/clusters?show=unused#clusters">unused
+        ({{ totals.unused }})</a>
+      {% endif %}
+    </div>
+
+    {% for pid, p in projects.items() %}
+    {% set rows = [] %}
+    {% for cid, c in p.clusters.items() %}
+      {% if (show != 'manage' or c.manage)
+            and (show != 'nokey' or not c.cert_file)
+            and (show != 'unused' or cid not in used)
+            and (show != 'down' or c.live == 'bad') %}
+        {{ rows.append((cid, c)) or '' }}
+      {% endif %}
+    {% endfor %}
+
+    {#- A project is ONE LINE until it is opened. Four projects and
+        twenty-four clusters meant scrolling past three estates to reach the
+        one you came for, and the answer to "which clusters are in this project"
+        was at the bottom of the page. Collapsed, the whole estate is four
+        lines and the line itself carries the summary — how many, and how many
+        of them are answering — so opening one is a choice rather than the only
+        way to find anything out.
+
+        A filter or a search OPENS whatever still matches (see `paint`): four
+        shut boxes after typing would look like the search had found nothing. -#}
+    {% set upn = rows|selectattr('1.live', 'equalto', 'ok')|list|length %}
+    {% set downn = rows|selectattr('1.live', 'equalto', 'bad')|list|length %}
+    <div class="cl-proj" data-project="{{ p.name|lower }}"
+         {% if not rows %}hidden{% endif %}>
+      <div class="cl-projbar" style="margin:{{ '0' if loop.first else '18px' }} 0 0;">
+        {#- Open on arrival when a TILE filter is on: clicking "not answering"
+            and landing on four shut boxes is the tile failing to do the one
+            thing it exists for. A plain visit starts collapsed. -#}
+        <button type="button" class="cl-projhead"
+                aria-expanded="{{ 'true' if show else 'false' }}">
+          <span class="cl-chev">{{ glyph('chevron-right', 15) }}</span>
+          {{ project_icon(p.icon, 18) }}
+          <b>{{ p.name }}</b>
+          {#- The breakdown only when it BREAKS anything down. "10 clusters ·
+              10 not checked" is the same fact twice, and a line that repeats
+              itself is a line people stop reading. -#}
+          <span class="cl-projsum">
+            {{ rows|length }} cluster{{ 's' if rows|length != 1 }}
+            {%- if rows|length != p.clusters|length %} of {{ p.clusters|length }}{% endif %}
+            {%- set unknown = rows|length - upn - downn %}
+            {%- if upn and upn != rows|length %} · <span class="up">{{ upn }} connected</span>
+            {%- elif upn %} · <span class="up">all connected</span>{% endif %}
+            {%- if downn %} · <span class="down">{{ downn }} not answering</span>{% endif %}
+            {%- if unknown and unknown != rows|length %} · {{ unknown }} not checked
+            {%- elif unknown %} · not checked yet{% endif %}
+          </span>
+        </button>
+        <span style="flex:1"></span>
+        <button type="button" class="abtn cl-toggle" data-for="regenv-{{ pid }}"
+                >regions &amp; environments</button>
+        <button type="button" class="abtn" data-clform data-clpid="{{ pid }}"
+                data-clname="add a cluster">＋ add a cluster</button>
+      </div>
+      <div class="cl-projbody"{% if not show %} hidden{% endif %}>
+
+      {# every environment name in the project, offered as suggestions to each
+         "serves environment" box in it — one list, not one per form #}
+      <datalist id="envs-{{ pid }}">
+        {% for rgid, rg in p.regions.items() %}{% for env in rg.envs %}
+        <option value="{{ env }}"></option>{% endfor %}{% endfor %}
+      </datalist>
+
+      {{ env_admin(pid, p) }}
+
+      {#- THE HOUSE TABLE, not a stack of cards.
+
+          Cards gave every row five competing zones — name, a long context
+          string, two shouty badge kinds, an environment chip each carrying its
+          branch, three buttons — plus a status line underneath, and no column
+          headers to say what any of it was. `table.jenkins` is what every other
+          list in the portal uses: real headers, click-to-sort for free (wired
+          once in base.html, nothing to do here), a sticky action column the
+          sorter skips, and one line per row.
+
+          Sorting is only safe because the form moved into a window: a detail
+          row unfolding under its parent would be scrambled the moment somebody
+          sorted the table. -#}
+      <div class="card"><div class="cl-tablewrap">
+      <table class="jenkins cl-table">
+        <thead><tr>
+          <th class="c-name">cluster</th>
+          <th class="c-ctx">context</th>
+          <th class="c-srv">serves</th>
+          <th class="c-st">status</th>
+          <th class="actcol c-act"></th>
+        </tr></thead>
+        <tbody>
+        {% for cid, c in rows %}
+        {% set serves = used.get(cid) or [] %}
+        {#- The haystack carries each chip AS RENDERED ("KE · preprod") as well
+            as the plain words, so copying what is on screen into the box finds
+            the row — it did not, and searching for the thing you can see is the
+            first thing anybody tries. -#}
+        {% set find = [c.name, c.context or ''] %}
+        {% for s in serves %}
+          {{- find.append(s.region) or '' }}{{ find.append(s.env) or '' }}
+          {{- find.append(s.region ~ ' · ' ~ s.env) or '' }}
+        {% endfor %}
+        <tr class="cl-row" data-find="{{ find|join(' ')|lower }}">
+          {#- data-sort so the column sorts by health first and node count
+              second, rather than alphabetically by the sentence. -#}
+          <td data-sort="{{ c.name|lower }}">
+            <span class="cl-cell">
+              <span class="cl-dot {{ c.live }}" title="{{ c.live_why }}"></span>
+              <b class="cl-nm" title="{{ c.name }}">{{ c.name }}</b>
+              {#- What is MISSING is a quiet mark, not a shouting badge. Sixteen
+                  yellow "NO SEALING KEY" plates down one column was a wall of
+                  warning about a thing that is often simply not needed yet. The
+                  title says it in words; the tile above counts them. -#}
+              {%- if not c.kubeconfig_file %}
+              <span class="cl-mark bad" title="no kubeconfig stored">no config</span>
+              {%- endif %}
+              {%- if not c.cert_file %}
+              <span class="cl-mark" title="no sealing certificate — cannot seal a secret for this cluster">no key</span>
+              {%- endif %}
+              {%- if c.manage %}
+              <span class="cl-mark rw" title="the portal may run commands that change this cluster">rw</span>
+              {%- endif %}
+            </span></td>
+          <td class="cl-ctx" title="{{ c.context }}">{{ c.context or '—' }}</td>
+          <td data-sort="{{ serves|map(attribute='region')|join(' ')|lower }}">
+            {%- if serves %}
+            <span class="cl-serves">
+              {#- Dashed when the assignment is real but nothing has been
+                  committed for it yet. That is a different thing from "not
+                  assigned", and flattening the two is what made by-name
+                  assignments look like they had failed. ONE title attribute:
+                  a second one on the same element is ignored. -#}
+              {%- for s in serves %}
+              <a class="cl-env{{ ' empty' if not s.files }}"
+                 href="/clusters?project={{ pid }}&cluster={{ cid }}&tab=config"
+                 title="{% if not s.files %}no values files for {{ s.env }} at {{ s.bind.path or 'the repository root' }} yet — {% endif %}{{ s.bind.url or 'no repository declared' }}{{ ' · ' ~ s.bind.branch if s.bind.branch }} · {{ s.bind.path or 'repository root' }}"
+                 >{{ s.flag }} {{ s.region }} · {{ s.env }}</a>
+              {%- endfor %}
+            </span>
+            {%- else %}<span class="cl-none">—</span>{% endif %}</td>
+          {#- 2 = up, 1 = unknown, 0 = down, then the node count: sorting by
+              status should put what is broken at one end, not group the word
+              "not" next to the word "ok". -#}
+          <td data-sort="{{ (2 if c.live == 'ok' else 0 if c.live == 'bad' else 1) }}"
+              class="cl-status {{ c.live }}">{{ c.live_why }}</td>
+          <td class="actcol">
+            <span class="actrow oneline">
+              <button type="button" class="abtn" data-clform
+                      data-clpid="{{ pid }}" data-clcid="{{ cid }}"
+                      data-clname="{{ c.name }}" data-clcontext="{{ c.context }}"
+                      >edit</button>
+              <form method="post"
+                    action="/settings/project/{{ pid }}/cluster/{{ cid }}/test">
+                <button class="abtn" type="submit">test</button></form>
+              <form method="post"
+                    action="/settings/project/{{ pid }}/cluster/{{ cid }}/delete"
+                    data-del="{{ c.name }}">
+                <button class="abtn danger" type="submit">remove</button></form>
+            </span></td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      </div></div>
+      </div>
+    </div>
+    {% endfor %}
+
+    <div class="empty" id="clnone" hidden style="margin-top:4px;">
+      <div class="big">{{ logo('kubernetes', 'Kubernetes', 34) }}</div>
+      <h2>Nothing matches</h2><p>No cluster matches this filter.</p>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<script nonce="{{ csp_nonce() }}">
+(() => {
+  // The repository scan, on request. It offers rows; each one is a form that
+  // declares that environment at that path. Nothing here writes anything —
+  // which is the point of it being a button rather than a page load.
+  document.addEventListener('click', async ev => {
+    const b = ev.target.closest('.envscan');
+    if (!b) return;
+    const box = document.getElementById('cand-' + b.dataset.r);
+    b.disabled = true;
+    b.textContent = 'scanning…';
+    try {
+      const r = await fetch(`/settings/project/${b.dataset.p}/region/${b.dataset.r}/env/candidates`);
+      const j = await r.json();
+      const rows = (j.candidates || []);
+      if (!rows.length) {
+        box.innerHTML = '<div class="sec-note">Nothing in that checkout looks '
+          + 'like an environment. Declare one by hand — the scan only knows one '
+          + 'shape, which is why it is not the truth here.</div>';
+      } else {
+        box.innerHTML = '<table class="cl-envtable"><tr><th>found</th>'
+          + '<th>path</th><th>files</th><th></th></tr>'
+          + rows.map(c => `<tr><td><b>${esc(c.env)}</b></td>`
+              + `<td class="cl-envsrc">${esc(c.path) || '(root)'}</td>`
+              + `<td class="cl-envsrc">${c.files}</td><td style="text-align:right;">`
+              + (c.declared ? '<span class="hint">declared</span>'
+                 : `<form method="post" style="display:inline;" action="/settings/project/${b.dataset.p}/region/${b.dataset.r}/env/add">`
+                   + `<input type="hidden" name="name" value="${esc(c.env)}">`
+                   + `<input type="hidden" name="gitops_path" value="${esc(c.path)}">`
+                   + '<button class="abtn" type="submit">declare</button></form>')
+              + '</td></tr>').join('') + '</table>';
+      }
+      box.hidden = false;
+    } catch (e) {
+      box.innerHTML = '<div class="sec-note">could not read that checkout</div>';
+      box.hidden = false;
+    }
+    b.disabled = false;
+    b.textContent = 'scan again';
+  });
+  const esc = t => String(t == null ? '' : t).replace(/[&<>"']/g,
+      m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+
+  // The region list follows the PROJECT select: regions belong to a project, so
+  // offering all of them would let somebody assign a cluster to a region of a
+  // project it is not in — which `_map_from_form` would then silently drop.
+  //
+  // Options are REBUILT rather than hidden: `hidden` on an <option> is not
+  // reliably honoured, and the themed dropdown draws its menu from the options
+  // it finds, so the only way to change what it offers is to change them and
+  // call the house `ddRefresh` (see CLAUDE.md — there is no DOM observer).
+  // EVERY block in the panel, not the first one: a cluster serving three
+  // environments has three region selects under one project select, and a
+  // singular querySelector drove only the topmost while the other two kept
+  // offering another project's regions.
+  const regionSync = sel => {
+    const uid = sel.dataset.uid;
+    const want = sel.value;
+    let anyreg = false;
+    document.querySelectorAll(`.clregion[data-uid="${uid}"]`).forEach(reg => {
+      if (!reg._all) reg._all = [...reg.options].map(o => o.cloneNode(true));
+      const keep = reg._all.filter(o => !o.dataset.pid || o.dataset.pid === want);
+      const had = reg.value;
+      reg.textContent = '';
+      keep.forEach(o => reg.appendChild(o.cloneNode(true)));
+      // a region from the project we just left is not a choice any more
+      reg.value = [...reg.options].some(o => o.value === had) ? had : '';
+      if (window.ddRefresh) window.ddRefresh(reg);
+      // count REAL regions (they carry data-pid) — the placeholder and the
+      // "+ add a region…" sentinel are options too, and counting them said
+      // "this project has regions" about a project with none
+      if (keep.some(o => o.dataset.pid)) anyreg = true;
+    });
+    const note = document.querySelector(`.clnoreg-${uid}`);
+    if (note) note.style.display = anyreg ? 'none' : '';
+    // suggestions come from the project's own environments
+    document.querySelectorAll(`.clenv[data-uid="${uid}"]`).forEach(env => {
+      if (want) env.setAttribute('list', 'envs-' + want);
+    });
+  };
+  // ── create a project or region IN PLACE, from the dropdown itself ──
+  // The "＋ add …" entries are sentinels, not values: choosing one opens a
+  // small row under the select and the select snaps back to what it held, so
+  // the sentinel can never be submitted. Creation goes over fetch (the routes'
+  // inline mode) precisely so the page never navigates — a half-filled form
+  // with a pasted kubeconfig in it is exactly what a redirect would destroy.
+  const restore = new WeakMap();
+  document.querySelectorAll('.clproj, .clregion').forEach(s => restore.set(s, s.value));
+  const sentinel = sel => {
+    const isNew = sel.value === '__new__' || sel.value === '__newrg__';
+    if (!isNew) { restore.set(sel, sel.value); return false; }
+    const kind = sel.value === '__new__' ? 'clnewproj' : 'clnewrg';
+    sel.value = restore.get(sel) || '';
+    if (window.ddRefresh) window.ddRefresh(sel);
+    // the inline row belongs to this block when there is one (a region select
+    // sits in every block); the project select still has the panel-level row
+    const row = kind === 'clnewrg' && sel.closest('.cl-envblock')
+      ? sel.closest('.cl-envblock').querySelector('.clnewrg')
+      : document.querySelector(`.${kind}-${sel.dataset.uid}`);
+    if (row) {
+      row.hidden = false;
+      const inp = row.querySelector('input');
+      inp.value = '';
+      inp.focus();
+    }
+    return true;
+  };
+  document.addEventListener('click', async ev => {
+    const no = ev.target.closest('.clnewno');
+    if (no) { no.closest('.cl-inlinenew').hidden = true; return; }
+    const go = ev.target.closest('.clnewgo');
+    if (!go) return;
+    const row = go.closest('.cl-inlinenew');
+    const name = row.querySelector('input').value.trim();
+    const err = row.querySelector('.cl-inlineerr');
+    err.textContent = '';
+    if (!name) { err.textContent = 'a name is required'; return; }
+    const uid = go.dataset.uid;
+    go.disabled = true;
+    try {
+      if (go.dataset.kind === 'proj') {
+        const r = await fetch('/settings/project/new', {method: 'POST',
+          body: new URLSearchParams({name, inline: '1'})});
+        const j = await r.json();
+        if (!r.ok) { err.textContent = j.error || 'could not create it'; return; }
+        // every project select on the page learns the new project, so the
+        // add-panels and the edit-panels cannot disagree about what exists
+        document.querySelectorAll('.clproj').forEach(sel => {
+          sel.insertBefore(new Option(j.name, j.id),
+                           sel.querySelector('option[value="__new__"]'));
+          if (window.ddRefresh) window.ddRefresh(sel);
+        });
+        const mine = document.querySelector(`.clproj[data-uid="${uid}"]`);
+        mine.value = j.id;
+        restore.set(mine, j.id);
+        if (window.ddRefresh) window.ddRefresh(mine);
+        regionSync(mine);
+      } else {
+        const proj = document.querySelector(`.clproj[data-uid="${uid}"]`);
+        const pid = proj ? proj.value : '';
+        if (!pid) { err.textContent = 'pick a project first'; return; }
+        const r = await fetch(`/settings/project/${pid}/region/new`,
+          {method: 'POST', body: new URLSearchParams({name, inline: '1'})});
+        const j = await r.json();
+        if (!r.ok) { err.textContent = j.error || 'could not create it'; return; }
+        // into every region select's master list (regionSync rebuilds live
+        // options from it), placed before the sentinel so "＋ add" stays last
+        const mk = () => {
+          const o = new Option(j.label, j.id);
+          o.dataset.pid = pid;
+          return o;
+        };
+        document.querySelectorAll('.clregion').forEach(sel => {
+          if (sel._all) sel._all.splice(sel._all.length - 1, 0, mk());
+          else sel.insertBefore(mk(),
+                                sel.querySelector('option[value="__newrg__"]'));
+        });
+        document.querySelectorAll('.clproj').forEach(regionSync);
+        // the block whose dropdown opened this row, not merely the first one
+        const reg = (row.closest('.cl-envblock')
+                     || document).querySelector('.clregion');
+        if (reg) {
+          reg.value = j.id;
+          restore.set(reg, j.id);
+          if (window.ddRefresh) window.ddRefresh(reg);
+        }
+      }
+      row.hidden = true;
+    } catch (e) {
+      err.textContent = 'could not reach the portal';
+    } finally {
+      go.disabled = false;
+    }
+  });
+
+  document.addEventListener('change', ev => {
+    const reg = ev.target.closest('.clregion');
+    if (reg && sentinel(reg)) return;
+    const sel = ev.target.closest('.clproj');
+    if (!sel) return;
+    if (sentinel(sel)) return;
+    regionSync(sel);
+  });
+  document.querySelectorAll('.clproj').forEach(regionSync);
+
+  // HTTPS shows username+token, SSH shows a key box. Scoped by the row's own
+  // uid: this block renders once per project's add-panel and once per cluster's
+  // edit-panel, so a shared class would switch every row at once. Delegated,
+  // because the global select enhancer redraws these as themed dropdowns and a
+  // listener bound to the original element would be talking to a hidden one —
+  // it re-dispatches `change` on the native select, which is what this catches.
+  document.addEventListener('change', ev => {
+    const sel = ev.target.closest('.clproto');
+    if (!sel) return;
+    protoPaint(sel);
+  });
+  const protoPaint = sel => {
+    const ssh = sel.value === 'ssh';
+    const box = sel.closest('.cl-envblock') || document;
+    box.querySelectorAll('.clhttps')
+      .forEach(e => e.style.display = ssh ? 'none' : '');
+    box.querySelectorAll('.clssh')
+      .forEach(e => e.style.display = ssh ? '' : 'none');
+  };
+  // a prefilled SSH binding must open on its key box, not on the HTTPS pair
+  document.querySelectorAll('.clproto').forEach(protoPaint);
+
+  // The form now ARRIVES BY FETCH into the window, so the passes that normally
+  // run once on DOMContentLoaded have to be runnable again on a subtree. The
+  // delegated click/change listeners above already cover content that did not
+  // exist at load; these are the initial paints, and without them a fetched
+  // form shows an SSH binding's HTTPS pair and offers another project's
+  // regions.
+  window.clFormWake = root => {
+    root.querySelectorAll('.clproj, .clregion').forEach(sel =>
+      restore.set(sel, sel.value));
+    root.querySelectorAll('.clproj').forEach(regionSync);
+    root.querySelectorAll('.clproto').forEach(protoPaint);
+  };
+
+  // ── serve another environment ──
+  // A clone of the panel's own <template>, so the new block already carries
+  // this project's regions and this panel's uid — building one from a string
+  // would mean keeping a second copy of the markup in step with the macro.
+  document.addEventListener('click', ev => {
+    const drop = ev.target.closest('.cl-envdrop');
+    if (drop) {
+      const block = drop.closest('.cl-envblock');
+      const box = block.parentElement;
+      block.remove();
+      // Never leave the panel with no way to add one back.
+      if (!box.querySelector('.cl-envblock')) {
+        const add = box.parentElement.querySelector('.cl-envadd');
+        if (add) add.click();
+      }
+      return;
+    }
+    const add = ev.target.closest('.cl-envadd');
+    if (!add) return;
+    const wrap = add.parentElement;
+    const tpl = wrap.querySelector('.cl-envtpl');
+    const box = wrap.querySelector('.cl-envblocks');
+    if (!tpl || !box) return;
+    const block = tpl.content.firstElementChild.cloneNode(true);
+    block.classList.remove('tpl');
+    box.appendChild(block);
+    // The clone's controls are native copies: the house enhancer sweeps once
+    // on DOMContentLoaded and there is no observer, so a block added later has
+    // to be enhanced by hand or it draws the OS dropdown on a dark page.
+    // ddSweep rather than enhanceSelect per select — it covers the `input
+    // list=` comboboxes too, and whatever the house adds next.
+    if (window.ddSweep) window.ddSweep(block);
+    // and it must offer the regions of whatever project is currently chosen
+    const proj = document.querySelector(`.clproj[data-uid="${add.dataset.uid}"]`);
+    if (proj) regionSync(proj);
+    block.querySelectorAll('.clproto').forEach(protoPaint);
+    const first = block.querySelector('input[name="env"]');
+    if (first) first.focus({preventScroll: true});
+  });
+
+  // Only the "regions & environments" panel toggles in place now — the cluster
+  // form moved into the window, which is what lets the list be a sortable
+  // table (a detail row unfolding under its parent would be scrambled by a
+  // sort, and every form rendered inline was 463K of page).
+  const panels = () => [...document.querySelectorAll('.cl-edit')];
+  const shut = except => panels().forEach(p => {
+    if (p !== except) p.hidden = true;
+  });
+  document.querySelectorAll('.cl-toggle').forEach(b =>
+    b.addEventListener('click', () => {
+      const box = document.getElementById(b.dataset.for);
+      if (!box) return;
+      const opening = box.hidden;
+      shut(box);
+      box.hidden = !opening;
+      if (opening) {
+        box.scrollIntoView({block: 'nearest', behavior: 'smooth'});
+        const first = box.querySelector('input, textarea');
+        if (first) first.focus({preventScroll: true});
+      }
+    }));
+  document.querySelectorAll('.cl-cancel').forEach(b =>
+    b.addEventListener('click', () => shut(null)));
+
+  // A link can name a panel: /settings/clusters#ed-<cid> opens that cluster's
+  // editor, #add-<pid> that project's add form. The GitOps repo tab links here
+  // when an environment has no repository, and arriving at a list of
+  // twenty-four clusters to hunt for the one you just came from is the dead
+  // end this avoids. A filter is cleared first, or the row it names can be
+  // hidden and the page looks like it ignored the link.
+  // ── a project opens and shuts ──
+  const setOpen = (proj, on) => {
+    const head = proj.querySelector('.cl-projhead');
+    const body = proj.querySelector('.cl-projbody');
+    if (!head || !body) return;
+    body.hidden = !on;
+    head.setAttribute('aria-expanded', on ? 'true' : 'false');
+  };
+  const isOpen = proj => {
+    const b = proj.querySelector('.cl-projbody');
+    return b && !b.hidden;
+  };
+  document.addEventListener('click', ev => {
+    const head = ev.target.closest('.cl-projhead');
+    if (!head) return;
+    const proj = head.closest('.cl-proj');
+    setOpen(proj, !isOpen(proj));
+  });
+
+  const openNamed = () => {
+    const id = (location.hash || '').slice(1);
+    const m = /^ed-(.+)$/.exec(id);
+    if (!m) {
+      // #regenv-<pid> still names an in-page panel
+      const box = /^regenv-/.test(id) && document.getElementById(id);
+      if (!box) return;
+      shut(box);
+      box.hidden = false;
+      box.scrollIntoView({block: 'center'});
+      return;
+    }
+    // The GitOps repo tab links here when an environment has no repository, and
+    // arriving at a list of twenty-four clusters to hunt for the one you came
+    // from is the dead end this avoids. A filter is cleared first, or the row
+    // it names can be hidden and the page looks like it ignored the link.
+    const btn = document.querySelector(`[data-clform][data-clcid="${CSS.escape(m[1])}"]`);
+    if (!btn) return;
+    if (find && find.value) { find.value = ''; paint(); }
+    const proj = btn.closest('.cl-proj');
+    if (proj) { proj.hidden = false; setOpen(proj, true); }
+    const row = btn.closest('.cl-row');
+    if (row) {
+      row.hidden = false;
+      row.scrollIntoView({block: 'center'});
+    }
+    btn.click();
+  };
+  window.addEventListener('hashchange', openNamed);
+
+  // The search filters in the browser: at this size it is instant, and a
+  // round-trip per keystroke would be slower than scrolling.
+  const find = document.getElementById('clfind');
+  const rows = [...document.querySelectorAll('.cl-row')];
+  const count = document.getElementById('clcount');
+  const none = document.getElementById('clnone');
+  const paint = () => {
+    const q = find.value.trim().toLowerCase();
+    let shown = 0;
+    rows.forEach(r => {
+      const hit = !q || r.dataset.find.includes(q);
+      r.hidden = !hit;
+      if (hit) shown++;
+    });
+    // a project heading with nothing left under it is noise
+    document.querySelectorAll('.cl-proj').forEach(sec => {
+      const live = [...sec.querySelectorAll('.cl-row')].some(r => !r.hidden);
+      sec.hidden = !live;
+      // A search that leaves every project shut looks like it found nothing.
+      // Typing opens what still matches; clearing the box shuts them again, so
+      // the page returns to the four lines it started as rather than staying
+      // fully expanded from whatever was typed a minute ago.
+      if (live && q) setOpen(sec, true);
+      if (!q) setOpen(sec, false);
+    });
+    // `hidden` on a <tr> loses to the table's own display rule in some engines,
+    // so the filter sets display too — a row that stays visible while the count
+    // says it was filtered out is worse than no filter.
+    rows.forEach(r => { r.style.display = r.hidden ? 'none' : ''; });
+    if (count) count.textContent = shown + ' shown';
+    if (none) none.hidden = shown > 0;
+  };
+  if (find) {
+    find.addEventListener('input', paint);
+    if (find.value.trim()) paint();
+  }
+  openNamed();          // after `find`/`paint` exist — it clears the filter
+})();
+</script>
+
+{% include "_cluster_dialog.html" %}
+{% endblock %}

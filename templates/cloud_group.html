@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% from "_cloud_search.html" import searchbar %}
+{# aliased: the route passes a context variable called "actions" too #}
+{% from "_cloud_action.html" import actions as action_panel %}
+{% block crumbs %}<a href="/clouds">Clouds</a> <span class="sep">/</span>
+  <a href="/clouds?account={{ sel.id }}">{{ sel.name }}</a>
+  <span class="sep">/</span> <b>{{ group.label }}</b>{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>{{ group.icon }} {{ group.label }}</h1>
+    <p class="sub">{{ group.rows|length }} in {{ inv.region }}
+      {% if q %} · {{ rows|length }} match “{{ q }}”{% endif %}</p>
+  </div>
+  <div style="display:flex;gap:10px;">
+    <a class="btn btn-ghost"
+       href="/clouds/export/{{ sel.id }}/{{ group.key }}.csv?region={{ inv.region }}">⤓ CSV</a>
+    <a class="btn btn-ghost" href="/clouds?account={{ sel.id }}&region={{ inv.region }}&refresh=1">↻ Refresh</a>
+    <a class="btn btn-ghost" href="/clouds?account={{ sel.id }}&region={{ inv.region }}">← Account</a>
+  </div>
+</div>
+
+{% if msg %}<div class="flash">✓ {{ msg }}</div>{% endif %}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+
+{{ searchbar(search_index) }}
+
+<form method="get" action="/clouds/r/{{ sel.id }}/{{ group.key }}"
+      style="display:flex;gap:8px;margin-bottom:14px;">
+  <input type="hidden" name="region" value="{{ inv.region }}">
+  <input type="search" name="q" value="{{ q }}" placeholder="filter…"
+         style="max-width:260px;padding:6px 12px;font-size:12.5px;">
+  <button class="btn-ghost" type="submit">Filter</button>
+</form>
+
+<div class="card">
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    {% set cols = group.columns or ['Name', 'Type', 'State', 'Detail', 'Zone'] %}
+    <table class="jenkins">
+      <thead><tr>
+        <th style="min-width:220px;">{{ cols[0] }}</th>
+        <th style="min-width:150px;">{{ cols[1] }}</th>
+        <th style="width:110px;">{{ cols[2] }}</th>
+        <th style="min-width:150px;">{{ cols[3] }}</th>
+        <th style="width:150px;">{{ cols[4] }}</th>
+        {% if has_detail %}<th style="width:40px;"></th>{% endif %}
+      </tr></thead>
+      <tbody>
+      {% for it in rows %}
+      <tr>
+        <td class="jname">
+          {% if has_detail and it.id %}
+          <a href="/clouds/r/{{ sel.id }}/{{ group.key }}/{{ it.name if group.key in name_keyed else it.id }}?region={{ inv.region }}"><b>{{ it.name }}</b></a>
+          {% else %}<b>{{ it.name }}</b>{% endif %}
+          {% if it.id and it.id != it.name %}
+          <span class="hint" style="font-family:var(--mono);font-size:11px;"> {{ it.id }}</span>{% endif %}
+        </td>
+        <td>{{ it.kind }}</td>
+        <td>{% if it.state %}<span
+            style="{{ 'color:var(--ok-ink);' if it.state|lower in ('running','available','active','in_use','inuse','ok') }}">{{ it.state }}</span>
+          {% else %}—{% endif %}</td>
+        <td class="hint" style="font-family:var(--mono);font-size:11.5px;">{{ it.extra }}</td>
+        <td class="hint">{{ it.zone }}</td>
+        {% if has_detail %}
+        <td class="mid">
+          {% if it.id %}<a class="hint"
+             href="/clouds/r/{{ sel.id }}/{{ group.key }}/{{ it.name if group.key in name_keyed else it.id }}?region={{ inv.region }}"
+             title="Open">→</a>{% endif %}</td>
+        {% endif %}
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="hint" style="padding:16px;">
+        {% if q %}Nothing matches that filter.{% else %}None in {{ inv.region }}.{% endif %}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{{ action_panel(sel, inv.region, actions,
+                '/clouds/r/' ~ sel.id ~ '/' ~ group.key) }}
+{% endblock %}

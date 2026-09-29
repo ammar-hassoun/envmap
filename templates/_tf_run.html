@@ -1,0 +1,292 @@
+{# Running one Terraform stack, and watching it, in a window over the page.
+
+   Same shape as the Ansible run window: it POLLs `/terraform/run/{id}.json?since=N`
+   once a second and stops when the run says `done`. Four actions instead of
+   two — init, plan, apply, destroy. `init`/`plan` change nothing and run on a
+   click; `apply`/`destroy` change real infrastructure, carry a confirm, and on a
+   production stack need the stack's name typed. The whole bar is gated by the
+   escalating `terraform_apply` permission, and apply/destroy additionally by the
+   installation's `allow_apply` switch.
+#}
+<dialog id="tfDlg" class="psh tfwin">
+  <div class="psh-bar">
+    <span class="psh-dots"><b title="close" data-tfdot="close">✕</b><b
+      title="minimise" data-tfdot="mini">–</b><b title="maximise" data-tfdot="maxi">+</b></span>
+    <b>terraform</b>
+    <span class="psh-ns" id="tfWhat"></span>
+    <span style="flex:1"></span>
+    <span class="psh-state" id="tfState"></span>
+    <button type="button" class="psh-x" id="tfClose">close</button>
+  </div>
+
+  <div class="tfform" id="tfForm">
+    <div class="tfrow">
+      <button type="button" class="psh-x" data-tfact="init"
+              title="download providers and prepare the working directory — changes no infrastructure">↧ init</button>
+      <button type="button" class="psh-x" data-tfact="plan"
+              title="show what would change — changes no infrastructure">▷ plan</button>
+      <button type="button" class="psh-x danger" data-tfact="apply"
+              title="make the changes for real">⚡ apply</button>
+      <button type="button" class="psh-x danger" data-tfact="destroy"
+              title="destroy everything this stack manages">🗑 destroy</button>
+      <button type="button" class="psh-x" id="tfStop" hidden>■ Stop</button>
+      <span class="tfconfirm" id="tfConfirmWrap" hidden>
+        <label class="tflab">type the stack's name
+          <input type="text" id="tfConfirm" class="psh-find" spellcheck="false"
+                 autocomplete="off" placeholder="production stack"></label>
+      </span>
+      <span style="flex:1"></span>
+      <span class="psh-state" id="tfNote"></span>
+    </div>
+  </div>
+
+  <div class="lgbar" id="tfTools" hidden>
+    <input type="search" class="psh-find" id="tfFind" placeholder="filter lines…"
+           spellcheck="false" autocomplete="off">
+    <button type="button" class="psh-x" id="tfWrap" title="wrap long lines">wrap</button>
+    <button type="button" class="psh-x" id="tfCopy">copy</button>
+    <button type="button" class="psh-x" id="tfDownload">download</button>
+    <span style="flex:1"></span>
+    <span class="psh-state" id="tfCount"></span>
+  </div>
+  <div class="tfv" id="tfView" tabindex="0"></div>
+</dialog>
+
+<style>
+  dialog.tfwin { width:min(1080px,95vw); height:min(720px,88vh); }
+  dialog.psh.tfwin[open] { display:flex; flex-direction:column; }
+  .tfwin .tfv { flex:1 1 auto; min-height:0; }
+  .tfform { flex:none; padding:10px 14px 12px; border-bottom:1px solid #202839; }
+  .tfform[hidden] { display:none; }
+  .tfrow { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  .tflab { display:flex; flex-direction:column; gap:4px; font-family:var(--mono);
+    font-size:10.5px; color:#7f93b4; text-transform:uppercase; letter-spacing:.04em; }
+  .tflab .psh-find { text-transform:none; letter-spacing:0; }
+  .tfconfirm { display:inline-flex; }
+  .tfconfirm[hidden] { display:none; }
+  .tfv { overflow:auto; padding:11px 14px 16px; font-family:var(--mono);
+    font-size:12px; line-height:1.5; white-space:pre; color:#cfe0f5; }
+  .tfv.wrap { white-space:pre-wrap; word-break:break-word; }
+  .tfv .l { display:block; }
+  .tfv .l-add { color:var(--ok-ink); }
+  .tfv .l-change { color:var(--warn-ink); }
+  .tfv .l-destroy { color:var(--danger-ink); }
+  .tfv .l-fail { color:var(--danger-ink); font-weight:600; }
+  .tfv .l-head { color:#eaf2ff; font-weight:650; }
+  .tfv .l-cmd { color:#8fa8cc; }
+  .tfv mark { background:rgba(245,196,81,.28); color:var(--warn-on-wash); border-radius:3px; }
+  .tfv .none { color:var(--muted); font-family:var(--sans); white-space:normal; }
+  .psh-x.danger { color:var(--danger-ink); border-color:var(--danger-line); }
+  .psh-x[disabled] { opacity:.45; cursor:not-allowed; }
+</style>
+
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  const dlg = document.getElementById('tfDlg');
+  const view = document.getElementById('tfView');
+  const what = document.getElementById('tfWhat');
+  const state = document.getElementById('tfState');
+  const note = document.getElementById('tfNote');
+  const count = document.getElementById('tfCount');
+  const find = document.getElementById('tfFind');
+  const form = document.getElementById('tfForm');
+  const tools = document.getElementById('tfTools');
+  const confirmWrap = document.getElementById('tfConfirmWrap');
+  const confirmIn = document.getElementById('tfConfirm');
+  const stopBtn = document.getElementById('tfStop');
+  const MAY_APPLY = {{ 'true' if may_apply else 'false' }};
+  const ALLOW_APPLY = {{ 'true' if cfg.allow_apply else 'false' }};
+  const CHANGING = {ap: true, apply: true, destroy: true};
+  let stack = null, runId = null, at = 0, lines = [], timer = null, live = false;
+
+  function say(t, tone) {
+    note.textContent = t || '';
+    note.style.color = tone === 'bad' ? 'var(--danger-ink)'
+                     : (tone === 'ok' ? 'var(--ok-ink)' : '');
+  }
+
+  // Terraform's own diff vocabulary: +/-/~ per line, and its summary lines.
+  function classOf(line) {
+    if (/^\$ /.test(line)) return 'l-cmd';
+    if (/Error:|^│ Error|^╷/.test(line)) return 'l-fail';
+    if (/^(Apply complete!|Destroy complete!|Plan:|No changes)/.test(line)) return 'l-head';
+    if (/^\[(cancelled|timed out)/.test(line)) return 'l-fail';
+    const s = line.replace(/^\s+/, '');
+    if (s.startsWith('+ ') || s.startsWith('+resource')) return 'l-add';
+    if (s.startsWith('- ')) return 'l-destroy';
+    if (s.startsWith('~ ') || s.startsWith('-/+')) return 'l-change';
+    if (s.startsWith('# ')) return 'l-head';
+    return '';
+  }
+
+  function paint() {
+    const needle = find.value.trim().toLowerCase();
+    const frag = document.createDocumentFragment();
+    let shown = 0;
+    for (const line of lines) {
+      if (needle && !line.toLowerCase().includes(needle)) continue;
+      shown++;
+      const el = document.createElement('span');
+      el.className = 'l ' + classOf(line);
+      if (needle) {
+        const cut = line.toLowerCase().indexOf(needle);
+        el.append(document.createTextNode(line.slice(0, cut)));
+        const m = document.createElement('mark');
+        m.textContent = line.slice(cut, cut + needle.length);
+        el.append(m, document.createTextNode(line.slice(cut + needle.length)));
+      } else { el.textContent = line || ' '; }
+      frag.appendChild(el);
+    }
+    view.replaceChildren(frag);
+    if (!shown) {
+      const p = document.createElement('span'); p.className = 'none';
+      p.textContent = needle ? 'No line contains “' + find.value.trim() + '”.' : 'Nothing yet.';
+      view.appendChild(p);
+    }
+    count.textContent = needle ? shown + ' of ' + lines.length + ' lines'
+                               : lines.length + ' lines';
+  }
+
+  function follow() {
+    fetch('/terraform/run/' + encodeURIComponent(runId) + '.json?since=' + at)
+      .then(r => r.json())
+      .then(d => {
+        if (d.error) { say(d.error, 'bad'); stopFollowing(); return; }
+        if (d.text) {
+          const fresh = d.text.split('\n');
+          if (fresh.length && fresh[fresh.length - 1] === '') fresh.pop();
+          lines = lines.concat(fresh); at = d.at;
+          const stuck = view.scrollHeight - view.scrollTop - view.clientHeight < 40;
+          paint();
+          if (stuck) view.scrollTop = view.scrollHeight;
+        }
+        state.textContent = d.done ? d.status + (d.took ? ' · ' + d.took : '')
+                                   : 'running… ' + (d.took || '');
+        if (d.done) { stopFollowing();
+          say(d.status === 'ok' ? 'finished' : (d.why || 'run failed'),
+              d.status === 'ok' ? 'ok' : 'bad'); }
+      })
+      .catch(e => { say(String(e), 'bad'); stopFollowing(); });
+  }
+
+  function stopFollowing() {
+    live = false;
+    if (timer) { clearInterval(timer); timer = null; }
+    stopBtn.hidden = true; setButtons();
+  }
+
+  function setButtons() {
+    const prod = !!(stack && stack.prod);
+    confirmWrap.hidden = !prod;
+    if (prod) confirmIn.placeholder = 'type ' + (stack ? stack.name : '');
+    dlg.querySelectorAll('[data-tfact]').forEach(b => {
+      const act = b.dataset.tfact, changing = CHANGING[act] || act === 'apply' || act === 'destroy';
+      b.disabled = live || !MAY_APPLY || (changing && !ALLOW_APPLY);
+      b.title = !MAY_APPLY ? 'your role may not run terraform'
+        : (changing && !ALLOW_APPLY ? 'apply/destroy are switched off in Settings → Terraform'
+           : b.getAttribute('data-orig') || b.title);
+      if (!b.getAttribute('data-orig')) b.setAttribute('data-orig', b.title);
+    });
+  }
+
+  function run(action) {
+    if (!stack) return;
+    const changing = (action === 'apply' || action === 'destroy');
+    if (changing) {
+      if (stack.prod && confirmIn.value.trim() !== stack.name) {
+        say('type the stack name to ' + action + ' a production stack', 'bad'); return; }
+      if (!confirm('Terraform ' + action + ' on “' + stack.name
+          + '”?\n\nThis changes real infrastructure now.')) return;
+    }
+    lines = []; at = 0; paint(); tools.hidden = false;
+    say('starting ' + action + '…'); state.textContent = 'starting…';
+    live = true; setButtons();
+    const body = new URLSearchParams({sid: stack.sid, action: action,
+      confirm: confirmIn.value});
+    fetch('/terraform/run', {method: 'POST', body: body})
+      .then(r => r.json())
+      .then(d => {
+        if (!d.ok) { live = false; state.textContent = ''; say(d.error, 'bad'); setButtons(); return; }
+        runId = d.run_id; stopBtn.hidden = false; say('');
+        follow(); timer = setInterval(follow, 1000);
+      })
+      .catch(e => { live = false; say(String(e), 'bad'); setButtons(); });
+  }
+
+  dlg.querySelectorAll('[data-tfact]').forEach(b =>
+    b.addEventListener('click', () => run(b.dataset.tfact)));
+  find.addEventListener('input', paint);
+  stopBtn.addEventListener('click', () => {
+    if (!runId || !confirm('Stop this run? What it has already done stays done.')) return;
+    fetch('/terraform/run/' + encodeURIComponent(runId) + '/cancel', {method: 'POST'})
+      .then(r => r.json()).then(d => { if (!d.ok) say(d.error, 'bad'); });
+  });
+  document.getElementById('tfWrap').addEventListener('click', e => {
+    view.classList.toggle('wrap');
+    e.currentTarget.classList.toggle('on', view.classList.contains('wrap'));
+  });
+  document.getElementById('tfCopy').addEventListener('click', e => {
+    navigator.clipboard.writeText(lines.join('\n')).then(() => {
+      const b = e.currentTarget, was = b.textContent; b.textContent = 'copied';
+      setTimeout(() => { b.textContent = was; }, 1200);
+    }).catch(() => {});
+  });
+  document.getElementById('tfDownload').addEventListener('click', () => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([lines.join('\n')], {type: 'text/plain'}));
+    a.download = (runId || 'terraform-run') + '.txt'; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  });
+
+  function shut() {
+    if (live && !confirm('This run keeps going without the window open. Close it?'
+        + '\n\nIt is in the Runs list with its full output.')) return;
+    stopFollowing(); dlg.close();
+  }
+  document.getElementById('tfClose').addEventListener('click', shut);
+  dlg.querySelector('[data-tfdot="close"]').addEventListener('click', shut);
+  dlg.querySelector('[data-tfdot="mini"]').addEventListener('click', shut);
+  dlg.querySelector('[data-tfdot="maxi"]').addEventListener('click',
+    () => dlg.classList.toggle('maxi'));
+  dlg.addEventListener('cancel', e => { e.preventDefault(); shut(); });
+
+  document.addEventListener('click', e => {
+    const run = e.target.closest && e.target.closest('[data-tfrun]');
+    if (run) { e.preventDefault();
+      openTerraformRun({sid: run.dataset.tfrun, name: run.dataset.tfname,
+                        prod: run.dataset.tfprod === '1'}); return; }
+    const out = e.target.closest && e.target.closest('[data-tfout]');
+    if (out) { e.preventDefault();
+      openTerraformOutput(out.dataset.tfout, out.dataset.tftitle || ''); }
+  });
+
+  window.openTerraformRun = function (opts) {
+    stack = {sid: opts.sid, name: opts.name, prod: !!opts.prod};
+    runId = null; at = 0; lines = []; live = false;
+    if (timer) { clearInterval(timer); timer = null; }
+    what.textContent = opts.name; state.textContent = '';
+    form.hidden = false; tools.hidden = true; stopBtn.hidden = true;
+    find.value = ''; confirmIn.value = ''; say(''); setButtons(); paint();
+    if (!dlg.open) dlg.showModal();
+  };
+
+  window.openTerraformOutput = function (id, title) {
+    stack = null; runId = id; at = 0; lines = []; live = false;
+    if (timer) { clearInterval(timer); timer = null; }
+    what.textContent = title || id;
+    form.hidden = true; tools.hidden = false; stopBtn.hidden = true;
+    find.value = ''; say(''); paint();
+    if (!dlg.open) dlg.showModal();
+    fetch('/terraform/run/' + encodeURIComponent(id) + '.json')
+      .then(r => r.json())
+      .then(d => {
+        if (d.error) { say(d.error, 'bad'); return; }
+        lines = (d.text || '').replace(/\s+$/, '').split('\n'); at = d.at; paint();
+        state.textContent = d.status + (d.took ? ' · ' + d.took : '');
+        say(d.status === 'ok' ? '' : (d.why || ''), d.status === 'ok' ? 'ok' : '');
+        if (!d.done) { live = true; stopBtn.hidden = false; timer = setInterval(follow, 1000); }
+      })
+      .catch(e => say(String(e), 'bad'));
+  };
+})();
+</script>

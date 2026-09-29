@@ -1,0 +1,88 @@
+{% if section_error %}
+<div class="flash err">⚠ {{ section_error }}</div>
+{% endif %}
+{% set x = xdcr %}
+
+{# The distinction this tab exists to make: a registered remote cluster and a
+   running replication are different things, and "a target was set up and
+   nothing was ever pointed at it" is a real and confusing state. #}
+{% if x and x.note %}
+<div class="flash" style="margin-bottom:12px;">{{ x.note }}</div>
+{% endif %}
+
+<div class="card" style="margin-bottom:14px;">
+  <div class="card-h">Replications
+    <span class="hint">{{ (x.replications if x else [])|length }}</span></div>
+  <div class="card-b" style="overflow-x:auto;">
+    {% if not x or not x.replications %}
+    <p class="sub" style="margin:0;">Nothing is replicating out of this cluster.</p>
+    {% else %}
+    <table class="jenkins" style="min-width:820px;">
+      <thead><tr><th>source bucket</th><th>to</th><th>target bucket</th>
+        <th>status</th><th style="text-align:right;">changes left</th>
+        <th style="text-align:right;">docs written</th><th>mode</th></tr></thead>
+      <tbody>
+        {% for r in x.replications %}
+        <tr>
+          <td><b>{{ r.source }}</b></td>
+          <td class="hint">{{ r.remote }}</td>
+          <td>{{ r.target }}</td>
+          <td>
+            {% if r.status == 'running' %}
+            <span class="badge" style="color:var(--ok-ink);">running</span>
+            {% elif r.paused %}
+            <span class="badge" style="color:var(--warn-ink);
+                  border-color:var(--warn-line);">paused</span>
+            {% else %}
+            <span class="badge">{{ r.status }}</span>
+            {% endif %}
+          </td>
+          {# changes left is the lag. Zero is caught up; a large and steady
+             number is the thing to escalate, so it is not buried. #}
+          <td style="text-align:right;font-variant-numeric:tabular-nums;">
+            <span {% if r.changes_left > 10000 %}style="color:var(--warn-ink);"{% endif %}>
+              {{ '{:,}'.format(r.changes_left) }}</span></td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums;">{{ '{:,}'.format(r.docs_written) }}</td>
+          <td class="hint">{{ 'continuous' if r.continuous else 'one-shot' }}</td>
+        </tr>
+        {% if r.errors %}
+        <tr><td colspan="7" class="hint" style="color:var(--danger-ink);">
+          {% for e in r.errors %}{{ e }}{% if not loop.last %}<br>{% endif %}{% endfor %}
+        </td></tr>
+        {% endif %}
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-h">Remote clusters
+    <span class="hint">{{ (x.remotes if x else [])|length }}</span></div>
+  <div class="card-b" style="overflow-x:auto;">
+    {% if not x or not x.remotes %}
+    <p class="sub" style="margin:0;">No remote cluster is registered, so XDCR is
+      not set up on this cluster.</p>
+    {% else %}
+    <table class="jenkins" style="min-width:620px;">
+      <thead><tr><th>name</th><th>hostname</th><th>connects as</th>
+        <th>encrypted</th></tr></thead>
+      <tbody>
+        {% for r in x.remotes %}
+        <tr>
+          <td><b>{{ r.name }}</b></td>
+          <td style="font-family:var(--mono);font-size:12px;">{{ r.hostname }}</td>
+          <td class="hint">{{ r.username or '—' }}</td>
+          <td>{% if r.secure %}<span class="badge" style="color:var(--ok-ink);">yes</span>
+            {% else %}<span class="badge" style="color:var(--warn-ink);">no</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+    <div class="sec-note" style="margin-top:12px;">Read-only. Creating,
+      pausing or deleting a replication changes what leaves this cluster and
+      belongs in Couchbase's own console with its own audit trail.</div>
+  </div>
+</div>

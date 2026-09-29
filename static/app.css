@@ -1,0 +1,2509 @@
+/* The portal's stylesheet. It lived inline in base.html — 150kB re-sent
+   and re-parsed on every navigation — and the page weight was the whole
+   perceived lag: the server renders in 2-3ms. Served from /static with the
+   version as a cache-buster, it downloads once per release.
+   Templates carry their own small page-specific <style> blocks; this file
+   is everything shared. */
+    /* Every colour lives here. Rules below reference variables only, so a light
+       theme is a second block that redefines these — not an edit of 500 rules.
+       Deliberate exception: text sitting on a saturated brand or severity fill
+       (white on the accent gradient, near-black on the red severity pill) is
+       written literally, because it contrasts correctly in either theme. */
+    :root {
+      /* tells the browser which way to draw the controls it owns — checkboxes,
+         scrollbars, pickers. Without it they are drawn light on a dark page. */
+      color-scheme: dark;
+      /* surfaces, back to front */
+      --bg:#0a0e17; --bg2:#131c33; --panel:#101626; --panel2:#171f33;
+      --panel3:#141c2e; --well:#0c1120;
+      /* borders: hairline is the softer divider used inside tables */
+      --line:#222c45; --line2:#2c3958; --hairline:rgba(34,44,69,.5);
+      /* text, strongest to weakest */
+      --text:#e8edf6; --text2:#c3cde0; --muted:#8a97b1; --faint:#66759a;
+      /* brand and state — FILL colours, kept saturated so the dark text that
+         sits on them stays legible in either theme */
+      --accent:#5b8def; --accent2:#8b6cf5; --accent-fg:#cfe0ff;
+      --ok:#3ddc97; --warn:#f5c451; --danger:#f57171;
+      /* the same states as TEXT. On a dark surface the fill colour reads well,
+         so these match; on a light surface they darken. Splitting them is what
+         lets one stylesheet serve both themes — a single value cannot be both a
+         bright fill and readable 11px text on white. */
+      --accent-ink:#5b8def; --ok-ink:#3ddc97; --warn-ink:#f5c451;
+      --danger-ink:#f57171; --info-ink:#7fb0ff; --crit-ink:#ff8a8a;
+      /* text ON a saturated fill (button, badge, severity pill) */
+      --on-accent:#fff; --ink-on-ok:#0c2f21; --ink-on-warn:#3a2d06;
+      --ink-on-danger:#3a0f0f; --ink-on-accent:#0b2038;
+      /* text on a translucent accent WASH — a selected tab or nav item. White
+         works on a dark wash; on a light one it disappears. */
+      --on-wash:#fff;
+      /* the log viewer is a terminal-like surface, darker than any panel */
+      --term:#080c15; --term-ts:#5f6f8e;
+      /* pale text used on the translucent state washes of a pipeline stage */
+      --ok-on-wash:#9ff0cd; --danger-on-wash:#ffc0c0; --warn-on-wash:#ffe9b0;
+      --accent2-on-wash:#ded2ff;
+      /* washes and casts — light theme inverts these rather than tinting */
+      --overlay:rgba(255,255,255,.03); --overlay-soft:rgba(255,255,255,.014);
+      --nav-top:#0d1322; --nav-wash:rgba(13,19,34,.9);
+      --bar-wash:rgba(13,19,34,.75); --shadow-cast:#000;
+      --radius:14px; --mono:ui-monospace,'SF Mono',Menlo,monospace;
+      --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.5);
+      /* Chart marks. Stepped for the dark surface rather than flipped from the
+         light one, and validated against this panel colour: one series slot is
+         all any chart here needs, so hue never has to carry identity. */
+      --series-1:#3987e5; --series-1-hi:#5598e7;
+      /* Declared because they were used and never defined: --warn-line,
+         --danger-line, --danger-wash, --accent-wash and --sans appear in
+         var() across several pages and resolved to nothing, so those
+         borders and washes simply did not render. Derived from the
+         palette above rather than picked, so the two themes stay in
+         step. */
+      --sans: ui-sans-serif,-apple-system,'Segoe UI',Roboto,sans-serif;
+      --ok-line: #2c6b52;
+      --warn-line: #6b5a2a;
+      --danger-line: #6d3440;
+      --danger-wash: rgba(245,113,113,.12);
+      --ok-wash: rgba(61,220,151,.12);
+      --warn-wash: rgba(245,196,81,.14);
+      --accent-wash: rgba(91,141,239,.13);
+
+    }
+    /* ── light theme ──────────────────────────────────────────────────────
+       The same rules, different values. Applied by a data-theme attribute set
+       before first paint (see the script in <head>), so there is no flash of the
+       wrong theme and no duplicated media query to keep in sync. */
+    :root[data-theme="light"] {
+      color-scheme: light;
+      --bg:#f4f6fa; --bg2:#e9eff8; --panel:#ffffff; --panel2:#f2f5fa;
+      --panel3:#eaeff7; --well:#f5f7fb;
+      --line:#e2e7f0; --line2:#c6cfdf; --hairline:rgba(15,23,42,.08);
+      --text:#131a26; --text2:#333f55; --muted:#5b6779; --faint:#7a8595;
+      /* fills stay saturated so the near-black text on them still contrasts */
+      --accent:#3d6ed0; --accent2:#7150e8; --accent-fg:#14335f;
+      --ok:#35c98a; --warn:#f0b429; --danger:#ef5f5f;
+      /* text versions darken — this is the half a single palette cannot do */
+      --accent-ink:#2c5fd0; --ok-ink:#0f7a54; --warn-ink:#8a6100;
+      --danger-ink:#c62f2f; --info-ink:#2563c9; --crit-ink:#b3261e;
+      /* white on a solid accent fill still works; on a pale wash it does not */
+      --on-accent:#fff; --on-wash:#16203a;
+      --ok-on-wash:#0f7a54; --danger-on-wash:#b3261e; --warn-on-wash:#8a6100;
+      --accent2-on-wash:#5b3fd0;
+      /* the log viewer stays dark on purpose: terminal output is easier to scan
+         light-on-dark, and it is a distinct surface rather than a page panel */
+      --term:#101725; --term-ts:#7b89a8;
+      /* washes invert from white-over-dark to black-over-light */
+      --overlay:rgba(15,23,42,.035); --overlay-soft:rgba(15,23,42,.02);
+      --nav-top:#ffffff; --nav-wash:rgba(255,255,255,.92);
+      --bar-wash:rgba(255,255,255,.82); --shadow-cast:rgba(15,23,42,.22);
+      --shadow:0 1px 2px rgba(15,23,42,.05), 0 8px 24px -14px rgba(15,23,42,.16);
+      /* the light step of the same hue, chosen for the light surface */
+      --series-1:#2a78d6; --series-1-hi:#256abf;
+      /* Declared because they were used and never defined: --warn-line,
+         --danger-line, --danger-wash, --accent-wash and --sans appear in
+         var() across several pages and resolved to nothing, so those
+         borders and washes simply did not render. Derived from the
+         palette above rather than picked, so the two themes stay in
+         step. */
+      --sans: ui-sans-serif,-apple-system,'Segoe UI',Roboto,sans-serif;
+      --ok-line: #9bd8bd;
+      --warn-line: #e8c877;
+      --danger-line: #f0b3b3;
+      --danger-wash: rgba(239,95,95,.10);
+      --ok-wash: rgba(53,201,138,.12);
+      --warn-wash: rgba(240,180,41,.16);
+      --accent-wash: rgba(61,110,208,.10);
+
+    }
+
+    /* ── collapsible sidebar ──────────────────────────────────────────────
+       Collapses to an icon rail rather than disappearing: a hidden sidebar
+       leaves nothing to click to bring it back, and navigation stays one click
+       away. Every piece of text carries .label, so one rule hides them all.
+       The state is set before first paint, like the theme. */
+    .navtoggle { position:absolute; top:22px; right:10px; z-index:3;
+      width:22px; height:22px; padding:0; display:flex; align-items:center;
+      justify-content:center; border-radius:6px; border:1px solid var(--line);
+      background:var(--panel2); color:var(--muted); cursor:pointer;
+      font-size:11px; line-height:1; box-shadow:none; }
+    .navtoggle:hover { color:var(--text); border-color:var(--line2); filter:none; }
+    .sidenav { position:sticky; }
+
+    :root[data-nav="collapsed"] .sidenav { width:64px; }
+    :root[data-nav="collapsed"] .label { display:none !important; }
+    :root[data-nav="collapsed"] .brand { justify-content:center; padding:20px 0 14px; }
+    /* `.brandmain` is flex:1 1 100% so the name can wrap under the mark when
+       the rail is wide. Collapsed, that made it span the whole 64px and pin the
+       mark to the left edge — every icon below it is centred, so the brand sat
+       visibly out of line with the entire column. It only needs to be as wide
+       as the mark once there is no name beside it. */
+    :root[data-nav="collapsed"] .brandmain { flex:0 0 auto; justify-content:center;
+      gap:0; }
+    /* Collapsed, the mark is also the way back: it says so on hover, and it is
+       a bigger target than the chevron at the bottom of the rail. */
+    :root[data-nav="collapsed"] .brandmain { cursor:e-resize; }
+    :root[data-nav="collapsed"] .brandmain:hover .logo {
+      box-shadow:0 0 0 2px var(--accent-ink); }
+    :root[data-nav="collapsed"] .navtoggle { top:auto; bottom:8px; right:50%;
+      transform:translateX(50%); }
+    :root[data-nav="collapsed"] .sidenav nav,
+    :root[data-nav="collapsed"] .projnav { padding-left:0; padding-right:0; }
+    :root[data-nav="collapsed"] .sidelink { justify-content:center; gap:0;
+      padding:10px 0; border-left-width:0; }
+    :root[data-nav="collapsed"] .sidelink.proj { padding-left:0; }
+    /* the active marker has to move: there is no room for a left border once
+       the rail is this narrow */
+    :root[data-nav="collapsed"] .sidelink.on { border-radius:9px;
+      box-shadow:inset 0 0 0 1px var(--accent-ink); }
+    :root[data-nav="collapsed"] .sidesep { margin:9px 12px; }
+    :root[data-nav="collapsed"] .account { padding:10px 8px 34px; align-items:center; }
+    :root[data-nav="collapsed"] .acc-who { justify-content:center; padding:0; margin:0; }
+    :root[data-nav="collapsed"] .acc-actions { flex-direction:column; gap:6px; }
+    :root[data-nav="collapsed"] .acc-out { margin-left:0; padding:5px 8px; }
+    /* below the mobile breakpoint the rail becomes a horizontal bar, where
+       collapsing means nothing — ignore it there */
+    @media (max-width:820px) {
+      :root[data-nav="collapsed"] .sidenav { width:100%; }
+      :root[data-nav="collapsed"] .label { display:revert !important; }
+      .navtoggle { display:none; }
+    }
+
+    /* the theme switch itself */
+    .themebtn { background:transparent; border:1px solid var(--line);
+      color:var(--muted); border-radius:8px; padding:5px 9px; font-size:12.5px;
+      cursor:pointer; box-shadow:none; line-height:1; flex:none; }
+    .themebtn:hover { color:var(--text); border-color:var(--line2);
+      background:var(--panel2); filter:none; }
+
+    * { box-sizing:border-box; }
+    /* `hidden` must actually hide. The browser's own rule is
+       `[hidden] { display:none }` in the USER AGENT sheet, which any author
+       `display` on a matching selector outranks — so an element given the
+       attribute stays on screen and the JavaScript setting it looks broken while
+       being correct.
+
+       That shipped three times in this codebase: a closed <dialog> rendered
+       mid-page because `.term` was `display:flex`; both sides of the service
+       page showed their kinds at once because `.kgrid` was `display:grid`; and
+       an empty coloured bar sat above the live-secret editor because `.flash` is
+       `display:flex`. Each was found by a person looking at the page.
+
+       One line ends the class. `!important` is deliberate and is the only way it
+       can outrank an author rule — anything that genuinely needs to show while
+       carrying the attribute is a contradiction, and there is nothing in this
+       stylesheet that does. */
+    [hidden] { display:none !important; }
+    body { margin:0; font:14px/1.55 -apple-system,'Inter','Segoe UI',sans-serif;
+           background:radial-gradient(1200px 500px at 70% -10%, var(--bg2) 0%, var(--bg) 55%);
+           color:var(--text); min-height:100vh; -webkit-font-smoothing:antialiased; }
+    a { color:var(--accent-ink); text-decoration:none; }
+
+    /* app shell with left navigation */
+    .shell { display:flex; min-height:100vh; }
+    .sidenav { width:236px; flex:none; position:sticky; top:0; height:100vh;
+      border-right:1px solid var(--line); display:flex; flex-direction:column;
+      background:linear-gradient(180deg,var(--nav-top),var(--bg)); }
+    .sidescroll { flex:1; overflow-y:auto; padding-bottom:12px; }
+    .sidescroll::-webkit-scrollbar { width:0; }
+    .sidenav::-webkit-scrollbar { width:0; }
+    .sidenav nav { display:flex; flex-direction:column; gap:2px; padding:6px 10px; }
+    .sidelink { display:flex; align-items:center; gap:11px; padding:9px 13px;
+      border-radius:9px; color:var(--text2); font-size:13.5px;
+      border-left:2px solid transparent; }
+    .sidelink:hover { background:var(--panel2); color:var(--text); }
+    .sidelink.on { background:linear-gradient(90deg,rgba(91,141,239,.17),rgba(91,141,239,.03));
+      color:var(--on-wash); font-weight:600; border-left-color:var(--accent-ink); }
+    .sidelink .ico { width:18px; flex:none; opacity:.85; display:inline-flex;
+      align-items:center; justify-content:center; }
+    .sidelink.on .ico, .sidelink:hover .ico { opacity:1; }
+
+    /* ── marks and line icons — see app/logos.py ─────────────────────────
+       Two different things that sit in the same slot. A vendor mark carries
+       its own colours and is never restyled here — recolouring somebody's
+       trademark is the one thing showing it does not permit. A line icon is
+       stroked in currentColor, so it takes whatever ink its row already has
+       and follows the row's hover and selected states. */
+    .logo, .ic { flex:none; vertical-align:middle; }
+    /* The stand-in for a service that publishes no mark. Tinted from the
+       service's own name so it is stable, and bordered so it reads as a
+       deliberate placeholder rather than an image that failed to load. */
+    /* a project's mark, whether that is the line icon or somebody's own emoji */
+    .pico { flex:none; vertical-align:middle; }
+    /* a heading with a mark in front of it. The mark has to sit on the text's
+       optical centre rather than its baseline, or a 30px icon drags a 26px
+       heading down and the whole row reads as misaligned. */
+    h1.withico { display:flex; align-items:center; gap:11px; }
+    /* Declared here as well as set inline, because the inline value is the
+       service's own tint and this is the colour a lettermark falls back to if
+       one is ever rendered without it. */
+    .logo.lm { --lm:var(--muted); display:inline-flex; align-items:center;
+      justify-content:center;
+      border-radius:6px; font-weight:700; line-height:1; letter-spacing:-.02em;
+      color:var(--lm); background:color-mix(in srgb, var(--lm) 18%, transparent);
+      border:1px solid color-mix(in srgb, var(--lm) 34%, transparent); }
+    /* project entries. Named `proj`, not `sub`: `.sub` is the page-subtitle class
+       and its margin:0 0 28px was landing on every one of these, spacing them 28px
+       apart and making them look broken. */
+    .sidelink.proj { font-size:13px; padding-left:14px; }
+    /* a long project name should truncate rather than wrap to two lines in a
+       236px rail — the full name is in the title attribute */
+    .sidelink.proj .pname { overflow:hidden; text-overflow:ellipsis;
+      white-space:nowrap; }
+    /* same rhythm as the main nav above it */
+    .projnav { display:flex; flex-direction:column; gap:2px; padding:0 10px 8px; }
+    .sidesep { height:1px; background:var(--line); margin:9px 4px; }
+    .sidetitle { padding:14px 22px 6px; font-size:10.5px; font-weight:700;
+      letter-spacing:1.3px; text-transform:uppercase; color:var(--muted); }
+    .maincol { flex:1; min-width:0; }
+    /* pinned to the bottom of the sidebar */
+    .account.on .acc-who { background:var(--panel2); }
+    .account.on .acc-name { color:var(--accent-ink); }
+    .account { display:flex; flex-direction:column; align-items:stretch; gap:9px;
+      margin:0; padding:12px 14px; background:var(--nav-wash);
+      border-top:1px solid var(--line); flex:none; }
+    .acc-actions { display:flex; align-items:center; gap:8px; }
+    .acc-av { width:30px; height:30px; border-radius:50%; flex:none;
+      background:linear-gradient(135deg,var(--accent),var(--accent2));
+      display:flex; align-items:center; justify-content:center;
+      font-weight:700; font-size:13px; color:var(--on-accent); }
+    .acc-who { display:flex; align-items:center; gap:10px; min-width:0; flex:1;
+      color:var(--text); border-radius:9px; padding:3px 5px; margin:-3px -5px; }
+    .acc-who:hover { background:var(--panel2); }
+    .acc-who:hover .acc-name { color:var(--accent-ink); }
+    .acc-name { font-size:12.5px; font-weight:650; white-space:nowrap;
+      overflow:hidden; text-overflow:ellipsis; }
+    .acc-mail { font-size:10.5px; color:var(--muted); white-space:nowrap;
+      overflow:hidden; text-overflow:ellipsis; }
+    .acc-out { color:var(--muted); font-size:11.5px; margin-left:auto;
+      display:flex; align-items:center; gap:5px; padding:5px 10px;
+      border-radius:8px; border:1px solid var(--line); white-space:nowrap; }
+    .acc-out:hover { color:var(--danger-ink); border-color:rgba(245,113,113,.45);
+      background:rgba(245,113,113,.08); }
+    @media (max-width:820px) {
+      .shell { flex-direction:column; }
+      .sidenav { width:100%; height:auto; position:static; border-right:0;
+        border-bottom:1px solid var(--line); }
+      .sidenav nav { flex-direction:row; flex-wrap:wrap; }
+    }
+
+    .topbar { display:flex; align-items:center; gap:18px;
+      padding:14px 32px; border-bottom:1px solid var(--line);
+      background:var(--bar-wash); backdrop-filter:blur(12px);
+      position:sticky; top:0; z-index:10; }
+    .brand { display:flex; align-items:center; gap:11px; flex-wrap:wrap;
+      padding:20px 20px 14px; border-bottom:1px solid var(--line); }
+    .brand small { display:block; color:var(--muted); font-size:10.5px; }
+    .brand .logo { width:32px; height:32px; border-radius:9px;
+      background:linear-gradient(135deg,var(--accent),var(--accent2));
+      display:flex; align-items:center; justify-content:center;
+      font-weight:800; font-size:15px; color:var(--on-accent);
+      box-shadow:0 4px 14px -4px rgba(91,141,239,.55); }
+    .brand b { font-size:14.5px; }
+    /* The pill goes on its own line, indented to the text above it. Beside the
+       name it competed for a 220px sidebar and wrapped "DevOps EnvMap" onto two
+       lines to make room for five characters. */
+    .brandmain { display:flex; align-items:center; gap:11px; flex:1 1 100%;
+      min-width:0; }
+    .brandver { align-self:flex-start; margin:4px 0 0 43px;
+      font-family:var(--mono); font-size:10px; line-height:1;
+      color:var(--muted); border:1px solid var(--line);
+      border-radius:999px; padding:4px 8px; white-space:nowrap; }
+    .brandver:hover { color:var(--accent-ink); border-color:var(--accent-ink);
+      background:var(--panel2); }
+    .brandnew { display:inline-block; width:5px; height:5px; margin-left:5px;
+      border-radius:50%; background:var(--accent); vertical-align:middle; }
+    .crumbs { color:var(--muted); font-size:13.5px; display:flex; gap:8px; align-items:center; }
+    .crumbs a { color:var(--muted); } .crumbs a:hover { color:var(--accent-ink); }
+    .crumbs b { color:var(--text); } .crumbs .sep { color:var(--line2); }
+    .topbar .spacer { flex:1; }
+    /* ── the two shortcuts beside the search ─────────────────────────────
+       A kubectl console and a troubleshooting pod are the two things people
+       come back to a cluster for, and both sat four clicks deep: Clusters,
+       project, cluster, tab. They are in the top bar because that is the one
+       piece of furniture on every page, and they open the SAME dialogs the
+       cluster page opens — the shortcut only chooses a cluster and navigates,
+       so there is no second copy of a terminal to keep in step with the first. */
+    .quick { position:relative; display:flex; gap:8px; }
+    /* box-shadow + font-weight are set explicitly so a .qbtn looks identical
+       whether it is a <button> (kubectl/Troubleshoot) or an <a> (Provision a VM) —
+       otherwise only the <button>s pick up the global `button` glow + 600 weight. */
+    .qbtn { display:flex; align-items:center; gap:7px; font-size:12.5px; font-weight:600;
+      color:var(--muted); background:var(--panel2); border:1px solid var(--line);
+      border-radius:99px; padding:6px 14px; cursor:pointer; white-space:nowrap;
+      box-shadow:0 4px 14px -6px rgba(91,141,239,.6);
+      transition:color .14s, border-color .14s, box-shadow .14s; }
+    .qbtn:hover { color:var(--text); border-color:var(--line2);
+      box-shadow:0 6px 18px -6px rgba(91,141,239,.7); }
+    .qbtn.on { color:var(--on-wash); border-color:var(--accent-ink);
+      background:var(--panel); }
+    .qpop { position:absolute; top:calc(100% + 9px); right:0; z-index:60;
+      width:336px; background:var(--panel); border:1px solid var(--line2);
+      border-radius:12px; overflow:hidden;
+      box-shadow:0 18px 48px -12px rgba(0,0,0,.62); }
+    .qpop-h { padding:11px 14px; border-bottom:1px solid var(--line);
+      display:flex; align-items:center; gap:8px; font-size:12px;
+      color:var(--muted); }
+    .qpop-h b { color:var(--text); font-size:12.5px; }
+    .qpop-f { padding:9px 11px 4px; }
+    .qpop-f input { width:100%; box-sizing:border-box; font-size:12.5px;
+      padding:7px 10px; border-radius:8px; color:var(--text);
+      background:var(--panel2); border:1px solid var(--line); }
+    .qpop-f input:focus { outline:none; border-color:var(--accent-ink); }
+    .qpop-list { max-height:336px; overflow-y:auto; padding:6px; }
+    .qgroup { font-size:10px; text-transform:uppercase; letter-spacing:.09em;
+      color:var(--faint); padding:9px 9px 4px; }
+    .qrow { display:flex; align-items:center; gap:9px; padding:8px 9px;
+      border-radius:8px; color:var(--text); font-size:13px; }
+    .qrow:hover { background:var(--panel2); color:var(--text); }
+    .qrow .qname { flex:1; min-width:0; overflow:hidden; white-space:nowrap;
+      text-overflow:ellipsis; }
+    .qrow .qctx { display:block; font-family:var(--mono); font-size:10.5px;
+      color:var(--faint); overflow:hidden; text-overflow:ellipsis; }
+    .qtag { font-size:9.5px; letter-spacing:.06em; text-transform:uppercase;
+      border-radius:99px; padding:3px 7px; flex:none; font-weight:700; }
+    .qtag.prod { background:#3a1620; color:#ff8f8f; }
+    .qtag.ro { background:#1c2436; color:#9fb0c8; }
+    .qtag.down { background:#3a1620; color:#ff8f8f; }
+    /* Not hidden: a cluster you cannot start a pod on is worth SEEING as
+       refused, or the list silently gets shorter and looks like a bug. */
+    .qrow.off { opacity:.4; pointer-events:none; }
+    .qpop-empty { padding:15px 14px; color:var(--muted); font-size:12.5px; }
+    @media (max-width:900px) { .quick .qlabel { display:none; }
+      .qbtn { padding:6px 10px; } }
+    .repo-chip { display:flex; align-items:center; gap:9px; font-size:12px;
+      color:var(--muted); background:var(--panel2); border:1px solid var(--line);
+      border-radius:99px; padding:5px 15px; white-space:nowrap;
+      max-width:400px; overflow:hidden; text-overflow:ellipsis; }
+    .dot { width:7px; height:7px; border-radius:50%; background:var(--ok); flex:none;
+      box-shadow:0 0 8px var(--ok); }
+    .dot.dirty { background:var(--warn); box-shadow:0 0 8px var(--warn); }
+
+    /* 1040px was chosen when every page was a form or a paragraph, where a long
+       measure is genuinely harder to read. It was the wrong number for a product
+       made of cards, tables and meters: on a 1900px display it left about 800px
+       of empty gutter and squeezed a four-column stat row into a third of the
+       screen.
+
+       ONE number for every page, not a class each page has to remember. The
+       Overview carried a `wide` opt-in while this was being judged; keeping that
+       would have meant a block in forty templates saying the same thing, and a
+       page silently narrower than its neighbour whenever somebody forgot.
+
+       Capped rather than removed: past roughly 1600px a table row becomes a long
+       walk from the name at one end to the action at the other, and a paragraph
+       stops being readable well before that. */
+    :root { --measure:1560px; }
+    .content { padding:40px; max-width:var(--measure); margin:0 auto; }
+    h1 { font-size:26px; margin:0 0 6px; letter-spacing:-.4px; }
+    .sub { color:var(--muted); margin:0 0 28px; font-size:14px; }
+    .page-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; }
+
+    .card { background:var(--panel); border:1px solid var(--line);
+      border-radius:var(--radius); margin-bottom:20px; overflow:hidden;
+      box-shadow:var(--shadow); }
+    .card-h { display:flex; align-items:center; gap:10px;
+      padding:14px 22px; border-bottom:1px solid var(--line);
+      font-weight:650; font-size:13.5px; background:var(--overlay-soft); }
+    .card-h .hint { font-weight:400; color:var(--muted); font-size:12px; }
+    .card-b { padding:14px 22px 18px; }
+    .badge { display:inline-flex; align-items:center; gap:6px; font-size:12px;
+      background:var(--panel2); border:1px solid var(--line); color:var(--muted);
+      border-radius:99px; padding:4px 13px; margin:0 6px 6px 0; }
+    .badge b { color:var(--text); font-weight:600; font-family:var(--mono); font-size:11.5px; }
+
+    /* Environment tag — colour-coded so prod stands apart from staging at a
+       glance. Tone comes from pam.env_tone(); an unknown env is muted. */
+    .envtag { display:inline-flex; align-items:center; gap:5px; font-size:10.5px;
+      font-weight:700; letter-spacing:.03em; text-transform:uppercase;
+      padding:2px 9px; border-radius:99px; border:1px solid var(--line);
+      color:var(--muted); }
+    .envtag.danger { color:var(--danger); border-color:var(--danger-line); background:var(--danger-wash); }
+    .envtag.warn   { color:var(--warn-ink); border-color:var(--warn-line);  background:var(--warn-wash); }
+    .envtag.ok     { color:var(--ok-ink);   border-color:var(--ok-line);    background:var(--ok-wash); }
+    .envtag.accent { color:var(--accent); border-color:var(--accent-ink);  background:var(--accent-wash); }
+
+    /* big drill-down cards */
+    .hub-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:18px; }
+    .hub-card { display:flex; align-items:center; gap:18px;
+      background:var(--panel); border:1px solid var(--line);
+      border-radius:18px; padding:26px 26px; color:var(--text);
+      transition:all .16s; box-shadow:var(--shadow); }
+    .hub-card:hover { border-color:var(--accent-ink); transform:translateY(-3px);
+      box-shadow:0 14px 40px -12px rgba(91,141,239,.4); }
+    .hub-card .flag { font-size:38px; line-height:1; }
+    .hub-card .htitle { font-size:17px; font-weight:750; letter-spacing:-.2px; }
+    .hub-card .hmeta { color:var(--muted); font-size:12.5px; margin-top:3px; }
+    .hub-card .arrow { margin-left:auto; color:var(--line2); font-size:20px;
+      transition:all .16s; }
+    .hub-card:hover .arrow { color:var(--accent-ink); transform:translateX(3px); }
+
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:14px; }
+    .ptile { display:flex; gap:14px; align-items:center;
+      background:var(--panel); border:1px solid var(--line);
+      border-radius:var(--radius); padding:16px 18px; color:var(--text);
+      transition:all .15s; box-shadow:var(--shadow); }
+    .ptile:hover { border-color:var(--accent-ink); transform:translateY(-2px);
+      box-shadow:0 10px 30px -10px rgba(91,141,239,.35); }
+    .avatar { width:40px; height:40px; border-radius:11px; flex:none;
+      display:flex; align-items:center; justify-content:center;
+      font-weight:800; font-size:15px; color:var(--on-accent); text-transform:uppercase; }
+    .ptile .pname { font-weight:700; font-size:14.5px; }
+    .ptile .pmeta { color:var(--muted); font-size:11.5px; margin-top:1px; }
+
+    /* The value column is capped, not a share of the row. On the wide measure a
+       plain text input came out 932px across — a single-line field nearly a
+       metre wide, which is no easier to type a hostname into than a 560px one
+       and makes the label a long way from what it labels.
+       
+       `minmax(0, 620px)` rather than a fixed width so a narrow window still
+       shrinks it. A textarea overrides this where it genuinely wants the room —
+       a kubeconfig is not a hostname. */
+    .field-row { display:grid;
+      grid-template-columns:minmax(190px,34%) minmax(0,620px);
+      gap:14px; align-items:center; padding:8px 0;
+      border-bottom:1px solid var(--hairline); }
+    /* max-width on the element does nothing here — the GRID TRACK is what caps
+       it — so the row itself opens up when it holds a textarea. A kubeconfig or
+       a certificate is not a hostname and reads badly reflowed into 620px. */
+    .field-row:has(textarea) {
+      grid-template-columns:minmax(190px,34%) minmax(0,1fr); }
+    .field-row:last-child { border-bottom:0; }
+    /* A heading row inside a table, for a list that arrives in groups — the CRDs
+       of one operator. Not a second table each, because then the columns of each
+       group line up with nothing. */
+    .jenkins tr.grouphead td { background:var(--panel2); padding:7px 12px;
+      border-top:1px solid var(--line); font-size:12px; }
+    .jenkins tr.grouphead b { font-family:var(--mono); }
+
+    /* A table that must fit rather than scroll: percentage columns and a fixed
+       layout, so a long value wraps inside its cell instead of widening it. The
+       audit's findings are the case — six min-width columns came to 1175px and
+       the fix and the provenance were the two you had to scroll to reach. */
+    .jenkins.fixed-t { table-layout:fixed; width:100%; }
+    .jenkins.fixed-t td { vertical-align:top; }
+    .jenkins .wrp { white-space:normal; overflow-wrap:anywhere; }
+    .jenkins .brk { font-family:var(--mono); font-size:11px;
+      overflow-wrap:anywhere; }
+    .jenkins .fixit { color:var(--ok-ink); font-size:11.5px; margin-top:3px; }
+    .jenkins .src { margin-top:5px; }
+    .jenkins .src > summary { font-size:11px; }
+    .jenkins .src .mono-c { font-family:var(--mono); font-size:10.5px;
+      margin-top:4px; }
+    /* A severity tile that filters. `picked` is the one in force — a ring rather
+       than a colour change, because the colour already means the severity. */
+    a.sevtile { display:block; }
+    a.sevtile:hover { border-color:var(--line2); }
+    a.sevtile.picked { outline:2px solid var(--accent);
+      outline-offset:-2px; }
+
+    /* A name in a table that is a link to the thing it names — a workload to its
+       own pods, a node to the pods on it. No colour of its own: `table.jenkins
+       td.jname a` already paints a linked name with the accent ink, and that is
+       the convention everywhere else in the product — a name in accent ink is a
+       name you can click. All this adds is the underline on hover, because
+       nothing else on the row moves and a table of static text is not obviously
+       clickable. */
+    .wname:hover { text-decoration:underline; }
+    /* What the pod list is filtered to, when the filter came from a click
+       somewhere else. Without this the list is simply short, and nothing on the
+       page says why. */
+    .podfilters { display:flex; flex-wrap:wrap; gap:9px; align-items:center;
+      margin:0 0 12px; }
+    .pf { display:inline-flex; align-items:center; gap:7px; font-size:12.5px;
+      color:var(--text); background:var(--panel2); border:1px solid var(--line);
+      border-radius:999px; padding:5px 8px 5px 12px; }
+    .pf b { font-family:var(--mono); font-size:12px; }
+    .pf svg { opacity:.7; }
+    .pf a { display:inline-flex; width:19px; height:19px; align-items:center;
+      justify-content:center; border-radius:50%; color:var(--muted);
+      font-size:11px; }
+    .pf a:hover { background:var(--danger-wash); color:var(--danger-ink); }
+
+    /* ── the Ansible inventory ──────────────────────────────────
+       A group is its host table, on the group's own page. What is left here is
+       what makes that table read as the content: an add row that looks like the
+       next row rather than a form dropped underneath it. The rules for the old
+       shape — a card per group with its settings behind three inline controls —
+       went when the group got a page of its own. */
+    .gtable .mono-c { font-family:var(--mono); font-size:11.5px; }
+    /* The add row: inputs sized by their column, not by a default width, so the
+       row lines up with the data above it and reads as the next row of the same
+       table. */
+    .gtable tr.addrow { background:color-mix(in srgb, var(--accent) 5%, transparent); }
+    .gtable tr.addrow td { padding:7px 10px; }
+    .gtable tr.addrow input { width:100%; min-width:0; padding:5px 9px;
+      font-size:12px; font-family:var(--mono); }
+    .gtable tr.addrow input[type="number"] { font-family:var(--sans); }
+    .gimport { margin-top:10px; display:flex; flex-direction:column;
+      align-items:flex-start; gap:8px; }
+    .gimport select { width:100%; min-width:0; }
+    /* A control that cannot be used says so by looking unavailable — and every
+       one of them carries the reason in its title. */
+    .abtn[disabled], .btn[disabled] { opacity:.45; cursor:not-allowed; }
+
+    /* A checkbox and its sentence on one line inside a field-row. The label is
+       the row's own <label> style otherwise — monospace, uppercase-ish, muted —
+       which is right for a field name and wrong for a sentence. */
+    .inline-ck { display:inline-flex; gap:8px; align-items:baseline;
+      font-family:var(--sans); font-size:13px; color:var(--text);
+      text-transform:none; letter-spacing:0; cursor:pointer; }
+    .inline-ck input { width:auto; flex:none; }
+    .field-row label { font-family:var(--mono); font-size:11.5px; color:var(--muted);
+      word-break:break-all; }
+    /* Every text-ish field, however it was written. This listed the types it
+       knew — text, password, number — and `<input name="cost">` has no type
+       attribute at all, so seven fields on the spend form matched nothing and
+       wore the browser's own dark-mode default: a grey-olive box with a pale
+       border, in the middle of a navy dialog. Excluding what must not be
+       styled is the version that keeps working when somebody adds a date or
+       an email field. */
+    /* One line on purpose: a newline between :not() clauses is a descendant
+       combinator, which silently makes this a different selector. */
+    input:not([type=checkbox],[type=radio],[type=file],[type=range],[type=color],[type=submit],[type=button],[type=image]),
+    select {
+      width:100%; padding:8px 13px; border-radius:9px; border:1px solid var(--line);
+      background:var(--well); color:var(--text); font-family:var(--mono); font-size:12.5px;
+      transition:all .15s; }
+    input:focus, select:focus { outline:none; border-color:var(--accent-ink);
+      box-shadow:0 0 0 3px rgba(91,141,239,.15); }
+    /* ── selects, finished ──────────────────────────────────────
+       The rule above gave a select the field styling and stopped: the arrow
+       stayed the operating system's, so every dropdown wore a different glyph
+       at a different size per browser, and two selects in one filter row did
+       not even match each other. appearance:none takes the whole control, and
+       the chevron is drawn by us.
+
+       Drawn with two gradients rather than an SVG data-URI, because a URI
+       cannot read var(--muted) — the first version shipped one chevron per
+       theme and the override lost the cascade somewhere nobody could see. A
+       gradient takes the variable, so both themes are one rule and there is
+       nothing to keep in step. Multi-line selects (pickers with size=N) keep
+       their native UI: a chevron on a box that never drops down is a lie. */
+    select:not([multiple]):not([size]) {
+      appearance:none; -webkit-appearance:none; cursor:pointer;
+      padding-right:32px;
+      background-image:
+        linear-gradient(45deg, transparent 49%, var(--muted) 50%),
+        linear-gradient(135deg, var(--muted) 50%, transparent 51%);
+      background-position:calc(100% - 17px) 55%, calc(100% - 12px) 55%;
+      background-size:5.5px 5.5px, 5.5px 5.5px;
+      background-repeat:no-repeat; }
+    select:hover:not(:disabled) { border-color:var(--line2); }
+    select:disabled { opacity:.55; cursor:not-allowed; }
+    /* The themed dropdown (.dd / enhanceSelect) lives in templates/terraform.html's
+       page <style>, NOT here: app.css is served with a version-immutable cache
+       (?v=portal_version), so edits to it do not reach the browser until a release
+       — a component that must work mid-development belongs in the page's inline
+       style. Promote it here only at a release, when the cache busts. */
+    /* A filter row's button stands next to its selects, so it takes their
+       height — the compact .tbtn is for card headers, and an Apply at
+       two-thirds the height of the field beside it read as a different bar.
+       Scoped to forms because that is where filters live; header buttons sit
+       outside them. */
+    /* line-height pinned to the selects' computed text line (15px at their
+       12.5px mono), or the two land pixels apart and the bar reads crooked */
+    form .tbtn { padding:8px 16px; font-size:12px; border-radius:9px;
+      line-height:15px; }
+    input::placeholder { color:var(--faint); }
+    /* Chrome paints its own olive-yellow over any field it thinks it can
+       autofill — which is most text inputs — and it is not a colour this
+       palette contains. It cannot be overridden with background-color at all
+       (the browser draws it above the author value), so the inset shadow
+       covers it and text-fill-color puts the ink back. The absurd transition
+       is the documented way to stop the yellow flashing in before the shadow
+       paints. */
+    input:-webkit-autofill,
+    input:-webkit-autofill:hover,
+    input:-webkit-autofill:focus,
+    input:-webkit-autofill:active,
+    textarea:-webkit-autofill,
+    select:-webkit-autofill {
+      -webkit-text-fill-color:var(--text);
+      -webkit-box-shadow:0 0 0 40px var(--well) inset;
+      caret-color:var(--text);
+      transition:background-color 100000s ease-out 0s; }
+    /* Required, said once and quietly. A field is either starred or it is
+       optional; the form does not need to say both. */
+    .req { color:var(--danger-ink); font-weight:700; margin-left:2px;
+      font-size:1.05em; line-height:1; }
+    input[type=checkbox], input[type=radio] { accent-color:var(--accent);
+      width:15px; height:15px; }
+    /* `font-family:inherit` IS THE ROOT FIX, and it was missing for the life
+       of this stylesheet. A <button> does not inherit the page font; the UA
+       gives it its own. Measured: `.btn.btn-ghost` rendered in **Arial at
+       36px** on a button and **ui-sans-serif at 41px** on an anchor, and 55
+       templates put that class on a button — so most secondary buttons in
+       the product were in the wrong typeface next to their own anchor twins.
+       Fixing it here rather than per class is why it is one line instead of
+       a dozen; `.abtn` already set it, which is why row actions looked right
+       and page actions did not. Note app.css is immutable-cached for a year,
+       so this reaches browsers at the next release — the pages that needed it
+       sooner carry their own copy. */
+    button, .btn { padding:9px 22px; border-radius:9px; border:0; cursor:pointer;
+      font-family:inherit;
+      font-weight:600; font-size:13.5px; color:var(--on-accent);
+      background:linear-gradient(135deg,var(--accent),#4a7de0);
+      display:inline-flex; align-items:center; gap:8px;
+      box-shadow:0 4px 14px -6px rgba(91,141,239,.6); }
+    button:hover, .btn:hover { filter:brightness(1.12); }
+    .btn-ghost { background:transparent; border:1px solid var(--line2);
+      color:var(--muted); box-shadow:none; }
+    .btn-danger { background:transparent; border:1px solid rgba(245,113,113,.5);
+      color:var(--danger-ink); box-shadow:none; }
+    .actions { display:flex; gap:10px; margin-top:6px; }
+
+    pre { background:var(--well); border:1px solid var(--line); border-radius:10px;
+      padding:15px; overflow-x:auto; font-size:12px; line-height:1.55; margin:0; }
+    .flash { display:flex; gap:10px; align-items:center; padding:12px 17px;
+      border-radius:11px; margin-bottom:20px; font-size:13.5px;
+      background:rgba(61,220,151,.08); border:1px solid rgba(61,220,151,.3); }
+    .flash.err { background:rgba(245,113,113,.08); border-color:rgba(245,113,113,.35); }
+    /* warning banner: translucent amber + the normal --text, readable in both
+       themes. The old inline `background:var(--warn-on-wash)` was a PALE fill
+       with pale text — light-on-light and unreadable in the dark theme. */
+    .flash.warn { background:rgba(245,196,81,.12); border-color:rgba(245,196,81,.42); }
+    /* `display:flex` above beats the user agent's `[hidden] { display:none }`,
+       so a flash given the attribute stayed on screen as an empty coloured bar
+       — which is what shipped in the live-secret editor. Any page that hides a
+       flash needs this, so it lives with the flash. */
+    .flash[hidden] { display:none; }
+    details summary { cursor:pointer; color:var(--muted); font-size:13px;
+      padding:6px 0; user-select:none; }
+    details summary:hover { color:var(--text); }
+    .diff-add { color:var(--ok-ink); } .diff-del { color:var(--danger-ink); }
+    .env-label { font-size:11px; color:var(--muted); text-transform:uppercase;
+      letter-spacing:1px; font-weight:700; margin:4px 0 10px; }
+    .seg { display:inline-flex; background:var(--panel2); border:1px solid var(--line);
+      border-radius:10px; padding:3px; margin-bottom:20px; }
+    .seg label { padding:7px 20px; border-radius:8px; cursor:pointer;
+      font-size:13px; font-weight:600; color:var(--muted); }
+    .seg input { display:none; }
+    .seg label.on { background:var(--accent); color:var(--on-accent);
+      box-shadow:0 2px 10px -4px rgba(91,141,239,.7); }
+    .empty { text-align:center; padding:90px 20px; }
+    .empty .big { font-size:52px; margin-bottom:18px; }
+    .empty h2 { font-size:22px; margin:0 0 10px; }
+    .empty p { color:var(--muted); max-width:520px; margin:0 auto 26px; }
+    textarea { width:100%; padding:10px 13px; border-radius:9px;
+      border:1px solid var(--line); background:var(--well); color:var(--text);
+      font-family:var(--mono); font-size:12px; min-height:110px; }
+    textarea:focus { outline:none; border-color:var(--accent-ink); }
+    input[type=file] { color:var(--muted); font-size:12.5px; }
+
+    /* ── the SQL console ────────────────────────────────────────
+       The editor is a textarea with a <pre> behind it holding the colours.
+       Both must lay text out identically or the highlight drifts from the
+       characters, so every metric below is shared deliberately — change one
+       and change the other. */
+    .sqlwrap { position:relative; }
+    .sqlwrap textarea, .sqlhi {
+      margin:0; padding:12px 14px; border:1px solid var(--line);
+      border-radius:9px; font-family:var(--mono); font-size:12.5px;
+      line-height:1.6; letter-spacing:0; tab-size:2;
+      white-space:pre-wrap; word-break:break-word; overflow-wrap:break-word; }
+    .sqlwrap textarea {
+      position:relative; z-index:2; background:transparent; color:transparent;
+      caret-color:var(--text); resize:vertical; min-height:150px; width:100%; }
+    .sqlwrap textarea::selection { background:rgba(91,141,239,.35); }
+    .sqlhi { position:absolute; inset:0; z-index:1; overflow:hidden;
+      background:var(--well); color:var(--text); pointer-events:none; }
+    .sqlhi .k { color:var(--accent-ink); font-weight:600; }
+    .sqlhi .s { color:var(--ok-ink); }
+    .sqlhi .n { color:var(--warn-ink); }
+    .sqlhi .c { color:var(--muted); font-style:italic; }
+    .acbox { position:absolute; z-index:40; min-width:250px; max-width:460px;
+      max-height:280px; overflow-y:auto; background:var(--panel);
+      border:1px solid var(--line); border-radius:10px; padding:5px;
+      box-shadow:0 18px 44px rgba(0,0,0,.45); }
+    .acitem { display:flex; gap:9px; align-items:baseline; padding:5px 9px;
+      border-radius:6px; cursor:pointer; font-size:12.5px; }
+    .acitem b { font-family:var(--mono); font-weight:600; }
+    .acitem span { color:var(--muted); font-size:11px; margin-left:auto;
+      white-space:nowrap; }
+    .acitem.on { background:var(--accent-wash); }
+    .rowsbox { overflow:auto; max-height:62vh; border:1px solid var(--line);
+      border-radius:9px; }
+    .rowsbox table { margin:0; }
+    .rowsbox thead th { position:sticky; top:0; z-index:1;
+      background:var(--panel2); }
+    table.grid-tbl td.cell, td.sqlcell {
+      font-family:var(--mono); font-size:11.5px; max-width:320px;
+      overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    table.grid-tbl td.rn, table.grid-tbl th.rn {
+      color:var(--faint); font-size:10.5px; text-align:right; width:44px;
+      user-select:none; }
+    .nullv { color:var(--faint); font-style:italic; }
+    .histsql { display:block; font-family:var(--mono); font-size:11.5px;
+      color:var(--muted); cursor:pointer; overflow:hidden;
+      text-overflow:ellipsis; white-space:nowrap; min-width:0; flex:1; }
+    .histsql:hover { color:var(--text); }
+    pre.ddl.wrapped { white-space:pre-wrap; word-break:break-word; }
+    pre.ddl { margin:0; padding:14px; border-radius:9px; background:var(--well);
+      border:1px solid var(--line); font-family:var(--mono); font-size:11.5px;
+      line-height:1.6; overflow-x:auto; }
+    #dbpanel.busy { opacity:.55; transition:opacity .12s; }
+
+    /* ── a build log ────────────────────────────────────────────
+       A table, not a <pre>: line numbers that do not select with the text,
+       a timestamp column that can be hidden, and one row to highlight. */
+    .logbox { max-height:70vh; overflow:auto; border:1px solid var(--line);
+      border-radius:9px; background:var(--well); }
+    table.logtbl { width:100%; border-collapse:collapse; margin:0;
+      font-family:var(--mono); font-size:11.5px; line-height:1.65; }
+    table.logtbl td { padding:0 8px; vertical-align:top; border:none; }
+    /* One pinned gutter holding both the line number and the time. As two
+       cells the second slid under the first when the log scrolled sideways
+       and lost a character; and neither may wrap, or "824" stacks vertically. */
+    .logtbl .lg { width:1px; white-space:nowrap; user-select:none;
+      position:sticky; left:0; background:var(--well); font-size:10.5px;
+      padding-right:12px; }
+    .logtbl .ln { display:inline-block; min-width:3.4em; text-align:right;
+      color:var(--faint); }
+    .logtbl .lts { margin-left:9px; color:var(--muted); }
+    .logbox.notimes .lts { display:none; }
+    .logtbl .lx { white-space:pre; color:var(--text); }
+    .logbox.wrapped .lx { white-space:pre-wrap; word-break:break-word; }
+    .logtbl tr:hover { background:var(--overlay); }
+    .logtbl tr.lfail .lx { color:var(--danger-ink); font-weight:600; }
+    .logtbl tr.lfail { background:var(--danger-wash,rgba(245,113,113,.10)); }
+    .logtbl tr.lfail .lg { background:var(--danger-wash,rgba(245,113,113,.10)); }
+    .logtbl tr.lfail .ln { color:var(--danger-ink); }
+
+    /* the Argo CD resource tree: indentation carries the parent/child
+       relationship, and a dot carries health so a hundred rows can be scanned
+       vertically without reading a word */
+    .rnode { padding:5px 0; border-top:1px solid var(--line); }
+    .rnode:first-child { border-top:none; }
+    .rdot { width:9px; height:9px; border-radius:50%; flex:0 0 auto;
+      background:var(--faint); }
+    .rdot-healthy { background:var(--ok-ink); }
+    .rdot-progressing { background:var(--accent-ink); }
+    .rdot-degraded, .rdot-missing { background:var(--danger-ink); }
+    .rdot-suspended { background:var(--warn-ink); }
+    .appcard .card-b { padding:15px 17px; }
+    /* a stat tile that is also the filter it counts */
+    .tile-link.picked { border-color:var(--accent); }
+    .tile-link.picked .statsub { color:var(--accent-ink); }
+
+    /* ── the resource graph ────────────────────────────────────── */
+    .gwrap { position:relative; overflow:hidden; border:1px solid var(--line);
+             border-radius:10px; background:var(--well); height:min(58vh,520px);
+             cursor:grab; }
+    /* full screen over the app, not the browser's own: the portal's theme and
+       chrome come with it, and Escape behaves like every other overlay here */
+    .gwrap.gfull { position:fixed; inset:0; z-index:120; height:auto;
+                   border-radius:0; border:none; }
+    body.gfull-open { overflow:hidden; }
+    /* the controls follow it up there, or there is no way back out */
+    body.gfull-open #gbar { position:fixed; top:0; right:0; left:0; z-index:121;
+      background:var(--panel); border-bottom:1px solid var(--line);
+      padding:11px 18px; }
+    .gwrap.gfull { padding-top:52px; }
+    /* in full screen the resource panel is a drawer inside the overlay, not a
+       card on the page behind it */
+    .gwrap.gfull > #reswrap { position:absolute; top:52px; right:0; bottom:0;
+      width:min(620px, 48vw); overflow:auto; z-index:122;
+      background:var(--panel); border-left:1px solid var(--line);
+      padding:14px; box-shadow:-18px 0 44px rgba(0,0,0,.35);
+      animation:drawerin .2s cubic-bezier(.2,.7,.3,1); }
+    .gwrap.gfull > #reswrap:empty { display:none; }
+    .gwrap.gfull > #reswrap .card { margin:0; }
+    @keyframes drawerin { from { opacity:0; transform:translateX(14px); }
+                          to   { opacity:1; transform:none; } }
+    .gwrap.panning { cursor:grabbing; }
+    .gwrap svg { display:block; }
+    .gedge { fill:none; stroke:var(--line); stroke-width:1.6; }
+    .gnode { cursor:pointer; }
+    .gnode .gbox { fill:var(--panel); stroke:var(--line); stroke-width:1;
+                   transition:stroke .12s, fill .12s; }
+    .gnode:hover .gbox { stroke:var(--accent-ink); }
+    .gnode:focus { outline:none; }
+    .gnode:focus-visible .gbox { stroke:var(--accent); stroke-width:2; }
+    .gnode.picked .gbox { stroke:var(--accent); stroke-width:2;
+                          fill:var(--accent-wash); }
+    /* health as a spine down the left edge — readable at any zoom, and it
+       cannot be confused with the box's own border */
+    .gedgemark { fill:var(--faint); }
+    .gh-healthy .gedgemark { fill:var(--ok-ink); }
+    .gh-progressing .gedgemark { fill:var(--accent); }
+    .gh-degraded .gedgemark, .gh-missing .gedgemark { fill:var(--danger-ink); }
+    .gh-suspended .gedgemark { fill:var(--warn-ink); }
+    .gkind { fill:var(--muted); font-size:9.5px; font-weight:700;
+             letter-spacing:.7px; font-family:var(--sans,inherit); }
+    .gname { fill:var(--text); font-size:12.5px; font-weight:600; }
+    .gstate { fill:var(--danger-ink); font-size:9.5px; font-weight:700;
+              letter-spacing:.4px; }
+    .gh-progressing .gstate { fill:var(--accent); }
+    .gh-suspended .gstate { fill:var(--warn-ink); }
+    .ginfo { fill:var(--faint); font-size:10px; font-family:var(--mono); }
+
+    /* a node of the resource tree is a way in, so it behaves like one */
+    .rnode-open { cursor:pointer; border-radius:8px; padding-left:6px;
+                  margin-left:-6px; transition:background .12s; }
+    .rnode-open:hover { background:var(--overlay); }
+    .rnode-open:focus-visible { outline:2px solid var(--accent);
+                                outline-offset:-2px; }
+    .rnode-open.picked { background:var(--accent-wash);
+                         box-shadow:inset 2px 0 0 var(--accent); }
+    .rowcard { border:1px solid var(--line); border-radius:11px;
+      padding:14px 18px; margin-bottom:12px; background:var(--panel2); }
+    .kv { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    details.adv summary { color:var(--accent-ink); }
+    .sec-note { font-size:11.5px; color:var(--muted); margin-top:6px; }
+    .searchbox { position:relative; display:flex; align-items:center; }
+    .searchbox .mag { position:absolute; left:12px; color:var(--muted); font-size:15px; }
+    .searchbox input { width:300px; padding:7px 13px 7px 31px; border-radius:99px;
+      border:1px solid var(--line); background:var(--panel2); color:var(--text);
+      font-family:inherit; font-size:12.5px; }
+    .searchbox input:focus { outline:none; border-color:var(--accent-ink);
+      box-shadow:0 0 0 3px rgba(91,141,239,.15); width:360px; }
+    .navlink { color:var(--muted); font-size:12.5px; padding:6px 12px;
+      border-radius:99px; border:1px solid var(--line); background:var(--panel2);
+      white-space:nowrap; }
+    .navlink:hover { color:var(--text); border-color:var(--line2); }
+    /* wizard */
+    .steps { display:flex; gap:8px; margin-bottom:26px; flex-wrap:wrap; }
+    .stepchip { display:flex; align-items:center; gap:8px; padding:8px 16px;
+      border-radius:99px; border:1px solid var(--line); background:var(--panel);
+      font-size:12.5px; color:var(--muted); }
+    .stepchip.on { border-color:var(--accent-ink); color:var(--on-wash);
+      background:linear-gradient(135deg,rgba(91,141,239,.22),rgba(91,141,239,.06)); }
+    .stepchip.done { color:var(--ok-ink); border-color:rgba(61,220,151,.4); }
+    .stepchip .n { width:20px; height:20px; border-radius:50%; flex:none;
+      display:flex; align-items:center; justify-content:center; font-size:11px;
+      font-weight:700; background:var(--line); color:var(--text); }
+    .stepchip.on .n { background:var(--accent); }
+    .stepchip.done .n { background:var(--ok); color:var(--ink-on-ok); }
+    /* logs */
+    .logbox { background:var(--term); border:1px solid var(--line); border-radius:10px;
+      padding:12px 14px; font-family:var(--mono); font-size:11.5px; line-height:1.5;
+      height:62vh; overflow:auto; white-space:pre-wrap; word-break:break-word; }
+    .logbox .ts { color:var(--term-ts); }
+    .logbox .err { color:var(--danger-ink); }
+    .logbox .warn { color:var(--warn-ink); }
+    .live-dot { width:8px; height:8px; border-radius:50%; background:var(--danger);
+      display:inline-block; animation:pulse 1.4s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.25} }
+    .hit { padding:10px 14px; border-radius:9px; border:1px solid transparent;
+      display:block; color:var(--text); }
+    .hit:hover { background:var(--panel2); border-color:var(--line); }
+    .hit .h1 { font-weight:650; font-size:13.5px; }
+    .hit .h2 { color:var(--muted); font-size:11.5px; }
+    .hit .h3 { color:var(--muted); font-size:11.5px; font-family:var(--mono);
+      margin-top:2px; opacity:.8; }
+    mark { background:rgba(245,196,81,.28); color:var(--warn-on-wash); border-radius:3px;
+      padding:0 2px; }
+    /* modal */
+    .modal-backdrop { position:fixed; inset:0; background:rgba(5,8,14,.72);
+      backdrop-filter:blur(4px); z-index:50; display:none;
+      align-items:flex-start; justify-content:center; padding:60px 20px; }
+    .modal-backdrop.open { display:flex; }
+    .modal { background:var(--panel); border:1px solid var(--line2);
+      border-radius:14px; width:min(760px,100%); box-shadow:0 24px 70px -20px var(--shadow-cast);
+      animation:pop .14s ease-out; }
+    @keyframes pop { from{opacity:0;transform:translateY(-8px)} to{opacity:1;transform:none} }
+    /* per-row delete */
+    .valcell { display:flex; gap:8px; align-items:center; }
+    .valcell input { flex:1; min-width:0; }
+    .delbtn { background:transparent; border:1px solid transparent; color:var(--faint);
+      padding:5px 9px; border-radius:8px; font-size:13px; line-height:1;
+      box-shadow:none; cursor:pointer; opacity:0; transition:all .12s; flex:none; }
+    .withdel:hover .delbtn { opacity:1; }
+    .delbtn:hover { color:var(--danger-ink); border-color:rgba(245,113,113,.45);
+      background:rgba(245,113,113,.08); filter:none; }
+    .delbtn:focus { opacity:1; outline:none; border-color:var(--danger-ink); }
+    .stale-chip { cursor:pointer; color:var(--warn-ink) !important;
+      border-color:rgba(245,196,81,.45) !important;
+      background:rgba(245,196,81,.10) !important; font-weight:600;
+      box-shadow:none; font-size:12px; }
+    .stale-chip:hover { background:rgba(245,196,81,.18) !important; filter:none; }
+    /* compare */
+    .cmp-lbl { font-size:11px; color:var(--muted); text-transform:uppercase;
+      letter-spacing:1px; font-weight:700; margin-bottom:7px; }
+    table.cmp { width:100%; border-collapse:collapse; font-size:12.5px; }
+    table.cmp th { text-align:left; padding:11px 16px; color:var(--muted);
+      font-size:10.5px; text-transform:uppercase; letter-spacing:.9px;
+      border-bottom:1px solid var(--line); font-weight:700; }
+    table.cmp td { padding:9px 16px; vertical-align:top;
+      border-bottom:1px solid var(--hairline);
+      font-family:var(--mono); word-break:break-all; }
+    table.cmp td.k { color:var(--muted); font-size:11.5px; }
+    table.cmp tr.diff td.k, table.cmp tr.only_a td.k, table.cmp tr.only_b td.k {
+      color:var(--text); font-weight:600; }
+    table.cmp tr.same td { opacity:.55; }
+    td.hl-a { background:rgba(91,141,239,.11); color:var(--accent-fg);
+      box-shadow:inset 3px 0 0 var(--accent); }
+    td.hl-b { background:rgba(139,108,245,.11); color:var(--accent2-on-wash);
+      box-shadow:inset 3px 0 0 var(--accent2); }
+    .absent { color:var(--faint); font-style:italic; font-family:inherit; }
+    .tag { display:inline-block; margin-left:8px; font-family:inherit;
+      font-size:9.5px; letter-spacing:.6px; text-transform:uppercase;
+      color:var(--muted); border:1px solid var(--line); border-radius:99px;
+      padding:1px 7px; vertical-align:1px; }
+    .stat { font-size:24px; font-weight:750; letter-spacing:-.5px; }
+    .statsub { color:var(--muted); font-size:12px; margin-top:2px; }
+    .chk { font-size:12.5px; color:var(--muted); cursor:pointer;
+      display:inline-flex; align-items:center; gap:6px; white-space:nowrap; }
+    .chk input { width:auto; }
+    /* The two sides must line up field for field. They did not: Side B's
+       header carries a "copy from A" button and Side A's does not, so B's
+       header was taller and every field below it sat a few pixels low —
+       exactly the misalignment you notice without being able to name. Both
+       headers now reserve the same height, and the cards stretch together. */
+    .sides { display:grid; grid-template-columns:1fr auto 1fr; gap:16px;
+      align-items:stretch; margin-bottom:18px; }
+    .sidecard { margin:0; display:flex; flex-direction:column; }
+    /* an exact height, not a minimum: the button in B's header is 3px taller
+       than A's bare text, and a min-height leaves that 3px in place */
+    .sidecard > .card-h { height:52px; box-sizing:border-box; }
+    .sidecard > .card-h .btn-ghost { line-height:1.2; }
+    .sidecard > .card-b { flex:1; }
+    .steps-v { display:flex; flex-direction:column; gap:14px; }
+    .stepline { display:grid; grid-template-columns:26px 1fr; gap:12px;
+      align-items:center; }
+    .stepn { width:24px; height:24px; border-radius:50%; flex:none;
+      display:flex; align-items:center; justify-content:center;
+      font-size:11px; font-weight:700; color:var(--muted);
+      background:var(--panel2); border:1px solid var(--line); }
+    /* centred against the pair rather than pushed down by a magic number,
+       which only lined up at one window width and one field count */
+    .swapwrap { display:flex; align-items:center; justify-content:center; }
+    .swapbtn { display:flex; align-items:center; justify-content:center;
+      background:var(--panel2); border:1px solid var(--line2);
+      color:var(--muted); width:38px; height:38px; border-radius:50%;
+      cursor:pointer; box-shadow:none; padding:0; flex:none;
+      transition:color .12s, border-color .12s, background .12s; }
+    .swapbtn svg { width:17px; height:17px; display:block; }
+    .swapbtn:hover { color:var(--accent-ink); border-color:var(--accent-ink);
+      background:var(--panel); filter:none; }
+    .swapbtn:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+    .swapbtn:active { transform:scale(.94); }
+    @media (max-width:900px) {
+      .sides { grid-template-columns:1fr; }
+      /* stacked, so the two sides swap top-for-bottom rather than
+         left-for-right and the icon should say so */
+      .swapwrap { padding:0; }
+      .swapbtn svg { transform:rotate(90deg); }
+    }
+    .cmpactions { display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+      margin:4px 0 22px; }
+    .cmpactions .btn:disabled { opacity:.5; cursor:not-allowed; }
+    /* an area that is a route to full control, marked in the role editor */
+    .pick.risky { border-color:color-mix(in srgb, var(--warn) 45%, var(--line)); }
+    .combo-item.active { background:rgba(91,141,239,.22); }
+    /* View tabs. Eleven of these sit on the cluster page, so they are a rail
+       with an underlined selection rather than folders — folder tabs at that
+       count read as clutter and the active one is hard to find. */
+    .viewtabs { display:flex; gap:2px; flex-wrap:wrap; margin-bottom:16px;
+      border-bottom:1px solid var(--line); padding-bottom:0; }
+    .vtab { padding:9px 14px; font-size:12.5px; color:var(--muted);
+      border-bottom:2px solid transparent; border-radius:8px 8px 0 0;
+      white-space:nowrap; transition:background .12s, color .12s; }
+    .vtab:hover { color:var(--text); background:var(--panel2); }
+    .vtab.on { color:var(--text); font-weight:650; background:var(--panel2);
+      border-bottom-color:var(--accent); }
+    /* Sub-tabs: the sections inside one view. Deliberately NOT the same shape as
+       the rail above — a second underlined rail directly beneath the first reads
+       as one strip that wrapped, and the selected tab of each becomes impossible
+       to tell apart. These are pills on a tray, so the two levels are obviously
+       two levels. */
+    .subtabs { display:inline-flex; gap:3px; flex-wrap:wrap; align-items:center;
+      margin:0 0 16px; padding:4px; border:1px solid var(--line);
+      border-radius:12px; background:var(--panel2); max-width:100%; }
+    /* Full measure, every tab an equal share. `display:flex` rather than
+       inline-flex, or the strip shrinks to its content and `width:100%` on the
+       children has nothing to divide. */
+    .subtabs.wide { display:flex; width:100%; }
+    .subtabs.wide > .stab { flex:1 1 0; justify-content:center; min-width:0; }
+    .subtabs.wide > .stab > span:not(.n) { overflow:hidden;
+      text-overflow:ellipsis; }
+    /* the slim filter row under a tab strip: a couple of selects and the chip
+       naming what is in force */
+    .placebar { display:flex; gap:8px; align-items:center; flex-wrap:wrap;
+      margin:-6px 0 14px; font-size:12px; color:var(--muted); }
+    .placebar > svg { flex:none; opacity:.7; }
+    /* the two selects match each other whatever their longest option is —
+       one wide and one narrow reads as two controls from different pages.
+       width:auto, because the shared field rule says 100% and a filter select
+       taking the whole measure is a form, not a bar */
+    .placebar select { flex:0 0 auto; width:auto; min-width:185px; }
+    .stab { display:inline-flex; gap:7px; align-items:center; padding:7px 13px;
+      font-size:12.5px; color:var(--muted); border-radius:8px;
+      white-space:nowrap; transition:background .12s, color .12s; }
+    .stab:hover { color:var(--text); background:var(--panel); }
+    /* --shadow-cast, not a black of my own: light mode casts a slate shadow and
+       a hardcoded black reads as dirt under a white pill. */
+    .stab.on { color:var(--text); font-weight:650; background:var(--panel);
+      box-shadow:0 1px 3px var(--shadow-cast); }
+    .stab svg { opacity:.72; }
+    .stab.on svg { opacity:1; }
+    .stab .n { font-variant-numeric:tabular-nums; font-size:11px;
+      padding:1px 7px; border-radius:999px; background:var(--line);
+      color:var(--muted); }
+    .stab.on .n { background:var(--accent); color:var(--on-accent); }
+    /* A section with nothing in it is still offered — "no routes here" is an
+       answer, and a tab that vanishes when empty leaves the reader wondering
+       whether it was ever looked for. Dimmed, not withdrawn. */
+    .stab.quiet { opacity:.55; }
+
+    /* ── the terminal window ────────────────────────────────────
+       Deliberately not styled like the rest of the portal: a place where you
+       type commands into a container should look like a terminal, so nobody
+       mistakes it for another form on the page. Its own near-black surface,
+       one monospace family throughout, and a caret that sits where a caret
+       belongs. */
+    dialog.psh { position:relative;   /* the veil is measured against this */
+      width:min(1040px, 94vw); height:min(680px, 86vh); padding:0;
+      border:1px solid var(--line2); border-radius:13px; overflow:hidden;
+      background:#0b0f16; color:#d7e2f0;
+      box-shadow:0 40px 90px -20px rgba(0,0,0,.7); }
+    dialog.psh::backdrop { background:rgba(4,7,12,.62);
+      backdrop-filter:blur(2px); }
+    dialog.psh > * { font-family:var(--mono); }
+    .psh-bar { display:flex; align-items:center; gap:10px; padding:9px 13px;
+      background:#141a26; border-bottom:1px solid #202839; font-size:12px; }
+    .psh-bar b { color:#e8eef7; font-weight:650; }
+    /* Not decoration. A window with three buttons that do nothing is worse
+       than a window with none: they are the first thing anybody clicks. */
+    .psh-dots { display:inline-flex; gap:5px; margin-right:3px; }
+    .psh-dots b { width:10px; height:10px; border-radius:50%; display:block;
+      border:0; padding:0; cursor:pointer; box-shadow:none;
+      font-size:7px; line-height:10px; text-align:center; color:transparent; }
+    .psh-dots b:hover { color:rgba(0,0,0,.55); filter:none; }
+    .psh-dots b:nth-child(1) { background:#ff5f57; }
+    .psh-dots b:nth-child(2) { background:#febc2e; }
+    .psh-dots b:nth-child(3) { background:#28c840; }
+    /* Minimised: the title bar alone, still connected, bottom-left out of the
+       way. Maximised: as much of the window as the page can give it. */
+    dialog.psh.mini { height:auto; width:min(420px, 90vw); top:auto; bottom:14px;
+      left:14px; margin:0; }
+    dialog.psh.mini > *:not(.psh-bar) { display:none; }
+    dialog.psh.maxi { width:98vw; height:94vh; }
+    .psh-ns { color:#7d8ba1; }
+    .psh-tag { font-size:9.5px; text-transform:uppercase; letter-spacing:.05em;
+      padding:2px 7px; border-radius:999px; background:#1d3a2b; color:#6ee7a8; }
+    .psh-x { border:1px solid #2a3346; background:transparent; color:#9fb0c8;
+      font:inherit; font-size:11px; padding:3px 11px; border-radius:7px;
+      cursor:pointer; box-shadow:none; text-decoration:none; }
+    .psh-x:hover { background:#1c2436; color:#e8eef7; filter:none; }
+    /* A toolbar button that is a state rather than an action — "following" is
+       either on or it is not, and which one has to be readable at a glance. */
+    .psh-x.on { border-color:#2f6f4a; background:#16281f; color:#6ee7a8; }
+    /* Behind the tail: the count is the reason to press it, so it goes on the
+       button rather than somewhere else on the bar. */
+    .psh-x.behind { border-color:#5c4a1e; background:#2a2310; color:#febc2e; }
+    .psh-x.danger { border-color:#5b2530; color:#ff8f8f; }
+    .psh-x.danger:hover { background:#2a1620; }
+    /* The terminal fills what is left under the title bar. xterm.js draws its
+       own scrollback, so nothing here scrolls or wraps on its behalf. */
+    .psh-term { height:calc(100% - 40px); padding:8px 4px 4px 10px; }
+    .psh-term .xterm-viewport { scrollbar-width:thin; background:transparent !important; }
+    .psh-state { font-size:10.5px; color:#febc2e; }
+    .psh-veil { position:absolute; inset:0; display:flex; gap:11px;
+      align-items:center; justify-content:center; background:rgba(11,15,22,.86);
+      color:#9fb0c8; font-size:13px; backdrop-filter:blur(1px); }
+    .psh-veil[hidden] { display:none; }
+    .psh-veil b { color:#e8eef7; font-weight:600; }
+    /* Dropdowns in a terminal title bar: the cluster switcher and the default
+       namespace, where a third of the window's width used to be a side panel. */
+    .psh-pick { width:auto; min-width:0; max-width:190px; padding:3px 8px;
+      font:inherit; font-size:11px; border-radius:7px; background:#141a26;
+      color:#c6d3e4; border:1px solid #2a3346; box-shadow:none; }
+    /* The console fills the dialog the same way the terminal does. */
+    dialog.psh .term { height:calc(100% - 40px); border:0; border-radius:0;
+      background:transparent; margin:0; }
+    dialog.psh .term-body { height:auto; flex:1; }
+    /* The same window is also used to narrate a troubleshooting pod starting
+       up, which is plain text rather than a terminal. */
+    /* ── the live log window ─────────────────────────────────────
+       Same shell as the terminal, different body. The rules here exist for
+       throughput rather than looks: a busy pod delivers thousands of lines and
+       the view has to stay smooth while it does.
+
+       `contain:strict` on the scroller keeps a new line from invalidating
+       layout for the whole page, and `content-visibility` lets the browser skip
+       laying out the lines scrolled out of sight — which is most of them. */
+    /* Laid out rather than calculated. The toolbar wraps on a narrow window and
+       the title bar is not the height a magic number said it was, so
+       `height:calc(100% - 76px)` overflowed by a few pixels at full width and
+       by a whole row once anything wrapped. Scoped to this window so the
+       terminal dialogs, which measure themselves the old way, are untouched. */
+    /* [open] is not decoration. A closed <dialog> is hidden by the browser's
+       own `dialog:not([open]) { display:none }`, and any rule here that sets
+       display beats it on specificity — so an unqualified `display:flex` left
+       this window drawn, unopened and empty, in the page flow of every page
+       that includes it. Never set display on a dialog without [open]. */
+    dialog.psh.lgwin[open] { display:flex; flex-direction:column; }
+    .lgwin .lgv { flex:1 1 auto; height:auto; min-height:0; }
+    .lgv { height:calc(100% - 76px); overflow:auto; margin:0; padding:8px 12px;
+      font-size:12.3px; line-height:1.5; contain:strict;
+      white-space:pre-wrap; word-break:break-word; color:#c6d3e4; }
+    .lgv.nowrap { white-space:pre; word-break:normal; }
+    .lgv .l { display:block; content-visibility:auto;
+      contain-intrinsic-size:auto 18px; }
+    .lgv .l:hover { background:#141a26; }
+    .lgv .ts { color:#5d6b80; }
+    .lgv .l.err { color:#ff9c9c; }
+    .lgv .l.warn { color:#f2c66b; }
+    .lgv .hit { background:#3a4a2a; color:#e8eef7; border-radius:2px; }
+    /* A notice from the portal, not a line from the pod. Set apart deliberately:
+       showing kubectl's refusal as though the container had printed it is what
+       made "unable to retrieve container logs" look like application output. */
+    .lgv .lgnote { color:#8fa0b8; font-style:italic; padding:6px 0 2px; }
+    .lgv .lgnote.err { color:#ff9c9c; font-style:normal; }
+    .lgv .lgnote.dim { color:#5d6b80; }
+    .lgv .lgretry { margin:6px 0 2px; font-style:normal; }
+    .lgbar { display:flex; align-items:center; gap:7px; padding:7px 11px;
+      background:#10151f; border-bottom:1px solid #202839; flex-wrap:wrap; }
+    .lgbar input[type=search] { flex:1; min-width:120px; width:auto;
+      background:#0b0f16; border:1px solid #232c3d; color:#d7e2f0;
+      border-radius:7px; padding:4px 10px; font-size:11.5px;
+      font-family:var(--mono); }
+    .lgbar input[type=search]:focus { outline:none; border-color:#3d5a8a; }
+    .lgcount { color:#5d6b80; font-size:11px; white-space:nowrap; }
+    /* Paused is a state somebody needs to see from across the desk — a stopped
+       log that looks live is how an operator concludes a service went quiet. */
+    .lgpaused { color:#febc2e; }
+    /* Stopped and not coming back on its own. */
+    .lgdead { color:#ff8f8f; }
+    .lgdot { width:7px; height:7px; border-radius:50%; background:#28c840;
+      display:inline-block; animation:lgpulse 1.6s ease-in-out infinite; }
+    .lgdot.off { background:#5d6b80; animation:none; }
+    @keyframes lgpulse { 0%,100% { opacity:1 } 50% { opacity:.35 } }
+    .psh-body { height:calc(100% - 40px); overflow-y:auto; padding:13px 15px;
+      font-size:12.5px; line-height:1.55; white-space:pre-wrap;
+      overflow-wrap:anywhere; }
+    .psh-cmd { color:#e8eef7; margin-top:8px; }
+    .psh-out { color:#c6d3e4; }
+    .psh-err { color:#ff9b9b; }
+    .psh-dim { color:#5d6b80; font-size:11.5px; }
+
+    /* run-in-container bar */
+    .execbar { display:flex; gap:9px; align-items:center; }
+    .execbar input[name=cmd] { flex:1; font-family:var(--mono); font-size:12.5px; }
+    .execp { font-family:var(--mono); font-size:12.5px; color:var(--accent-ink);
+      white-space:nowrap; }
+    .execout { margin-top:11px; border-radius:9px; overflow:hidden;
+      border:1px solid var(--line); }
+    .execout.bad { border-color:var(--danger-line); }
+    .execmeta { padding:6px 11px; font-size:11px; color:var(--muted);
+      background:var(--panel2); }
+    .execout .cmdout { margin:0; border:0; border-radius:0; max-height:420px; }
+    .execout .cmdout.err { color:var(--danger-ink); }
+
+    /* ── a capacity meter in a table cell ──────────────────────
+       `.metric` and `.mrow` had no rules at all, so the label and the
+       percentage ran together as one word: the Nodes table read "4 cores9%".
+       The markup always meant a row with the label at one end and the number at
+       the other; nothing had ever said so. */
+    .metric { min-width:0; }
+    /* One line, with the whole value in the title. Used where a long
+       identifier would otherwise set the height of its whole row. */
+    .nowrap-e { white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+      max-width:100%; }
+    .mrow { display:flex; align-items:baseline; justify-content:space-between;
+      gap:8px; margin-bottom:4px; }
+    .mrow span { font-size:11.5px; color:var(--muted); white-space:nowrap; }
+    .mrow b { font-size:12px; font-variant-numeric:tabular-nums; }
+
+    /* ── a table's action column, always reachable ──────────────
+       These tables are wider than any laptop window. An action you can only
+       reach by scrolling sideways is one nobody uses, so the column is pinned
+       to the right edge and the row scrolls under it. */
+    /* `table.jenkins tr:hover td` sets a TRANSLUCENT overlay and, at three
+       elements plus two classes, out-specifies a plain `tr:hover td.actcol`.
+       The cell then goes see-through and the row scrolls visibly underneath
+       it. Both rules below are written at the same depth so the opaque
+       background wins. */
+    table.jenkins td.actcol, table.jenkins th.actcol,
+    td.actcol, th.actcol { position:sticky; right:0; z-index:3;
+      background:var(--panel);
+      box-shadow:-14px 0 14px -12px var(--shadow-cast); }
+    table.jenkins tr:hover td.actcol { background:var(--panel2); }
+    /* Wrapping, not overflowing. In a `table-layout:fixed` table the cell's box
+       is the width the header declared, and a row of five buttons that needs more
+       than that used to spill LEFT — the cell is sticky and right-aligned, and
+       its opaque background is only as wide as its box, so the buttons painted
+       straight over the Owner cell next door and the two read as one smear.
+       A second line is the honest answer to "these do not fit".
+       `nowrap` moved off the CELL and onto the buttons: it was there to stop the
+       column wrapping, and stopping it wrapping is exactly what made it
+       overflow. A label still never breaks mid-word. */
+    .actrow { display:flex; gap:5px; align-items:center; justify-content:flex-end;
+      flex-wrap:wrap; row-gap:4px; }
+    /* One line, opt-in. The wrap above is the safe default for a table-layout:fixed
+       cell (buttons that overflow a fixed box smear over the neighbour). An
+       AUTO-layout table has no fixed box — the column grows to fit and the card
+       scrolls — so its action row should stay on ONE line. Apply .oneline there. */
+    .actrow.oneline { flex-wrap:nowrap; }
+    td.actcol .abtn, td.actcol button, td.actcol a { white-space:nowrap; }
+    /* A small outlined action. Works on a <button> as well as an <a>: the bare
+       `button` rule above is a filled gradient with a shadow, and .abtn used to
+       override only the padding and the colour — so a <button class="abtn">
+       came out as a cramped gradient pill with muted text on it, unreadable and
+       nothing like the anchors beside it. The reset belongs here, not at each
+       site, because "which element is this" is not something a caller choosing
+       an action button should have to think about. */
+    /* THE STANDARD (also recorded in CLAUDE.md): every action button in a row
+       shares ONE geometry — the same height, centred label, and a minimum width
+       so `run` is not a stub next to `delete`. Tone comes from a variant class,
+       never from an inline style at the call site: `.go` for the primary verb,
+       `.danger` for the destructive one, plain for the rest. */
+    .abtn { display:inline-flex; align-items:center; justify-content:center;
+      gap:5px; height:26px; padding:0 11px; min-width:54px;
+      font-size:11.5px; font-weight:600; border-radius:7px;
+      border:1px solid var(--line2); background:var(--well); box-shadow:none;
+      color:var(--text2); text-decoration:none; white-space:nowrap;
+      font-family:inherit; cursor:pointer;
+      transition:color .12s, border-color .12s, background .12s; }
+    .abtn:hover { color:var(--accent-ink); border-color:var(--accent-ink);
+      background:var(--accent-wash); }
+    .abtn:active { transform:translateY(1px); }
+    .abtn:focus-visible { outline:none; border-color:var(--accent-ink);
+      box-shadow:0 0 0 3px rgba(91,141,239,.2); }
+    .abtn.go { color:var(--accent-ink);
+      border-color:color-mix(in srgb, var(--accent) 45%, var(--line)); }
+    .abtn.go:hover { background:var(--accent-wash);
+      border-color:var(--accent-ink); }
+    .abtn.danger { color:var(--danger-ink); }
+    .abtn.danger:hover { border-color:var(--danger-ink);
+      background:var(--danger-wash); }
+
+    /* ── namespace bar, above every cluster tab ─────────────────
+       The one filter that applies to nearly every tab, so it sits above them
+       rather than inside whichever one happened to own it. */
+    .nsbar { display:flex; align-items:center; gap:11px; flex-wrap:wrap;
+      margin-bottom:12px; }
+    .nsbar-l { font-size:11px; text-transform:uppercase; letter-spacing:.05em;
+      color:var(--muted); font-weight:700; }
+    .nsbar-pick { min-width:250px; max-width:330px; flex:0 1 auto; }
+    /* The cluster is the smaller list and the shorter names; it does not need
+       as much of a row that already carries a namespace picker and a button. */
+    .nsbar-pick-cl { min-width:190px; max-width:250px; }
+    .nsbar-clear { font-size:11.5px; color:var(--accent-ink); }
+    .nsbar-note { font-size:11.5px; color:var(--faint); }
+    .nsbar-note b { color:var(--text2); font-family:var(--mono); }
+    .nsbar-tool { padding:7px 13px; font-size:12px; }
+    .nsbar-live { display:inline-flex; align-items:center; gap:6px;
+      font-size:11px; font-family:var(--mono); padding:3px 4px 3px 9px;
+      border:1px solid var(--ok-line); border-radius:999px; }
+    .nsbar-live a { color:var(--ok-ink); text-decoration:none; }
+    .nsbar-live button { border:0; background:transparent; color:var(--muted);
+      cursor:pointer; font-size:11px; padding:0 4px; box-shadow:none; }
+    .nsbar-live button:hover { color:var(--danger-ink); filter:none; }
+    /* Spent: the pod deleted itself when its half hour ran out. Still listed,
+       because it is still an object somebody may want to clear away. */
+    .nsbar-live.spent { border-color:var(--line2); }
+    .nsbar-live.spent span { color:var(--faint); text-decoration:line-through; }
+    /* On its way out, said while the round trip happens. */
+    .nsbar-live.going { border-color:var(--warn-line); color:var(--warn-ink);
+      padding-right:9px; gap:7px; }
+    .nsbar-live.going span { color:var(--warn-ink); text-decoration:none; }
+    .nsbar-live.going .opspin { margin:0; }
+
+    /* The add/edit dialog's field rows. They lived in the register page's
+       own style block, and the dialog is now included on three pages — so on
+       the two that did not define them every field stacked into one column
+       and the window ran off the bottom of the screen. */
+    .grid2-lic { display:grid; grid-template-columns:1fr 1fr; gap:14px;
+      align-items:end; }
+    .grid3-lic { display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px;
+      align-items:end; }
+    @media (max-width:620px) {
+      .grid2-lic, .grid3-lic { grid-template-columns:1fr; } }
+
+    /* ── one expense, as a card ─────────────────────────────────
+       The same component as a month box on the calendar: the thing named, its
+       figure large, the detail small underneath. It replaced a table twice —
+       once made of inputs, once of text — because at any real width a table
+       gave the columns nobody reads the room and squeezed the name. */
+    .xgrid { display:grid; gap:10px; margin-top:12px;
+      grid-template-columns:repeat(auto-fit,minmax(268px,1fr)); }
+    .xcard { display:flex; flex-direction:column; gap:6px; padding:13px 14px;
+      border:1px solid var(--line); border-radius:11px; background:var(--panel2);
+      text-decoration:none; color:inherit; transition:border-color .12s, transform .12s; }
+    .xcard:hover { border-color:var(--accent-ink); transform:translateY(-1px); }
+    .xc-top { display:flex; align-items:center; gap:7px; }
+    .xc-name { font-size:13px; font-weight:650; overflow:hidden;
+      text-overflow:ellipsis; white-space:nowrap; }
+    .xc-tag { font-size:9px; text-transform:uppercase; letter-spacing:.05em;
+      padding:2px 6px; border-radius:999px; background:var(--ok-on-wash);
+      color:var(--ink-on-ok); font-weight:700; flex:none; }
+    .xc-cost { font-size:19px; font-weight:700; font-variant-numeric:tabular-nums;
+      font-family:var(--mono); }
+    .xc-cyc { font-size:11px; font-weight:500; color:var(--muted);
+      font-family:var(--sans); margin-left:3px; }
+    .xc-meta { display:flex; flex-wrap:wrap; gap:3px 10px; font-size:11px;
+      color:var(--muted); }
+    .xc-foot { display:flex; align-items:center; gap:10px; margin-top:3px;
+      padding-top:8px; border-top:1px solid var(--line); font-size:11px;
+      color:var(--faint); }
+    .xc-when { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;
+      white-space:nowrap; }
+    .xc-year { font-family:var(--mono); color:var(--text2); flex:none; }
+    .xcard .iconb { flex:none; }
+
+    /* ── one month of spend ────────────────────────────────────
+       The facts first, then the split. The bucket colours are the calendar's
+       own (.yb-once and friends) so a month page and the box it was opened
+       from cannot disagree about what "yearly" looks like. */
+    .mfacts { display:grid; gap:10px; margin:2px 0 14px;
+      grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); }
+    .mfact { border:1px solid var(--line); border-radius:11px; padding:11px 14px;
+      background:var(--panel2); display:flex; flex-direction:column; gap:5px; }
+    .mfact-wide { grid-column:span 2; min-width:0; }
+    @media (max-width:720px) { .mfact-wide { grid-column:span 1; } }
+    .mf-k { font-size:10px; text-transform:uppercase; letter-spacing:.9px;
+      color:var(--muted); font-weight:600; }
+    .mf-v { font-size:19px; font-weight:700; font-variant-numeric:tabular-nums; }
+    .mf-v small { font-size:12px; font-weight:600; opacity:.8; }
+    /* Up is bad on a spend page — the opposite of every other delta here — so
+       the colour is chosen by what it means, not by the sign. */
+    .mf-up { color:var(--danger-ink); }
+    .mf-down { color:var(--ok-ink); }
+    .mstack { display:flex; height:9px; border-radius:99px; overflow:hidden;
+      background:var(--well); gap:2px; margin-top:2px; }
+    .mstack span { display:block; height:100%; }
+    .mkeys { display:flex; flex-wrap:wrap; gap:4px 12px; font-size:10.5px;
+      color:var(--muted); margin-top:7px; }
+    .mkey { display:inline-flex; align-items:center; gap:5px; }
+    .mkey b { color:var(--text); font-variant-numeric:tabular-nums; font-weight:650; }
+    .mkey i { width:8px; height:8px; border-radius:2px; display:inline-block; }
+    .yb-once-fill { background:var(--series-1); }
+    .yb-monthly-fill { background:var(--ok-ink); }
+    .yb-yearly-fill { background:var(--warn-ink); }
+    .yb-metered-fill { background:var(--accent2); }
+
+    /* ── the spend year grid, and the currency it is shown in ──
+       Shared by the calendar at /spend and the register behind it, so it
+       lives here rather than in whichever page happened to define it. */
+    .curpick { display:flex; align-items:center; gap:8px; }
+    .curpick label { font-size:11.5px; color:var(--muted); }
+    .curpick select { width:auto; min-width:88px; padding:8px 11px;
+      font-size:13px; font-family:var(--mono); }
+
+    /* ── the year grid ─────────────────────────────────────────────────────
+       Thirteen boxes of one shape. The whole-year box is the same component so
+       it reads as a member of the set, not a summary bolted on the end. */
+    .yearbar { display:flex; align-items:center; gap:22px; flex-wrap:wrap;
+      margin:2px 0 14px; }
+    .yearpick { display:flex; align-items:center; gap:9px; }
+    .yearpick label { font-size:11px; text-transform:uppercase; letter-spacing:1px;
+      color:var(--muted); font-weight:700; }
+    .yearpick select { font-size:14px; font-weight:650; padding:7px 12px; }
+    .yearsum { display:flex; gap:24px; flex-wrap:wrap; }
+    .ys-k { display:block; font-size:10.5px; text-transform:uppercase;
+      letter-spacing:1px; color:var(--muted); font-weight:700; }
+    .ys-v { display:block; font-size:15px; font-weight:700;
+      font-variant-numeric:tabular-nums; }
+
+    .ygrid { display:grid; gap:10px; margin-bottom:18px;
+      grid-template-columns:repeat(auto-fit, minmax(186px, 1fr)); }
+    .ybox { display:flex; flex-direction:column; gap:7px; padding:13px 14px;
+      background:var(--panel); border:1px solid var(--line); border-radius:12px;
+      text-decoration:none; color:inherit; transition:border-color .12s,
+      background .12s, transform .08s; }
+    .ybox:hover { border-color:var(--line2); background:var(--panel2); }
+    .ybox:active { transform:translateY(1px); }
+    .ybox.on { border-color:var(--accent); background:var(--panel2);
+      box-shadow:inset 0 0 0 1px var(--accent); }
+    .ybox.empty .yb-total, .ybox.future .yb-total { color:var(--faint);
+      font-weight:600; }
+    /* a month that has not happened is not a month that cost nothing, and the
+       two must not look alike */
+    .ybox.future { border-style:dashed; }
+    .yall { grid-column:1 / -1; }
+    .yall .yb-total { font-size:26px; }
+    .yb-top { display:flex; align-items:center; gap:7px; }
+    .yb-name { font-size:12px; font-weight:700; letter-spacing:.02em;
+      text-transform:uppercase; color:var(--muted); }
+    .ybox.on .yb-name { color:var(--accent-ink); }
+    .yb-tag { font-size:9.5px; text-transform:uppercase; letter-spacing:.06em;
+      padding:1px 6px; border-radius:99px; background:var(--well);
+      color:var(--muted); font-weight:700; }
+    .yb-total { font-size:19px; font-weight:750; letter-spacing:-.01em;
+      font-variant-numeric:tabular-nums; }
+    .yb-bar { height:4px; border-radius:99px; background:var(--well);
+      overflow:hidden; }
+    .yb-bar i { display:block; height:100%; border-radius:99px;
+      background:var(--series-1); }
+    .yall .yb-bar i { background:var(--accent2); }
+    .yb-split { display:flex; flex-wrap:wrap; gap:4px 10px; font-size:10.5px;
+      color:var(--muted); }
+    .yb-s b { color:var(--text); font-variant-numeric:tabular-nums;
+      margin-left:3px; }
+    .yb-s.dim { color:var(--faint); }
+    .yb-once b { color:var(--series-1); }
+    .yb-monthly b { color:var(--ok-ink); }
+    .yb-yearly b { color:var(--warn-ink); }
+    .yb-metered b { color:var(--accent2); }
+
+    /* ── one environment's services ────────────────────────────
+       Rows, for the same reason the node strip is rows: thirteen tiles wrap
+       into a ragged grid where thirteen lines read down a column. The columns
+       are fixed or fr and never content-sized, because each row is its own
+       grid and an auto column would resolve to that row's own text. */
+    .svclist { display:grid; gap:1px; }
+    .svcrow { display:grid; align-items:center; gap:16px; padding:8px 10px;
+      border-radius:8px; text-decoration:none; color:inherit;
+      grid-template-columns:minmax(130px,1.1fr) minmax(150px,1.5fr) 170px 128px;
+      transition:background .1s; }
+    .svcrow:hover { background:var(--panel2); }
+    .svc-n { font-size:13px; font-weight:600; color:var(--text);
+      overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .svc-f { font-family:var(--mono); font-size:11px; color:var(--faint);
+      overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .svc-c { font-size:11.5px; color:var(--muted); font-variant-numeric:tabular-nums; }
+    /* A sealed value is a fact about the service, not a problem with it.
+       Amber here put a caution colour on every properly-secured service and
+       left nothing to say when something is actually wrong. */
+    .svc-sealed { display:inline-flex; align-items:center; gap:3px;
+      color:var(--muted); }
+    .svc-sealed .ic { opacity:.85; }
+    .svc-bad { color:var(--danger-ink); }
+    .svc-t { display:flex; gap:5px; justify-content:flex-end; }
+    .svc-tag { font-size:9.5px; text-transform:uppercase; letter-spacing:.04em;
+      font-weight:700; padding:1px 6px; border-radius:999px; white-space:nowrap; }
+    .svc-tag.warn { background:var(--warn-on-wash); color:var(--ink-on-warn); }
+    @media (max-width:900px) {
+      .svcrow { grid-template-columns:1fr auto; row-gap:4px; }
+      .svc-f { grid-column:1 / -1; }
+    }
+
+    /* ── the node strip, above every cluster tab ────────────────
+       One card per machine with its own meters. Sized so a ten-node cluster
+       still fits above the fold on a laptop; past that it wraps and scrolls
+       rather than shrinking the meters into decoration. */
+    .nodestrip { border:1px solid var(--line); border-radius:12px;
+      background:var(--panel); padding:12px 14px 14px; margin-bottom:16px; }
+    .ns-head { display:flex; justify-content:space-between; gap:12px;
+      flex-wrap:wrap; align-items:baseline; margin-bottom:11px; }
+    .ns-roll { font-size:13px; }
+    .ns-roll b { font-size:15px; }
+    .ns-tot { font-size:11.5px; color:var(--muted); font-family:var(--mono); }
+    /* ONE ALIGNED ROW PER NODE, not a card each.
+       The cards were 236px wide with three 56px rings in them, so five nodes
+       wrapped to three and two and left a third of the strip empty — and every
+       reading sat in a different place, so comparing two nodes meant hunting
+       for the number rather than running an eye down a column. Ten nodes filled
+       the screen before the tabs.
+
+       Rows fix both: the meters land in the same columns on every line, which
+       is what lets a full cluster be read at a glance, and twenty nodes cost
+       twenty lines instead of twenty boxes. */
+    .ns-list { display:grid; gap:1px; }
+    .ns-row { display:grid; align-items:center; gap:16px; padding:6px 9px;
+      border-radius:8px; text-decoration:none; color:inherit;
+      /* Every column a fixed or fr width, none of them content-sized. Each row
+         is its own grid — grid columns only align inside one container — so an
+         `auto` column resolves to that row's own text and the strip came out
+         ragged: CONTROL-PLANE and WORKER pushed the meters to different places
+         on every line, which is the one thing this layout exists to prevent. */
+      grid-template-columns:minmax(120px,1.4fr) 104px repeat(3,minmax(92px,1fr))
+                            96px;
+      transition:background .1s; }
+    .ns-row:hover { background:var(--panel2); }
+    .ns-row.down { background:var(--danger-wash); }
+    .ns-name { display:flex; align-items:center; gap:8px; min-width:0; }
+    .ns-name b { font-size:12.5px; font-weight:600; overflow:hidden;
+      text-overflow:ellipsis; white-space:nowrap; }
+    .ns-dot { width:7px; height:7px; border-radius:50%; flex:none; }
+    .ns-dot.ok { background:var(--ok); }
+    .ns-dot.bad { background:var(--danger); }
+    .ns-role { font-size:9.5px; color:var(--faint); white-space:nowrap;
+      text-transform:uppercase; letter-spacing:.04em; overflow:hidden;
+      text-overflow:ellipsis; }
+    /* the meter: label, track, number — in that order on every row, so the
+       three numbers form three columns down the strip */
+    .ns-ring { display:flex; align-items:center; gap:8px; min-width:0; }
+    .ns-bar { flex:1; height:5px; border-radius:3px; min-width:26px;
+      background:color-mix(in oklab, var(--met) 22%, transparent); }
+    .ns-bar i { display:block; height:100%; border-radius:3px;
+      background:var(--met); transition:width .35s ease; }
+    @media (max-width:900px) {
+      .ns-row { grid-template-columns:1fr 1fr; row-gap:6px; }
+      .ns-name { grid-column:1 / -1; }
+    }
+    /* ── the meters ────────────────────────────────────────────
+       These are meters, not series, so the fill carries STATE and nothing
+       else on the page may borrow the same colours. Green → yellow → orange →
+       red, so the colour answers "how close to the limit" without reading
+       the number.
+
+       Four bands makes the yellow↔orange pair the whole problem: the obvious
+       steps for them (#fab219 beside #ec835a) measure ΔE 13.6 to NORMAL
+       vision — below the 15 floor, which no amount of secondary encoding
+       excuses. So every step below was measured against this card's own
+       surface rather than chosen by eye (validate_palette.js, --surface
+       #171f33 / #f2f5fa) and re-stepped until the whole ramp cleared:
+
+         dark   worst adjacent CVD ΔE 10.8, normal-vision 15.1, all ≥ 3:1
+         light  worst adjacent CVD ΔE 12.7, normal-vision 17.5
+
+       Light mode's yellow and orange sit below 3:1 on that pale surface —
+       darkening them far enough to pass turns yellow INTO orange (measured:
+       ΔE 1.2 apart under deuteranopia, which is the same colour). The
+       documented relief for that is a visible label, which is what the
+       percentage inside every ring is. It is not decoration.
+
+       For reference, the colours this replaced — the portal's own
+       --ok/--warn/--danger — sat at CVD ΔE 7.5, inside the warn band.
+
+       The track is mixed from the fill's own colour, so state reads around
+       the whole ring rather than only along the filled arc. */
+    .ns-ring           { --met:#2bbf88; }   /* headroom            */
+    .ns-ring.warn      { --met:#ddc233; }   /* filling             */
+    .ns-ring.high      { --met:#ef7a1f; }   /* close to the limit  */
+    .ns-ring.bad       { --met:#d13a3a; }   /* at it               */
+    :root[data-theme="light"] .ns-ring      { --met:#0e9e78; }
+    :root[data-theme="light"] .ns-ring.warn { --met:#eac53a; }
+    :root[data-theme="light"] .ns-ring.high { --met:#ef7a1f; }
+    :root[data-theme="light"] .ns-ring.bad  { --met:#b3252f; }
+    /* A meter with nothing measured must not wear a state colour: an empty
+       green ring reads as "0% used", which is nobody's measurement. */
+    .ns-ring.none { --met:var(--line2); }
+    /* Tabular figures and a tight tracking: percentages sit in a column and
+       must not jitter as they change, which proportional digits do. */
+    .ns-pct { font-size:11.5px; font-weight:600; color:var(--text);
+      font-variant-numeric:tabular-nums; font-feature-settings:"tnum" 1;
+      width:32px; text-align:right; flex:none; }
+    /* The value goes coloured only for the two bands worth acting on. Green
+       and yellow keep the number in text ink, which is what stops a page of
+       ordinary nodes reading as a page of alerts. */
+    .ns-ring.high .ns-pct,
+    .ns-ring.bad .ns-pct { color:var(--met); }
+    .ns-ring.none .ns-pct { color:var(--faint); font-weight:500; }
+    .ns-rl { font-size:9.5px; color:var(--faint); letter-spacing:.06em;
+      text-transform:uppercase; font-weight:700; width:26px; flex:none; }
+    .ns-foot { display:flex; gap:6px; align-items:center; justify-content:flex-end; }
+    .ns-ver { font-size:10px; color:var(--faint); font-family:var(--mono); }
+    .ns-tag { font-size:9.5px; text-transform:uppercase; letter-spacing:.04em;
+      font-weight:700; padding:1px 6px; border-radius:999px; }
+    .ns-tag.warn { background:var(--warn-on-wash); color:var(--ink-on-warn); }
+    .ns-tag.bad  { background:var(--danger-on-wash); color:var(--ink-on-danger); }
+    .warn-t { color:var(--warn-ink); }
+    .bad-t  { color:var(--danger-ink); }
+    /* running-build stage strip */
+    .stages { display:flex; gap:5px; flex-wrap:wrap; margin-top:7px; }
+    .stage { display:inline-flex; align-items:center; gap:6px; font-size:10.5px;
+      padding:3px 9px; border-radius:6px; border:1px solid var(--line);
+      background:var(--panel2); color:var(--muted); white-space:nowrap; }
+    .stage em { font-style:normal; opacity:.65; font-family:var(--mono);
+      font-size:9.5px; }
+    .stage.st-success  { color:var(--ok-on-wash); border-color:rgba(61,220,151,.4);
+      background:rgba(61,220,151,.1); }
+    .stage.st-failed   { color:var(--danger-on-wash); border-color:rgba(245,113,113,.45);
+      background:rgba(245,113,113,.12); }
+    .stage.st-running  { color:var(--accent-fg); border-color:var(--accent-ink);
+      background:rgba(91,141,239,.16); animation:pulse 1.6s infinite; }
+    .stage.st-pending  { color:var(--muted); border-style:dashed; }
+    .stage.st-cancelled{ color:var(--faint); }
+
+    /* Jenkins-style pipeline table */
+    .pipefilters { display:flex; gap:10px; margin-bottom:18px; flex-wrap:wrap; }
+    .pipefilters input { width:230px; }
+    .pipefilters select { width:auto; min-width:150px; }
+    table.jenkins { width:100%; border-collapse:collapse; font-size:13px; }
+    table.jenkins th { text-align:left; padding:11px 14px; color:var(--muted);
+      font-size:10.5px; text-transform:uppercase; letter-spacing:.9px;
+      font-weight:700; border-bottom:1px solid var(--line); white-space:nowrap; }
+    table.jenkins td { padding:9px 14px; border-bottom:1px solid var(--hairline);
+      color:var(--text2); white-space:nowrap; }
+    table.jenkins tr:hover td { background:var(--overlay); }
+    table.jenkins td.mid { text-align:center; }
+    table.jenkins td.jname { white-space:normal; word-break:break-word; }
+    table.jenkins td.jname a { color:var(--accent-ink); font-weight:600; }
+    .jbranch { margin-left:9px; font-family:var(--mono); font-size:10.5px;
+      color:var(--muted); border:1px solid var(--line); border-radius:99px;
+      padding:1px 8px; }
+    .bnum { margin-left:7px; font-family:var(--mono); font-size:11px;
+      color:var(--accent-ink); background:rgba(91,141,239,.12);
+      border-radius:5px; padding:1px 6px; }
+    .na { color:var(--faint); }
+    .jopen { color:var(--muted); font-size:13px; }
+    .jopen:hover { color:var(--accent-ink); }
+    /* status marks in the S column */
+    .s-success, .s-failed, .s-running, .s-cancelled, .s-pending, .s-unknown {
+      display:inline-block; width:13px; height:13px; border-radius:50%;
+      vertical-align:-2px; }
+    .s-success  { background:var(--ok);     box-shadow:0 0 7px rgba(61,220,151,.55); }
+    .s-failed   { background:var(--danger); box-shadow:0 0 7px rgba(245,113,113,.6); }
+    .s-running  { background:var(--accent); animation:pulse 1.4s infinite; }
+    .s-cancelled{ background:var(--faint); }
+    .s-pending  { background:var(--warn); }
+    .s-unknown  { background:transparent; border:2px solid var(--line2); }
+
+    /* pipeline status pills */
+    .pill-success, .pill-failed, .pill-running, .pill-cancelled,
+    .pill-pending, .pill-unknown {
+      display:inline-block; font-size:10.5px; font-weight:700; padding:2px 9px;
+      border-radius:99px; text-transform:uppercase; letter-spacing:.6px; }
+    .pill-success  { color:var(--ink-on-ok); background:var(--ok); }
+    .pill-failed   { color:var(--ink-on-danger); background:var(--danger); }
+    .pill-running  { color:var(--ink-on-accent); background:var(--accent);
+      animation:pulse 1.6s ease-in-out infinite; }
+    .pill-cancelled{ color:var(--muted); background:var(--panel2);
+      border:1px solid var(--line); }
+    .pill-pending  { color:var(--ink-on-warn); background:var(--warn); }
+    .pill-unknown  { color:var(--muted); background:var(--panel2);
+      border:1px solid var(--line); }
+    /* severity — one scale reused by every scan platform */
+    .sv { display:inline-flex; align-items:baseline; gap:5px; font-size:11.5px;
+      font-weight:700; padding:2px 9px; border-radius:99px; font-family:var(--mono);
+      border:1px solid transparent; }
+    .sv.zero { color:var(--faint); background:transparent; border-color:var(--line);
+      font-weight:600; }
+    .sv i { font-style:normal; font-size:9.5px; letter-spacing:.5px;
+      text-transform:uppercase; opacity:.8; font-family:inherit; }
+    .sv-critical { color:#ffd9d9; background:rgba(214,48,48,.9);
+      border-color:#ff8a8a; }
+    .sv-high     { color:var(--ink-on-danger); background:var(--danger); }
+    .sv-medium   { color:var(--ink-on-warn); background:var(--warn); }
+    .sv-low      { color:var(--ink-on-accent); background:#7fb0ff; }
+    .sv-info     { color:var(--muted); background:var(--panel2);
+      border-color:var(--line); }
+    .sv-clean    { color:var(--ink-on-ok); background:var(--ok); }
+    /* severity stat tiles */
+    .sevtile { border:1px solid var(--line); border-radius:13px; padding:15px 17px;
+      background:var(--panel); display:block; }
+    .sevtile:hover { border-color:var(--line2); }
+    /* a figure, not a link — must not invite a click */
+    .sevtile.static, .sevtile.static:hover { border-color:var(--line);
+      cursor:default; }
+    .sevtile.on { border-color:var(--accent-ink);
+      box-shadow:0 0 0 3px rgba(91,141,239,.14); }
+    .sevtile .n { font-size:25px; font-weight:750; letter-spacing:-.6px; }
+    .sevtile .l { font-size:10.5px; color:var(--muted); text-transform:uppercase;
+      letter-spacing:.8px; margin-top:4px; font-weight:650; }
+    .sevtile.t-critical .n { color:var(--crit-ink); }
+    .sevtile.t-high .n { color:var(--danger-ink); }
+    .sevtile.t-medium .n { color:var(--warn-ink); }
+    /* console output: monospaced, scrollable, never pushing the page wide */
+    a.tile-link { display:block; text-decoration:none; color:inherit;
+                  transition:border-color .12s; }
+    a.tile-link:hover { border-color:var(--accent); }
+    /* ── the assistant, as a corner panel ─────────────────────────── */
+    .askbtn { position:fixed; right:20px; bottom:20px; z-index:60;
+              display:flex; align-items:center; gap:8px;
+              padding:11px 17px 11px 14px; border-radius:999px;
+              border:1px solid var(--line); background:var(--accent);
+              color:#fff; font-family:inherit; font-size:13.5px;
+              font-weight:600; cursor:pointer;
+              box-shadow:0 8px 24px rgba(0,0,0,.35); }
+    .askbtn:hover { filter:brightness(1.08); }
+    .askbtn.hidden { display:none; }
+    .askbtn-ico { width:16px; height:16px; fill:currentColor; stroke:none;
+                  flex:none; }
+    /* ── docked, as a right-hand rail ────────────────────────────────
+       It was a floating card in the corner, which is fine for one question and
+       wrong for working alongside a page: it covered the content it was being
+       asked about, and every answer meant moving it or closing it. Docked, the
+       page keeps its own width — the shell is padded by exactly the rail's
+       width rather than sliding underneath it, so nothing is ever hidden. */
+    :root { --railw: 400px; }
+    .askpanel { position:fixed; top:0; right:0; bottom:0; z-index:61;
+                width:var(--railw); max-width:100vw;
+                display:flex; flex-direction:column;
+                background:var(--panel); border-left:1px solid var(--line);
+                box-shadow:-18px 0 46px rgba(0,0,0,.34); }
+    .askpanel[hidden] { display:none; }
+    /* The width lives in one place, on :root, and both the rail and the page
+       read it. The drag writes it; so does the wide button, which is now just
+       a second way of setting the same number rather than a rule of its own. */
+    body.railopen .shell { padding-right:var(--railw); }
+    /* Drag the edge to resize. A rail somebody cannot widen is a rail they
+       close the first time an answer contains a table. */
+    .askgrip { position:absolute; left:-3px; top:0; bottom:0; width:7px;
+               cursor:col-resize; z-index:2; }
+    .askgrip:hover { background:linear-gradient(90deg,transparent,
+                     var(--accent-ink)); opacity:.5; }
+    @media (max-width:900px) {
+      .askpanel { width:100vw; }
+      body.railopen .shell { padding-right:0; }
+    }
+    .askhead { display:flex; align-items:center; gap:9px; padding:11px 12px 11px 15px;
+               border-bottom:1px solid var(--line); font-size:13.5px; }
+    /* icon buttons: one size, one stroke weight, one hover — the glyph buttons
+       they replace each rendered at a different weight and baseline */
+    .iconbtn { width:30px; height:30px; flex:none; display:grid;
+               place-items:center; border-radius:9px; cursor:pointer;
+               border:1px solid transparent; background:transparent;
+               color:var(--muted); padding:0;
+               transition:background .12s, color .12s, border-color .12s; }
+    .iconbtn svg { width:16px; height:16px; fill:none; stroke:currentColor;
+                   stroke-width:1.6; stroke-linecap:round;
+                   stroke-linejoin:round; }
+    .iconbtn:hover { background:var(--overlay); color:var(--text);
+                     border-color:var(--line); }
+    .iconbtn:active { transform:translateY(1px); }
+    .iconbtn:focus-visible { outline:2px solid var(--accent);
+                             outline-offset:1px; }
+    .iconbtn.danger:hover { color:var(--danger-ink);
+                            border-color:var(--danger-ink); }
+    .asklog { flex:1; min-height:0; overflow-y:auto; padding:14px;
+              display:flex; flex-direction:column; gap:12px; }
+    .ask-empty[hidden] { display:none; }
+    .askmsg { display:flex; flex-direction:column; gap:5px; }
+    .askmsg.me { align-items:flex-end; }
+    .askbub { padding:9px 13px; border-radius:12px; font-size:13px;
+              line-height:1.55; white-space:pre-wrap; word-break:break-word;
+              max-width:92%; }
+    .askbub.me { background:var(--accent); color:#fff;
+                 border-bottom-right-radius:4px; }
+    .askbub.ai { background:var(--well); border:1px solid var(--line);
+                 border-bottom-left-radius:4px; }
+    .askbub.err { border-color:var(--danger-ink); color:var(--danger-ink); }
+    .askmeta { font-size:10.5px; color:var(--faint); font-family:var(--mono); }
+    .askTable { border:1px solid var(--line); border-radius:10px;
+                overflow:auto; max-height:320px; background:var(--panel); }
+    .askTable table { margin:0; font-size:11.5px; }
+    .askTable a, .askbub a { color:var(--accent-ink); text-decoration:none;
+                             border-bottom:1px solid rgba(127,127,127,.35); }
+    .askTable a:hover, .askbub a:hover { border-bottom-color:currentColor; }
+    .askTable th, .askTable td { padding:7px 10px; white-space:nowrap; }
+    .askEvidence > summary { cursor:pointer; font-size:11px; color:var(--faint);
+                            font-family:var(--mono); padding:2px 0 6px;
+                            list-style:none; }
+    .askEvidence > summary::marker,
+    .askEvidence > summary::-webkit-details-marker { display:none; }
+    .askEvidence > summary::before { content:'▸ '; }
+    .askEvidence[open] > summary::before { content:'▾ '; }
+    .askEvidence > summary:hover { color:var(--accent-ink); }
+    .askbar { display:flex; gap:9px; padding:11px 13px;
+              border-top:1px solid var(--line); align-items:flex-end; }
+    .askbar textarea { flex:1; resize:none; min-height:38px; max-height:140px;
+                       font-family:inherit; font-size:13px; }
+    @media (max-width:700px) {
+      /* Left over from the floating card: it set right/left/bottom and undid
+         the docking. On a narrow screen the rail simply takes the screen. */
+      .askpanel { width:100vw; }
+      .askbtn { right:14px; bottom:14px; }
+    }
+    /* ── a proposed action ───────────────────────────────────────────
+       Deliberately not styled like the assistant's prose. Everything above it
+       in the bubble is something a model said; this is a button that changes
+       somebody's cluster, and the two must not look like the same kind of
+       thing. The command is shown in full, in the mono face the console uses,
+       because "Rolling restart" is a label and `kubectl rollout restart
+       deployment/web -n dev` is what actually happens. */
+    .actcard { border:1px solid var(--line2); border-radius:11px;
+               background:var(--panel2); margin:10px 0 2px; overflow:hidden; }
+    .actcard.prod { border-color:var(--danger-line); }
+    .actcard-h { display:flex; align-items:center; gap:8px; padding:9px 12px;
+                 border-bottom:1px solid var(--line); font-size:12.5px; }
+    .actcard-h b { font-size:13px; }
+    .actcard-cmd { font-family:var(--mono); font-size:11.5px; line-height:1.55;
+                   padding:10px 12px; color:var(--text); white-space:pre-wrap;
+                   word-break:break-all; background:var(--well); }
+    .actcard-b { padding:10px 12px; display:flex; flex-direction:column; gap:9px; }
+    .actcard-note { color:var(--muted); font-size:11.5px; }
+    .actcard-row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .actcard input[type=text] { flex:1; min-width:140px; font-size:12px;
+                                padding:5px 9px; }
+    .acttag { font-size:9.5px; letter-spacing:.05em; text-transform:uppercase;
+              border-radius:99px; padding:3px 8px; font-weight:700; flex:none; }
+    .acttag.danger { background:#3a1620; color:#ff8f8f; }
+    .acttag.prod { background:#3a1620; color:#ff8f8f; }
+    .actcard-out { font-family:var(--mono); font-size:11px; white-space:pre-wrap;
+                   max-height:180px; overflow:auto; padding:9px 12px;
+                   border-top:1px solid var(--line); color:var(--muted); }
+    .actcard-out.bad { color:var(--danger-ink); }
+    .actcard.done .actcard-b { display:none; }
+    /* ── assistant chat ───────────────────────────────────────────── */
+    .chatlog { max-height:min(60vh,560px); overflow-y:auto; padding:16px;
+               display:flex; flex-direction:column; gap:14px; }
+    .chat-empty { padding:8px 2px; }
+    .chipgrid { display:flex; flex-wrap:wrap; gap:8px; }
+    /* `.chip` is used on anchors AND buttons, and the `button, .btn` rule
+       above gives a button a gradient, weight 600 and a glow. Answered here
+       so a chip looks the same whichever element it is on -- app.css is
+       immutable-cached for a year, so pages needing this before the next
+       release carry their own copy too. */
+    .chip { background:var(--well); border:1px solid var(--line); color:var(--text);
+            border-radius:999px; padding:7px 14px; font-size:12.5px;
+            cursor:pointer; font-family:inherit; box-shadow:none;
+            font-weight:500; }
+    .chip:hover { border-color:var(--accent); color:var(--accent-ink);
+            filter:none; }
+    .msg { display:flex; flex-direction:column; gap:4px; max-width:86%; }
+    .msg.me { align-self:flex-end; align-items:flex-end; }
+    .msg.ai { align-self:flex-start; }
+    .msg .bub { padding:11px 14px; border-radius:13px; font-size:13.5px;
+                line-height:1.55; white-space:pre-wrap; word-break:break-word; }
+    .msg.me .bub { background:var(--accent); color:#fff;
+                   border-bottom-right-radius:5px; }
+    .msg.ai .bub { background:var(--well); border:1px solid var(--line);
+                   border-bottom-left-radius:5px; }
+    .msg.failed .bub { border-color:var(--danger-ink); color:var(--danger-ink); }
+    .msgmeta { font-size:10.5px; color:var(--faint); font-family:var(--mono); }
+    .chatbar { display:flex; gap:10px; padding:12px 16px;
+               border-top:1px solid var(--line); align-items:flex-end; }
+    .chatbar textarea { flex:1; resize:none; min-height:40px; max-height:180px;
+                        font-family:inherit; font-size:13.5px; }
+    /* an answer is a table, so its bubble is allowed the full width */
+    .msg.ai.wide { max-width:100%; width:100%; }
+    .ansTable { border:1px solid var(--line); border-radius:11px;
+                overflow-x:auto; background:var(--panel); }
+    .ansTable table { margin:0; }
+    .ansCaps { display:flex; flex-wrap:wrap; gap:7px; margin-top:9px; }
+    /* ── switch, and the modal it opens ───────────────────────────── */
+    .switch { display:inline-flex; align-items:center; cursor:pointer; }
+    .switch input { position:absolute; opacity:0; width:0; height:0; }
+    .switch .track { width:38px; height:21px; border-radius:11px; flex:none;
+                     background:var(--line); position:relative;
+                     transition:background .15s; }
+    .switch .knob { position:absolute; top:2px; left:2px; width:17px; height:17px;
+                    border-radius:50%; background:var(--panel);
+                    box-shadow:0 1px 3px rgba(0,0,0,.35); transition:left .15s; }
+    .switch input:checked + .track { background:var(--accent); }
+    .switch input:checked + .track .knob { left:19px; }
+    .pdialog { border:1px solid var(--line); border-radius:14px; padding:0;
+               background:var(--panel); color:var(--text); width:min(620px, 94vw);
+               max-height:88vh; box-shadow:0 24px 60px rgba(0,0,0,.45); }
+    .pdialog::backdrop { background:rgba(0,0,0,.55);
+                         backdrop-filter:blur(2px); }
+    .pdialog .dhead { display:flex; align-items:center; gap:10px;
+                      padding:14px 16px; border-bottom:1px solid var(--line);
+                      font-size:14.5px; }
+    .pdialog .dbody { padding:14px 16px; overflow:auto; max-height:62vh; }
+    .pdialog .dfoot { display:flex; gap:9px; justify-content:flex-end;
+                      padding:12px 16px; border-top:1px solid var(--line);
+                      background:var(--overlay-soft); }
+    .pdialog .dfoot .spacer { flex:1; }
+    /* ── a dialog that asks for values ─────────────────────────────
+       Fields stack: label over control, help under it. A two-column
+       label/field grid inside a 620px dialog leaves the input too narrow to
+       show what it wants — a tenant GUID was being cut off mid-value. */
+    .dhead .dmark { width:34px; height:34px; border-radius:9px; flex:none;
+                    display:flex; align-items:center; justify-content:center;
+                    background:var(--well); border:1px solid var(--line); }
+    .dhead .dtitle { display:block; font-weight:700; font-size:15px;
+                     letter-spacing:-.2px; }
+    .dhead .dwhere { display:block; font-size:11.5px; color:var(--muted);
+                     margin-top:2px; font-weight:400; }
+    .dx { background:none; border:1px solid var(--line); border-radius:8px;
+          width:28px; height:28px; padding:0; flex:none; color:var(--muted);
+          display:inline-flex; align-items:center; justify-content:center;
+          box-shadow:none; cursor:pointer; }
+    .dx:hover { border-color:var(--line2); color:var(--text);
+                background:var(--overlay); filter:none; }
+    .dx:focus-visible { outline:2px solid var(--accent-ink); outline-offset:2px; }
+    .dsec { display:flex; align-items:center; gap:12px; margin:22px 0 14px;
+            font-size:10.5px; text-transform:uppercase; letter-spacing:.9px;
+            color:var(--faint); font-weight:700; }
+    .dsec::after { content:''; flex:1; height:1px; background:var(--hairline); }
+    .dbody > .dsec:first-of-type { margin-top:2px; }
+    .dfield { margin-bottom:16px; }
+    .dfield > label { display:block; font-size:12.5px; font-weight:600;
+                      color:var(--text); margin-bottom:6px; }
+    /* a choice card is a label too, but its weight belongs on its own title */
+    .dfield > label.pick { font-weight:400; margin-bottom:0; }
+    .dfield > label .opt { font-weight:400; color:var(--faint);
+                           font-size:11.5px; }
+    .dfield input[type=text], .dfield input[type=password] { padding:10px 13px; }
+    /* The half of a form most rows never fill in. Shut by default, so what is
+       open is the shortest thing that makes a valid record. */
+    .dmore { margin-top:4px; border-top:1px solid var(--line); padding-top:12px; }
+    .dmore > summary { cursor:pointer; font-size:12px; font-weight:600;
+      color:var(--accent-ink); list-style:none; padding:4px 0; margin-bottom:10px;
+      display:flex; align-items:center; gap:7px; }
+    .dmore > summary::-webkit-details-marker { display:none; }
+    .dmore > summary::before { content:"›"; display:inline-block;
+      transition:transform .15s; font-size:15px; line-height:1; }
+    .dmore[open] > summary::before { transform:rotate(90deg); }
+    .dmore > summary:hover { color:var(--text); }
+    .dhelp { font-size:11.5px; color:var(--muted); margin-top:6px;
+             line-height:1.45; }
+    /* a value the reader has to carry to somebody else's console */
+    .dcopy { display:flex; align-items:stretch; border:1px solid var(--line);
+             border-radius:9px; background:var(--well); overflow:hidden; }
+    .dcopy code { flex:1; min-width:0; padding:10px 13px; font-size:12px;
+                  font-family:var(--mono); word-break:break-all; line-height:1.4; }
+    .dcopy button { border:0; border-left:1px solid var(--line); border-radius:0;
+                    background:var(--panel2); color:var(--muted); box-shadow:none;
+                    font-size:11.5px; font-weight:600; padding:0 15px; flex:none; }
+    .dcopy button:hover { color:var(--accent-ink); background:var(--overlay);
+                          filter:none; }
+    .dnote { display:flex; gap:10px; padding:11px 13px; border-radius:9px;
+             background:var(--overlay-soft); border:1px solid var(--hairline);
+             font-size:11.5px; color:var(--muted); line-height:1.5; }
+    .dnote svg { flex:none; margin-top:1px; color:var(--faint); }
+    /* ── permission pickers ───────────────────────────────────────── */
+    .pickgrid { display:grid; gap:8px; width:100%;
+                grid-template-columns:repeat(auto-fit,minmax(215px,1fr)); }
+    .pick { display:flex; align-items:flex-start; gap:9px; padding:9px 11px;
+            border:1px solid var(--line); border-radius:9px; background:var(--well);
+            cursor:pointer; font-size:12.5px; }
+    .pick:hover { border-color:var(--accent); }
+    /* square: width:auto here left the box 13 wide against a 15 tall */
+    .pick input { width:15px; height:15px; margin-top:2px; flex:none; }
+    .pick span { min-width:0; }
+    .pick small { display:block; color:var(--muted); font-size:11px;
+                  margin-top:2px; line-height:1.35; }
+    /* ── arrangeable overview ─────────────────────────────────────── */
+    .board { display:grid; grid-template-columns:repeat(12, 1fr); gap:16px;
+             grid-auto-rows:minmax(96px, auto); grid-auto-flow:row dense;
+             align-items:stretch; }
+    .panel { grid-column:span 12; min-width:0; position:relative;
+             display:flex; flex-direction:column; }
+    /* The card fills its slot. `.board` already stretches the SLOTS, but the
+       card inside kept its content height — so two panels side by side ended at
+       different places and the taller one's neighbour left a ragged void beside
+       it. Pipelines carries a list of failing builds and Security does not, so
+       the two were 600px and 290px in the same row.
+
+       The body takes the slack rather than the header or footer, so a card with
+       less in it grows in the middle instead of stretching its title bar. */
+    .panel > .card { flex:1 1 auto; display:flex; flex-direction:column;
+             min-height:0; }
+    .panel > .card > .card-b:last-child { flex:1 1 auto; }
+    .panel.w3  { grid-column:span 3; }
+    .panel.w4  { grid-column:span 4; }
+    .panel.w6  { grid-column:span 6; }
+    .panel.w8  { grid-column:span 8; }
+    .panel.w9  { grid-column:span 9; }
+    .panel.w12 { grid-column:span 12; }
+    /* a panel with a set height spans board rows and scrolls inside itself */
+    .panel.h2 { grid-row:span 2; } .panel.h3 { grid-row:span 3; }
+    .panel.h4 { grid-row:span 4; } .panel.h5 { grid-row:span 5; }
+    .panel.h6 { grid-row:span 6; } .panel.h8 { grid-row:span 8; }
+    .panel.hfix .pbody { flex:1; min-height:0; overflow:auto; }
+    /* The wrapper passes the slot's height through to the card. `.board` already
+       stretches the panel SLOTS, but the card sits inside .pbody, so both kept
+       their content height — two panels side by side ended at different places
+       and the taller one's neighbour left a ragged void beside it. Pipelines
+       carries a list of failing builds and Security does not, so the two came
+       out 600px and 290px in the same row.
+
+       The card's BODY takes the slack rather than its header, so a card with
+       less in it grows in the middle instead of stretching its title bar. */
+    .pbody { min-width:0; display:flex; flex-direction:column; }
+    .panel > .pbody { flex:1 1 auto; min-height:0; }
+    .panel > .pbody > .card { flex:1 1 auto; display:flex;
+             flex-direction:column; min-height:0; }
+    .panel > .pbody > .card > .card-b:last-child { flex:1 1 auto; }
+    /* ── a folded panel ─────────────────────────────────────────
+       Collapsed keeps the panel on the board without its body. It stays folded
+       when arranging ends, which is the point: it is a layout choice, not a
+       temporary peek. A folded panel also stops spanning rows, or it would
+       leave a hole the height of the body it is no longer showing. */
+    .panel.folded .pbody, .panel.folded .rsz { display:none; }
+    .panel.folded { grid-row:span 1 !important; }
+    .panel.folded .phead { display:flex; }
+    .folded .ptitle::after { content:" · folded"; color:var(--muted);
+      font-weight:400; }
+    /* a panel on its own clock says so on its header, always — a deliberately
+       stale panel must not read as a broken one */
+    .prate { font-size:10.5px; padding:1px 6px; border-radius:5px;
+      background:var(--well); color:var(--muted); font-variant-numeric:tabular-nums; }
+    .panel.selfrefresh { animation:pulse .5s ease-out; }
+    @keyframes pulse { from { outline-color:var(--accent-ink); } }
+    /* ── the per-panel options popover ──────────────────────────
+       Stepping a quarter to full is four clicks on the narrow/wide buttons;
+       these are one, and they are the only place height and refresh are
+       expressed as a choice rather than as a drag. */
+    .popts { display:none; margin:0 0 8px; padding:9px 11px;
+      border:1px solid var(--line2); border-radius:10px; background:var(--panel2); }
+    .arranging .popts:not([hidden]) { display:block; }
+    .poptrow { display:flex; align-items:center; gap:5px; flex-wrap:wrap;
+      margin-bottom:6px; }
+    .poptlbl { font-size:10.5px; text-transform:uppercase; letter-spacing:.04em;
+      color:var(--muted); width:56px; flex:0 0 auto; }
+    .poptb { border:1px solid var(--line2); background:var(--panel);
+      color:var(--text); font:inherit; font-size:11.5px; padding:3px 9px;
+      border-radius:6px; cursor:pointer; }
+    .poptb:hover { border-color:var(--accent-ink); }
+    .poptb.on { background:var(--accent); border-color:var(--accent);
+      color:var(--on-accent); font-weight:600; }
+    .poptnote { font-size:10.5px; color:var(--muted); margin-top:2px; }
+    @media (max-width:1100px) { .panel, .panel.w3, .panel.w4, .panel.w6,
+                                .panel.w8, .panel.w9 { grid-column:span 12; } }
+    /* ── arranging ──────────────────────────────────────────────
+       The chrome only exists while arranging; the page itself stays clean.
+       Everything below is about the gesture feeling deliberate: a panel that
+       reflows under the cursor with no warning is the difference between a
+       board you can aim at and one you fight. */
+    .phead { display:none; align-items:center; gap:8px; padding:6px 4px 8px;
+             font-size:12px; color:var(--muted); }
+    .arranging .phead { display:flex; }
+    .arranging .panel { outline:1px dashed var(--line); outline-offset:6px;
+                        border-radius:12px; transition:outline-color .15s; }
+    .arranging .panel:hover { outline-color:var(--accent-ink); }
+    .arranging .pbody { pointer-events:none; user-select:none; }
+    /* the 12 columns, shown while a gesture is running so the snapping is
+       something you can see rather than something you discover */
+    .board { position:relative; }
+    .board::before { content:""; position:absolute; inset:0; z-index:0;
+      opacity:0; transition:opacity .18s; pointer-events:none;
+      background:repeating-linear-gradient(to right,
+        var(--overlay) 0, var(--overlay) calc((100% - 11 * 16px) / 12),
+        transparent calc((100% - 11 * 16px) / 12),
+        transparent calc((100% - 11 * 16px) / 12 + 16px));
+      border-radius:10px; }
+    .board.gridon::before { opacity:1; }
+    .grip { cursor:grab; color:var(--faint); touch-action:none;
+            display:inline-flex; align-items:center; padding:3px;
+            margin:-3px 0 -3px -3px; border-radius:6px;
+            transition:color .12s, background .12s; }
+    .grip svg { width:16px; height:16px; fill:currentColor; }
+    .grip:hover { color:var(--text); background:var(--overlay); }
+    .grip:active { cursor:grabbing; }
+    /* where it will land. Not the panel itself: moving the real thing on every
+       pointermove made the whole board shuffle under the cursor. */
+    .dropslot { border:2px dashed var(--accent); border-radius:12px;
+                background:var(--accent-wash); min-height:60px;
+                animation:slotin .16s ease-out; }
+    @keyframes slotin { from { opacity:0; transform:scale(.97); }
+                        to   { opacity:1; transform:scale(1); } }
+    .panel.moving { display:none; }
+    .drag-ghost { position:fixed; z-index:999; pointer-events:none;
+                  opacity:.92; transform:rotate(-1deg) scale(1.01);
+                  box-shadow:0 22px 48px rgba(0,0,0,.45); border-radius:12px;
+                  overflow:hidden; background:var(--panel);
+                  outline:1px solid var(--accent); }
+    /* panels glide to their new places instead of teleporting */
+    .panel.flip { transition:transform .22s cubic-bezier(.2,.7,.3,1); }
+    .rsz { display:none; position:absolute; right:3px; bottom:3px; z-index:5;
+           width:22px; height:22px; cursor:nwse-resize; color:var(--faint);
+           touch-action:none; user-select:none; border-radius:7px;
+           transition:color .12s, background .12s; }
+    .arranging .rsz { display:flex; align-items:center; justify-content:center; }
+    .rsz svg { width:16px; height:16px; fill:none; stroke:currentColor;
+               stroke-width:1.7; stroke-linecap:round; }
+    .rsz:hover { color:var(--accent); background:var(--overlay); }
+    .panel.resizing { outline:2px solid var(--accent) !important; }
+    .sizehint { position:absolute; right:28px; bottom:3px; z-index:6;
+                font-size:11px; color:var(--accent-fg); font-family:var(--mono);
+                background:var(--accent); padding:2px 7px; border-radius:6px;
+                display:none; white-space:nowrap; }
+    .panel.resizing .sizehint, .panel.keyfocus .sizehint { display:block; }
+    /* the panel the keyboard is driving */
+    .panel.keyfocus { outline:2px solid var(--accent) !important; }
+    .ptitle { font-weight:600; color:var(--text); letter-spacing:-.1px; }
+    /* how wide this panel is, stated rather than counted off the grid */
+    .pwidth { font-family:var(--mono); font-size:10.5px; color:var(--faint);
+              font-variant-numeric:tabular-nums; margin-right:2px; }
+    .pwidth i { font-style:normal; opacity:.6; }
+    /* One segmented control, not four loose boxes. Four bordered squares in a
+       row read as four unrelated things and drew more attention than the panel
+       they belong to. */
+    .pbtns { display:inline-flex; align-items:center; gap:1px; padding:2px;
+             border:1px solid var(--line); border-radius:9px;
+             background:var(--well); }
+    .pbtn { background:none; border:none; color:var(--muted);
+            border-radius:6px; width:24px; height:22px; cursor:pointer;
+            padding:0; display:inline-flex; align-items:center;
+            justify-content:center;
+            transition:background .12s, color .12s; }
+    .pbtn svg { width:15px; height:15px; fill:none; stroke:currentColor;
+                stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+    .pbtn:hover { background:var(--overlay); color:var(--text); }
+    .pbtn:active { background:var(--accent-wash); color:var(--accent-ink); }
+    /* removing a panel is the one that undoes work, so it colours on approach
+       instead of looking like its neighbours */
+    .pbtn-x:hover { background:var(--danger-wash,rgba(245,113,113,.13));
+                    color:var(--danger-ink); }
+    .pbtn:disabled { opacity:.28; cursor:default; background:none; }
+    .pbtn:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+    .toast { animation:toastin .22s cubic-bezier(.2,.7,.3,1); }
+    .toast.fade { opacity:0; transform:translateY(-4px);
+                  transition:opacity .35s, transform .35s; }
+    @keyframes toastin { from { opacity:0; transform:translateY(-6px); }
+                         to   { opacity:1; transform:none; } }
+    .arrangebar { border-color:var(--accent); }
+    .addgrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr));
+               gap:10px; }
+    .addcard { display:flex; align-items:center; gap:11px; padding:10px 12px;
+               border:1px solid var(--line); border-radius:10px;
+               background:var(--well); text-decoration:none; }
+    .addcard:hover { border-color:var(--accent); }
+    .addcard .ico { font-size:19px; flex:none; }
+    .addcard .arrow { margin-left:auto; color:var(--faint); font-size:15px; }
+
+    /* ── kubectl console ──────────────────────────────────────────── */
+    .term-wrap { display:grid; grid-template-columns:minmax(0,1fr) 290px;
+                 gap:14px; align-items:start; }
+    @media (max-width:1150px) { .term-wrap { grid-template-columns:1fr; } }
+    .term { background:var(--panel); border:1px solid var(--line);
+            border-radius:12px; overflow:hidden; position:relative;
+            display:flex; flex-direction:column; min-width:0; }
+    .term-head { display:flex; align-items:center; gap:9px; padding:9px 13px;
+                 border-bottom:1px solid var(--line); background:var(--well);
+                 flex-wrap:wrap; font-size:13px; }
+    .term-head .dot-r { width:9px; height:9px; border-radius:50%;
+                        background:var(--ok); flex:none; }
+    .tbtn { padding:3px 11px; font-size:11.5px; }
+    .term-body { padding:12px 14px; min-height:340px; max-height:60vh;
+                 overflow:auto; font-family:var(--mono); font-size:12.5px;
+                 line-height:1.55; }
+    .term-hello { color:var(--muted); font-family:var(--sans); font-size:13px;
+                  padding-bottom:10px; margin-bottom:6px;
+                  border-bottom:1px dashed var(--line); }
+    .blk { margin:0 0 14px; }
+    .cmdline { display:flex; gap:7px; align-items:baseline; flex-wrap:wrap; }
+    .cmdline .p { color:var(--accent); }
+    .cmdline .c { color:var(--text); white-space:pre-wrap; word-break:break-word; }
+    .cmdline .meta { margin-left:auto; font-size:11px; color:var(--faint);
+                     font-family:var(--sans); }
+    .cmdline .meta.ok { color:var(--ok-ink); }
+    .cmdline .meta.bad { color:var(--danger-ink); }
+    .out { margin:6px 0 0; padding:8px 10px; background:var(--well);
+           border-radius:7px; white-space:pre; overflow-x:auto;
+           font-size:12px; color:var(--text); }
+    .out.bad { color:var(--danger-ink); }
+    .out.hint { font-family:var(--sans); color:var(--muted); white-space:normal; }
+    .blktools { display:flex; gap:12px; margin-top:5px; font-family:var(--sans);
+                font-size:11px; }
+    .blktools a { color:var(--faint); text-decoration:none; }
+    .blktools a:hover { color:var(--accent); }
+    .term-input { display:flex; gap:9px; align-items:flex-start;
+                  border-top:1px solid var(--line); padding:10px 13px;
+                  background:var(--well); }
+    .term-input .prompt { font-family:var(--mono); font-size:12.5px;
+                          color:var(--accent); padding-top:7px;
+                          white-space:nowrap; }
+    .term-input textarea { flex:1; margin:0; border:none; background:none;
+                           font-family:var(--mono); font-size:13px;
+                           resize:none; padding:5px 0; min-height:28px;
+                           color:var(--text); }
+    .term-input textarea:focus { outline:none; box-shadow:none; }
+    .spin { width:13px; height:13px; flex:none; margin-top:8px; border-radius:50%;
+            border:2px solid var(--line); border-top-color:var(--accent);
+            opacity:0; }
+    .spin.on { opacity:1; animation:spin .7s linear infinite; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    /* the sync watcher's own spinner: .spin above is positioned for the
+       terminal and only shows with .on, which is not what a card header wants */
+    .opspin { display:inline-block; width:12px; height:12px; border-radius:50%;
+      border:2px solid var(--line); border-top-color:var(--accent);
+      animation:spin .7s linear infinite; vertical-align:-1px;
+      margin-right:6px; }
+    .term-confirm { display:flex; gap:9px; align-items:center; padding:8px 13px;
+                    border-top:1px solid var(--line); font-size:12px;
+                    flex-wrap:wrap; }
+    .term-confirm label { color:var(--muted); }
+    .term-confirm input { width:200px; margin:0; padding:4px 9px;
+                          font-size:12px; font-family:var(--mono); }
+    .comp { position:absolute; bottom:58px; left:120px; z-index:40;
+            background:var(--panel); border:1px solid var(--line);
+            border-radius:9px; box-shadow:0 12px 34px rgba(0,0,0,.45);
+            max-height:260px; overflow:auto; min-width:240px; padding:5px; }
+    .comp .ckind { font-size:10.5px; text-transform:uppercase;
+                   letter-spacing:.08em; color:var(--faint); padding:4px 8px; }
+    .comp .citem { padding:5px 9px; border-radius:6px; font-family:var(--mono);
+                   font-size:12px; cursor:pointer; color:var(--text); }
+    .comp .citem.on { background:var(--accent); color:var(--on-accent); }
+    .term-side { display:flex; flex-direction:column; gap:14px; min-width:0; }
+    .cmdout { font-family:var(--mono); font-size:12px; line-height:1.5;
+              background:var(--well); border:1px solid var(--line);
+              border-radius:8px; padding:11px 13px; margin:0 0 9px;
+              max-height:520px; overflow:auto; white-space:pre;
+              color:var(--text); }
+    .cmdout.err { color:var(--danger-ink); border-color:var(--danger); }
+    .sevtile.t-low .n { color:var(--info-ink); }
+    /* A tile for a count that is GOOD news. The tone names here came from
+       severities, which have no word for "this worked" — and a green figure is
+       the one thing a page of failures needs to be readable against. */
+    .sevtile.t-ok .n { color:var(--ok-ink); }
+    /* The run table's outcome cell: four pills on a narrow measure wrap onto a
+       second line rather than making the column 289px wide, which is what pushed
+       the sticky action column over its neighbours. */
+    table.jenkins td.wrapcell { white-space:normal; }
+    table.jenkins td.wrapcell .sv { margin:1px 2px 1px 0; }
+    .sevtile.t-info .n, .sevtile.t-all .n { color:var(--text); }
+    /* stacked severity bar on a product row */
+    .sevbar { display:flex; height:7px; border-radius:99px; overflow:hidden;
+      background:var(--well); border:1px solid var(--line); min-width:120px; }
+    .sevbar span { display:block; }
+    .sevbar .b-critical { background:#d63030; }
+    .sevbar .b-high { background:var(--danger); }
+    .sevbar .b-medium { background:var(--warn); }
+    .sevbar .b-low { background:#7fb0ff; }
+    .sevbar .b-info { background:var(--line2); }
+    /* ── SonarQube: a quality gate and its ratings ──────────────────────
+       Sonar shows ratings as letters everywhere in its own UI, and the letter
+       carries the meaning — a portal printing "3.0" would be a worse copy of
+       the thing it is saving people a trip to. */
+    .qg { display:inline-block; padding:3px 10px; border-radius:99px;
+      font-size:11px; font-weight:700; letter-spacing:.02em; white-space:nowrap; }
+    .qg-ok { background:rgba(61,220,151,.15); color:var(--ok-ink); }
+    .qg-bad { background:rgba(245,113,113,.16); color:var(--danger-ink); }
+    .qg-warn { background:rgba(245,196,81,.16); color:var(--warn-ink); }
+    .qg-none { background:var(--well); color:var(--muted); }
+    .rt { display:inline-flex; align-items:center; justify-content:center;
+      width:23px; height:23px; border-radius:7px; font-size:12px;
+      font-weight:800; color:#10231b; }
+    .rt-a { background:#3ddc97; } .rt-b { background:#9fdc5c; color:#1d2a08; }
+    .rt-c { background:#f5c451; color:#3a2d06; }
+    .rt-d { background:#f59e4b; color:#3a1f06; }
+    .rt-e { background:#f57171; color:#3a0f0f; }
+    .rt-none { background:var(--well); color:var(--muted);
+      border:1px solid var(--line); }
+    .rts { display:flex; gap:5px; }
+    /* several small labelled numbers in one cell, wrapping rather than
+       forcing the table wider than the screen */
+    td.counts { font-size:12px; color:var(--muted); }
+    td.counts span { display:inline-block; margin:0 9px 2px 0; white-space:nowrap; }
+    td.counts b { color:var(--text); font-variant-numeric:tabular-nums; }
+    td.counts span.hot b { color:var(--warn-ink); }
+    .sonartab td { vertical-align:top; }
+    .cve { font-family:var(--mono); font-size:11.5px; color:var(--accent-ink);
+      background:rgba(91,141,239,.12); border-radius:5px; padding:1px 6px; }
+    .stat-note { font-size:11px; color:var(--warn-ink); margin-top:8px; }
+    /* ── stat tiles with an icon and a tone rail ──────────────────
+      Born on the expiry radar, now carried by the Ansible page too — which is
+      why they live here: a second copy is how the two drift. The rail carries
+      the tone so the number can stay quiet until it is the one that matters,
+      and a zero stays grey so the eye lands on the counts that are not zero. */
+    .ex-tiles { display:grid; gap:11px; margin-bottom:14px;
+      grid-template-columns:repeat(auto-fit,minmax(172px,1fr)); }
+    .ex-tile { position:relative; display:flex; gap:12px; align-items:flex-start;
+      text-decoration:none; padding:13px 14px 13px 17px; overflow:hidden;
+      border:1px solid var(--line); border-radius:13px; background:var(--panel);
+      transition:border-color .12s, transform .12s, box-shadow .12s; }
+    /* the rail carries the tone, so the number itself can stay quiet until it
+      is the one that matters */
+    .ex-tile::before { content:""; position:absolute; left:0; top:0; bottom:0;
+      width:3px; background:var(--line2); }
+    .ex-tile:hover { border-color:var(--accent); transform:translateY(-2px);
+      box-shadow:var(--shadow-cast); }
+    .ex-tile.on { border-color:var(--accent);
+      box-shadow:inset 0 0 0 1px var(--accent); }
+    .ex-tile .ico { flex:0 0 auto; width:30px; height:30px; border-radius:9px;
+      display:flex; align-items:center; justify-content:center;
+      background:var(--well); color:var(--muted); margin-top:2px; }
+    /* spans, not divs, because the whole tile is one <a> — so each one has to be
+      told to take a line of its own */
+    .ex-tile .big, .ex-tile .cap, .ex-tile .sub { display:block; }
+    .ex-tile .big { font-size:26px; font-weight:750; line-height:1.05;
+      letter-spacing:-.6px; font-variant-numeric:tabular-nums; }
+    .ex-tile .cap { font-size:11.5px; color:var(--text2); margin-top:3px;
+      font-weight:600; }
+    .ex-tile .sub { font-size:10.5px; color:var(--faint); margin-top:2px; }
+    .ex-tile.bad::before  { background:var(--danger); }
+    .ex-tile.warn::before { background:var(--warn); }
+    .ex-tile.ok::before   { background:var(--ok); }
+    .ex-tile.act::before  { background:var(--accent); }
+    .ex-tile.bad  .big, .ex-tile.bad  .ico { color:var(--danger-ink); }
+    .ex-tile.warn .big, .ex-tile.warn .ico { color:var(--warn-ink); }
+    .ex-tile.ok   .big, .ex-tile.ok   .ico { color:var(--ok-ink); }
+    .ex-tile.act  .big, .ex-tile.act  .ico { color:var(--accent-ink); }
+    /* a zero is not news: it stays grey so the eye lands on the counts that
+      are not zero */
+    .ex-tile.quiet .big, .ex-tile.quiet .ico { color:var(--faint); }
+    .ex-tile.quiet::before { background:var(--line2); }
+
+    /* the one-line call under the tiles: what to do about all of that */
+    .ex-call { display:flex; gap:12px; align-items:center; flex-wrap:wrap;
+      padding:11px 14px; border-radius:12px; margin-bottom:14px;
+      border:1px solid var(--line); background:var(--panel2); font-size:12.5px; }
+    .ex-call.work { border-color:var(--warn-line); }
+    .ex-call .ico { color:var(--warn-ink); display:flex; }
+    .ex-call.calm .ico { color:var(--ok-ink); }
+    .ex-call b { font-weight:650; }
+    .ex-call .more { margin-left:auto; }
+
+
+
+    /* ── charts (inline SVG, server-rendered) ── */
+    .chart-donut { display:block; }
+    .donut-n { fill:var(--text); font-size:27px; font-weight:750;
+      letter-spacing:-.5px; }
+    .donut-s { fill:var(--muted); font-size:10.5px; text-transform:uppercase;
+      letter-spacing:.9px; font-weight:650; }
+    .chart-gauge { display:block; }
+    .gauge-n { fill:var(--text); font-size:17px; font-weight:750; }
+    .gauge-c { fill:var(--muted); font-size:8.5px; text-transform:uppercase;
+      letter-spacing:.9px; font-weight:650; }
+    .chart-cap { color:var(--muted); font-size:11px; text-align:center;
+      margin-top:2px; font-family:var(--mono); }
+    .chart-spark { display:block; overflow:visible; }
+    .chart-empty { color:var(--faint); font-size:11.5px; padding:12px 0;
+      text-align:center; }
+    .charthead { display:flex; align-items:baseline; gap:8px; margin-bottom:4px; }
+    .charthead .t { font-size:10.5px; text-transform:uppercase; letter-spacing:.9px;
+      color:var(--muted); font-weight:650; }
+    .charthead .v { font-size:12.5px; font-weight:700; margin-left:auto;
+      font-family:var(--mono); }
+    .backlink { display:inline-flex; align-items:center; gap:6px; font-size:12.5px;
+      color:var(--muted); margin-bottom:7px; padding:2px 8px 2px 6px;
+      border-radius:7px; margin-left:-6px; }
+    .backlink:hover { color:var(--accent-ink); background:var(--overlay); }
+    /* log volume histogram */
+    .chart-hist { display:block; overflow:visible; }
+    .chart-hist .hb { fill:var(--accent); opacity:.55; }
+    .chart-hist g:hover .hb { opacity:.9; }
+    .chart-hist .hb-err { fill:var(--danger); opacity:.95; }
+    .hist-axis { display:flex; justify-content:space-between; margin-top:5px;
+      font-size:10.5px; color:var(--muted); font-family:var(--mono); }
+    /* facet panels */
+    .facets { display:grid; gap:14px;
+      grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); }
+    .facet { border:1px solid var(--line); border-radius:11px; padding:11px 13px;
+      background:var(--panel2); }
+    .facet .fname { font-size:10.5px; text-transform:uppercase; letter-spacing:.9px;
+      color:var(--muted); font-weight:650; margin-bottom:8px; }
+    .fval { display:block; position:relative; padding:4px 6px; border-radius:6px;
+      font-size:12px; color:var(--text2); margin:0 -6px; }
+    .fval:hover { background:var(--overlay); color:var(--text); }
+    .fval .bar { position:absolute; left:0; top:0; bottom:0; border-radius:6px;
+      background:var(--accent); opacity:.14; }
+    .fval .t { position:relative; display:flex; gap:8px; }
+    .fval .v { overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+      font-family:var(--mono); font-size:11.5px; }
+    .fval .n { margin-left:auto; color:var(--muted); font-family:var(--mono);
+      font-size:11px; white-space:nowrap; }
+    /* repeated message shapes */
+    .sig { border-top:1px solid var(--hairline); padding:9px 0; }
+    .sig:first-child { border-top:0; }
+    .sig .pat { font-family:var(--mono); font-size:11.5px; color:var(--text2);
+      word-break:break-word; }
+    .sig .meta { font-size:11px; color:var(--muted); margin-top:3px; }
+    /* ranked horizontal bars */
+    .hbars { display:flex; flex-direction:column; gap:7px; }
+    .hbar { display:grid; grid-template-columns:minmax(80px,1fr) 2fr auto;
+      gap:10px; align-items:center; font-size:12px; }
+    .hbar-l { color:var(--text2); overflow:hidden; text-overflow:ellipsis;
+      white-space:nowrap; font-family:var(--mono); font-size:11.5px; }
+    .hbar-t { height:7px; border-radius:99px; background:var(--well);
+      border:1px solid var(--line); overflow:hidden; }
+    .hbar-t span { display:block; height:100%; border-radius:99px;
+      background:linear-gradient(90deg,var(--accent),var(--accent2)); }
+    .hbar-v { color:var(--muted); font-family:var(--mono); font-size:11.5px;
+      min-width:26px; text-align:right; }
+    /* the health strip at the top of the overview */
+    /* `auto auto 1fr`, not `auto 1fr 1fr`. The middle column holds two small
+       gauges; giving it an equal share of the row meant that on the wider
+       measure it took ~570px and centred 160px of content in it, leaving a hole
+       either side. The third column is the trend charts, which are the only
+       thing here that reads better wide, so it takes what is spare. */
+    .healthgrid { display:grid; gap:22px; align-items:center;
+      grid-template-columns:auto auto minmax(0,1fr); }
+    @media (max-width:860px) { .healthgrid { grid-template-columns:1fr; } }
+    .gaugerow { display:flex; gap:18px; flex-wrap:wrap; }
+
+    /* fleet dashboard */
+    /* cluster name in a fleet panel header — the drill-in to its environment */
+    .clusterlink { display:inline-flex; align-items:baseline; gap:6px;
+      color:var(--text); border-radius:7px; padding:1px 3px; margin-left:-3px; }
+    .clusterlink:hover { color:var(--accent-ink); background:var(--overlay); }
+    .clusterlink .go { color:var(--line2); font-size:12px; transition:transform .14s; }
+    .clusterlink:hover .go { color:var(--accent-ink); transform:translateX(2px); }
+    /* Two cluster cards abreast once the row can hold them. 560px is the point
+       below which the four stat blocks inside one card start to crowd, so this
+       collapses to one per row on the narrow measure without a breakpoint. */
+    .clustercards { display:grid; gap:14px;
+      grid-template-columns:repeat(auto-fit,minmax(560px,1fr)); }
+    .clustercards > .card { margin:0; }
+    .clusterrow { display:grid;
+      grid-template-columns:repeat(2,minmax(90px,auto)) repeat(2,minmax(180px,1fr));
+      gap:22px; align-items:start; }
+    .bignum { font-size:22px; font-weight:750; letter-spacing:-.5px; margin-top:2px; }
+    .bignum .of { color:var(--muted); font-size:14px; font-weight:600; }
+    .bignum.bad { color:var(--danger-ink); }
+    .tiny { font-size:11px; color:var(--muted); margin-top:3px; }
+    .tiny.bad { color:var(--danger-ink); font-weight:600; }
+    .util .cmp-lbl { display:flex; gap:8px; align-items:baseline; flex-wrap:wrap; }
+    .src { font-size:10px; color:var(--line2); border:1px solid var(--line);
+      border-radius:99px; padding:0 6px; text-transform:none; letter-spacing:0; }
+    .bar { height:8px; border-radius:99px; background:var(--well);
+      border:1px solid var(--line); overflow:hidden; margin-top:7px; }
+    .bar .fill { height:100%; border-radius:99px;
+      background:linear-gradient(90deg,var(--accent),var(--accent2)); }
+    .bar .fill.warm { background:linear-gradient(90deg,#f5c451,#f0a92e); }
+    .bar .fill.hot { background:linear-gradient(90deg,#f57171,#e04b4b); }
+    .podbar { display:flex; height:6px; border-radius:99px; overflow:hidden;
+      margin-top:18px; background:var(--well); border:1px solid var(--line); }
+    .podbar .seg-ok { background:var(--ok); }
+    .podbar .seg-bad { background:var(--danger); }
+    /* jobs with no verdict yet — never built, queued, cancelled */
+    .podbar .seg-idle { background:var(--line2); }
+    /* severity segments, so one bar can show a whole findings mix */
+    .podbar .b-critical { background:#d63030; }
+    .podbar .b-high { background:var(--danger); }
+    .podbar .b-medium { background:var(--warn); }
+    .podbar .b-low { background:#7fb0ff; }
+    .podbar .b-info { background:var(--line2); }
+    @media (max-width:900px) { .clusterrow { grid-template-columns:1fr 1fr; } }
+    .envchip { display:inline-flex; align-items:center; gap:7px; cursor:pointer;
+      padding:7px 15px; margin:0 8px 8px 0; border-radius:99px; font-size:12.5px;
+      border:1px solid var(--line); background:var(--panel2); color:var(--muted); }
+    .envchip.on { border-color:var(--accent-ink); color:var(--on-wash);
+      background:linear-gradient(135deg,rgba(91,141,239,.2),rgba(91,141,239,.05)); }
+    .envchip input { width:auto; margin:0; }
+    /* searchable combobox */
+    .combo { position:relative; }
+    .combo-btn { width:100%; display:flex; align-items:center; gap:8px;
+      justify-content:space-between; padding:9px 13px; border-radius:9px;
+      border:1px solid var(--line); background:var(--well); color:var(--text);
+      font:inherit; font-size:12.5px; box-shadow:none; text-align:left; }
+    .combo-btn:hover { border-color:var(--line2); filter:none; }
+    .combo.open .combo-btn { border-color:var(--accent-ink);
+      box-shadow:0 0 0 3px rgba(91,141,239,.15); }
+    .combo.disabled { opacity:.45; pointer-events:none; }
+    .combo-val { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .combo-val.muted { color:var(--faint); }
+    .combo-caret { color:var(--muted); font-size:10px; flex:none; }
+    /* fixed so it escapes the card's overflow:hidden */
+    .combo-pop { display:none; position:fixed; z-index:60; min-width:270px;
+      background:var(--panel); border:1px solid var(--line2);
+      border-radius:11px; overflow:hidden; box-shadow:0 18px 50px -12px var(--shadow-cast); }
+    .combo.open .combo-pop { display:block; }
+    .combo-search { width:100%; border:0; border-bottom:1px solid var(--line);
+      border-radius:0; background:var(--panel2); padding:10px 13px; font-size:12.5px;
+      font-family:inherit; }
+    .combo-search:focus { outline:none; box-shadow:none; border-color:var(--line); }
+    .combo-list { max-height:260px; overflow-y:auto; padding:5px; }
+    .combo-item { display:flex; flex-direction:column; gap:2px; width:100%;
+      text-align:left; padding:8px 11px; border-radius:7px; border:0;
+      background:transparent; color:var(--text); font:inherit; font-size:12.5px;
+      box-shadow:none; }
+    .combo-item:hover { background:var(--panel2); filter:none; }
+    .combo-item.sel { background:rgba(91,141,239,.16); color:var(--on-wash); }
+    .combo-sub { color:var(--muted); font-size:11px; font-family:var(--mono); }
+    .combo-empty { padding:14px; text-align:center; color:var(--muted); font-size:12px; }
+    /* matrix table */
+    table.matrix td, table.matrix th { min-width:170px; }
+    table.matrix .stickycol { position:sticky; left:0; z-index:2;
+      background:var(--panel); min-width:230px; max-width:280px; }
+    table.matrix thead .stickycol { z-index:3; }
+    table.matrix td.cellDiff { background:rgba(245,196,81,.09);
+      box-shadow:inset 2px 0 0 rgba(245,196,81,.5); }
+    table.matrix tr.same td { opacity:.5; }
+    table.matrix tr:hover td { background:var(--overlay); }
+    table.matrix tr:hover .stickycol { background:var(--panel3); }
+
+    /* ── tab bar ────────────────────────────────────────────────
+       A page that collects from several sources gets one tab per source. Here
+       rather than in each page because three copies had already appeared and
+       begun to drift. Macros in _bits.html render it. */
+    .tabbar { display:flex; gap:2px; flex-wrap:wrap;
+      border-bottom:1px solid var(--line); margin-bottom:14px; }
+    .tabbar a { display:inline-flex; gap:7px; align-items:center;
+      padding:9px 13px; font-size:12.5px; color:var(--muted);
+      text-decoration:none; border-bottom:2px solid transparent;
+      border-radius:8px 8px 0 0; white-space:nowrap; }
+    .tabbar a:hover { background:var(--panel2); color:var(--text); }
+    .tabbar a.on { color:var(--text); font-weight:600;
+      border-bottom-color:var(--accent); background:var(--panel2); }
+    .tabbar a.off { opacity:.4; pointer-events:none; }
+    .tabbar .n { font-variant-numeric:tabular-nums; font-size:11px;
+      background:var(--panel3); border-radius:999px; padding:1px 6px;
+      color:var(--muted); }
+    .tabbar a.on .n { background:var(--accent); color:var(--on-accent); }
+
+    /* still-collecting spinner */
+    .spin { width:15px; height:15px; flex:none; border-radius:50%;
+      border:2px solid var(--line); border-top-color:var(--accent);
+      animation:spin360 .8s linear infinite; }
+    @keyframes spin360 { to { transform:rotate(360deg); } }
+    @media (prefers-reduced-motion:reduce) { .spin { animation:none; } }
+
+/* A WINDOW HOLDING ONE SESSION -- the console opened as its own window. No
+   portal frame and no page margins: the application gets the whole window, and
+   resizing the window resizes what is being worked in rather than scrolling a
+   card inside a page. */
+body.bare { margin: 0; height: 100vh; overflow: hidden; }
+/* Padded by default, because most of what can appear in this window is a page
+   with words on it -- the gate on the way into a session, or a refusal. A page
+   that wants the whole window, like the console, cancels it in its own sheet. */
+body.bare .bare-content { padding: 14px 16px; height: 100vh; max-width: none;
+  display: flex; flex-direction: column; min-height: 0; overflow: auto; }

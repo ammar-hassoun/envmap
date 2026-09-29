@@ -1,0 +1,391 @@
+{% extends "base.html" %}
+{% from "_cloud_search.html" import searchbar %}
+{% block crumbs %}{% if sel %}<a href="/clouds">Clouds</a> <span>›</span>
+  <b>{{ sel.name }}</b>{% else %}<b>Clouds</b>{% endif %}
+{% endblock %}
+{% block content %}
+
+{% if not conns %}
+<div class="empty">
+  <div class="big">{{ glyph("cloud", 40) }}</div>
+  <h2>No cloud accounts yet</h2>
+  <p>Register AWS, Azure, Alibaba Cloud or Google Cloud and the portal verifies
+     the credentials against the provider, then shows what each account holds.</p>
+  <a class="btn" href="/settings/clouds">＋ Connect an account</a>
+</div>
+
+{% elif not sel %}
+{# ── every account, as cards ── #}
+<div class="page-head">
+  <div><h1>Cloud accounts</h1>
+    <p class="sub">{{ conns|length }} account{{ 's' if conns|length != 1 }} ·
+      {{ providers_used|length }} provider{{ 's' if providers_used|length != 1 }} ·
+      {{ grand_total }} resource{{ 's' if grand_total != 1 }} counted</p></div>
+  <div style="display:flex;gap:10px;">
+    <a class="btn btn-ghost" href="/clouds?refresh=1">↻ Refresh</a>
+    <a class="btn btn-ghost" href="/settings/clouds">⚙ Manage accounts</a>
+  </div>
+</div>
+
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(300px,1fr));">
+  {% for c in cards %}
+  <a class="card tile-link" href="/clouds?account={{ c.conn.id }}" style="margin:0;">
+    <div class="card-h">
+      {{ plogo(c.provider, 20) if c.provider else glyph('cloud', 20) }}
+      <b>{{ c.conn.name }}</b>
+      <span style="flex:1"></span>
+      <span class="badge">{{ c.provider.label if c.provider else c.conn.type }}</span>
+    </div>
+    <div class="card-b">
+      {% if c.inv.error %}
+      <div class="hmeta" style="color:var(--danger-ink);">⚠ {{ c.inv.error }}</div>
+      {% else %}
+      <div class="kv" style="flex-wrap:wrap;gap:7px;">
+        {% for g in c.inv.groups %}
+        <span class="badge">{{ g.icon }} {{ g.rows|length }} {{ g.label|lower }}</span>
+        {% endfor %}
+        {% if c.inv.collecting %}<span class="badge">collecting…</span>
+        {% elif not c.inv.groups %}<span class="badge">registered · not inventoried</span>{% endif %}
+      </div>
+      {% endif %}
+      <div class="sec-note" style="margin-bottom:0;">
+        {% if c.conn.status %}{{ c.conn.status[:110] }}{% endif %}</div>
+    </div>
+  </a>
+  {% endfor %}
+</div>
+
+{% else %}
+{# ── one account, in depth ── #}
+<div class="page-head">
+  <div>
+    <h1 class="withico">{{ plogo(provider, 26) if provider else glyph('cloud', 26) }} {{ sel.name }}</h1>
+    <p class="sub">{{ provider.label if provider else sel.type }}
+      {% if inv.region %} · {{ inv.region }}{% endif %}
+      {% if scope %} · {{ scope }}{% endif %}
+      · {{ inv.total }} resource{{ 's' if inv.total != 1 }}
+      {% if inv.stale_for and inv.stale_for > 60 %}
+      · <span title="shown from cache while a fresh copy is collected">{{ (inv.stale_for / 60)|round|int }} min old, refreshing</span>
+      {% endif %}</p>
+  </div>
+  <div style="display:flex;gap:10px;">
+    <a class="btn btn-ghost" href="/clouds/bills?account={{ sel.id }}">💳 Bills</a>
+    <a class="btn btn-ghost" href="/clouds?account={{ sel.id }}&region={{ inv.region }}&refresh=1">↻ Refresh</a>
+    <a class="btn btn-ghost" href="/settings/clouds#{{ sel.id }}">⚙ Edit</a>
+  </div>
+</div>
+
+{{ searchbar(search_index) }}
+
+{% if inv.regions %}
+{# Resources are per region, so the page takes one rather than the account being
+   duplicated per region. The list is the account's own, from the provider. #}
+<form method="get" action="/clouds" class="card"
+      style="margin:0 0 14px;display:flex;align-items:center;gap:10px;padding:11px 16px;">
+  <input type="hidden" name="account" value="{{ sel.id }}">
+  <label style="font-size:11px;text-transform:uppercase;letter-spacing:.9px;
+                color:var(--muted);">region</label>
+  <select name="region" data-submit
+          style="max-width:340px;padding:5px 11px;font-size:12.5px;">
+    {% for r in inv.regions %}
+    <option value="{{ r.id }}" {% if r.id == inv.region %}selected{% endif %}>
+      {{ r.id }} — {{ r.name }}</option>
+    {% endfor %}
+  </select>
+  <span class="sec-note" style="margin:0;">{{ inv.regions|length }} available ·
+    RAM, billing and resource groups are account-wide</span>
+</form>
+{% endif %}
+
+{% if inv.groups %}
+{% set compute = (inv.groups | selectattr('key', 'equalto', 'compute') | list | first) %}
+{% set subnets = (inv.groups | selectattr('key', 'equalto', 'subnets') | list | first) %}
+{% set running = (compute.rows | selectattr('state', 'equalto', 'Running') | list | length) if compute else 0 %}
+{% set stopped = ((compute.rows | length) - running) if compute else 0 %}
+<div class="grid cl-strip" style="grid-template-columns:repeat(auto-fit,minmax(250px,1fr));margin-bottom:16px;">
+
+  {# spend: the trend matters more than this month's number #}
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="cl-h">
+      <span>💳 spend</span>
+      <a href="/clouds/bills?account={{ sel.id }}" class="hint">
+        {{ (bills.months|length ~ ' months →') if bills and bills.series else 'bills →' }}</a>
+    </div>
+    {# this month always comes from the sweep, so the card has a number even on
+       a freshly started process; the trend needs twelve more calls and arrives
+       a moment later #}
+    <div class="stat" style="font-size:23px;">
+      {{ inv.billing.total or ((bills.currency ~ ' ' ~ bills.series[-1]) if bills and bills.series else '—') }}</div>
+    {% if bills and bills.series and bills.series|length > 1 %}
+    {% set d = (bills.series[-1] - bills.series[-2])|round(2) %}
+    <div class="statsub">
+      <span style="color:{{ 'var(--danger-ink)' if d > 0 else 'var(--ok-ink)' }};">
+        {{ '▲' if d > 0 else '▼' }} {{ d|abs }}</span> against {{ bills.labels[-2] }}
+    </div>
+    <div style="margin-top:10px;">{{ sparkline(bills.series, height=44) }}</div>
+    {% else %}
+    <div class="statsub">{{ inv.billing.month or '' }}
+      {%- if inv.billing.balance %} · balance {{ inv.billing.currency }} {{ inv.billing.balance }}{% endif %}</div>
+    <div class="statsub" style="margin-top:8px;opacity:.7;">the twelve-month
+      trend is being collected</div>
+    {% endif %}
+  </div></div>
+
+  {# compute: how much of it is actually on #}
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="cl-h">
+      <span>{{ glyph("server", 14) }} compute</span>
+      <a href="/clouds/r/{{ sel.id }}/compute?region={{ inv.region }}" class="hint">open →</a>
+    </div>
+    <div style="display:flex;align-items:center;gap:14px;">
+      {{ donut((running / (compute.rows|length) * 100) if compute and compute.rows else 0,
+               running ~ '', 'running', size=96) }}
+      <div>
+        <div class="statsub" style="margin:0;">{{ running }} running</div>
+        {% if stopped %}<div class="statsub" style="margin:0;color:var(--warn-ink);">
+          {{ stopped }} stopped, still billed for storage</div>{% endif %}
+        <div class="statsub" style="margin:4px 0 0;">
+          {{ (inv.groups | selectattr('key','equalto','disks') | list | first).rows | length
+             if (inv.groups | selectattr('key','equalto','disks') | list) else 0 }} disks
+        </div>
+      </div>
+    </div>
+  </div></div>
+
+  {# what the estate is made of #}
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="cl-h"><span>{{ glyph("package", 14) }} resources</span><span class="hint">{{ inv.total }} total</span></div>
+    <div class="hbars" style="margin-top:8px;">
+      {% set top = mix[0][1] if mix else 1 %}
+      {% for label, n in mix %}
+      <div class="hbar">
+        <div class="hbar-l" title="{{ label }}">{{ label }}</div>
+        <div class="hbar-t"><span style="width:{{ (n / top * 100)|round(1) }}%"></span></div>
+        <div class="hbar-v">{{ n }}</div>
+      </div>
+      {% endfor %}
+    </div>
+  </div></div>
+
+  {# storage: the part of a bill that grows without anyone deciding to grow it #}
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="cl-h">
+      <span>💽 storage</span>
+      <a href="/clouds/r/{{ sel.id }}/disks?region={{ inv.region }}" class="hint">open →</a>
+    </div>
+    <div style="display:flex;align-items:center;gap:14px;">
+      {{ donut(100 if not storage.unattached else ((storage.disks - storage.unattached) / storage.disks * 100),
+               storage.disk_gib ~ '', 'GiB', size=96) }}
+      <div>
+        <div class="statsub" style="margin:0;">{{ storage.disks }} disk{{ 's' if storage.disks != 1 }}
+          · {{ storage.disk_gib }} GiB</div>
+        {% if storage.unattached %}
+        <div class="statsub" style="margin:0;color:var(--warn-ink);">
+          {{ storage.unattached }} attached to nothing, still billed</div>
+        {% endif %}
+        <div class="statsub" style="margin:4px 0 0;">
+          <a href="/clouds/r/{{ sel.id }}/oss?region={{ inv.region }}">{{ storage.buckets }} bucket{{ 's' if storage.buckets != 1 }}</a>
+          · {{ storage.snapshots }} snapshot{{ 's' if storage.snapshots != 1 }}</div>
+      </div>
+    </div>
+  </div></div>
+
+  {# exposure: the one security number worth a tile, and it is not free to get #}
+  <div class="card" style="margin:0;{% if inv.security and inv.security.open_rules %}border-color:color-mix(in srgb, var(--warn-ink) 45%, var(--line));{% endif %}">
+    <div class="card-b">
+    <div class="cl-h">
+      <span>🛡 exposure</span>
+      <a href="/clouds/r/{{ sel.id }}/secgroups?region={{ inv.region }}" class="hint">open →</a>
+    </div>
+    {% set sec = inv.security or {} %}
+    <div class="stat" style="font-size:23px;color:{{ 'var(--warn-ink)' if sec.open_rules else 'var(--ok-ink)' }};">
+      {{ sec.open_rules or 0 }}</div>
+    <div class="statsub">rule{{ 's' if (sec.open_rules or 0) != 1 }} open to 0.0.0.0/0
+      {%- if sec.open_groups %}, in {{ sec.open_groups }} group{{ 's' if sec.open_groups != 1 }}{% endif %}</div>
+    {% if sec.worst %}
+    <div style="margin-top:8px;display:flex;flex-direction:column;gap:3px;">
+      {% for w in sec.worst[:3] %}
+      <div class="statsub" style="margin:0;font-family:var(--mono);font-size:10.5px;">{{ w }}</div>
+      {% endfor %}
+    </div>
+    {% endif %}
+    <div class="statsub" style="margin-top:8px;opacity:.75;">
+      {{ sec.checked or 0 }} of {{ sec.total or 0 }} group{{ 's' if (sec.total or 0) != 1 }} checked
+      {%- if sec.capped %} (capped){% endif %}</div>
+  </div></div>
+
+  {# where the address space has gone #}
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="cl-h">
+      <span>🔀 subnets</span>
+      <a href="/clouds/r/{{ sel.id }}/subnets?region={{ inv.region }}" class="hint">open →</a>
+    </div>
+    <div class="hbars" style="margin-top:8px;">
+      {% for name, used, free, cidr in subnet_use %}
+      <div class="hbar">
+        <div class="hbar-l" title="{{ name }} · {{ cidr }} · {{ used }}% used">{{ name }}</div>
+        <div class="hbar-t"><span style="width:{{ used }}%"></span></div>
+        <div class="hbar-v">{{ free }} free</div>
+      </div>
+      {% endfor %}
+      {% if not subnet_use %}
+      <span class="hint">none in this region</span>{% endif %}
+    </div>
+  </div></div>
+</div>
+<style>
+  .cl-strip .card-b { padding:14px 16px; }
+  .cl-h { display:flex; align-items:baseline; justify-content:space-between;
+          font-size:11px; text-transform:uppercase; letter-spacing:.9px;
+          color:var(--muted); margin-bottom:8px; }
+  .cl-h a { text-decoration:none; }
+</style>
+{% endif %}
+
+
+
+{% if inv.billing and (inv.billing.total or inv.billing.balance) %}
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(210px,1fr));margin-bottom:14px;">
+  {% if inv.billing.total %}
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat" style="font-size:22px;">{{ inv.billing.total }}</div>
+    <div class="statsub">💳 spend in {{ inv.billing.month }}</div></div></div>
+  {% endif %}
+  {% if inv.billing.balance %}
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat" style="font-size:22px;">{{ inv.billing.currency }} {{ inv.billing.balance }}</div>
+    <div class="statsub">🏦 available balance</div></div></div>
+  {% endif %}
+  {% for r in (inv.billing.rows or [])[:2] %}
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat" style="font-size:19px;">{{ r.extra }}</div>
+    <div class="statsub">{{ r.name|lower }}</div></div></div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if sel.status %}
+<div class="flash {{ '' if sel.status.startswith('ok') else 'err' }}">
+  {{ '✓' if sel.status.startswith('ok') else '⚠' }} {{ sel.status }}</div>
+{% endif %}
+{% if inv.error %}<div class="flash err">⚠ {{ inv.error }}</div>{% endif %}
+
+{% if inv.groups %}
+{# each tile opens that resource type in full — the count was the only thing
+   on this page you could not act on #}
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(190px,1fr));margin-bottom:18px;">
+  {% for g in inv.groups %}
+  {# spend has a page of its own, with history and a month picker: sending it to
+     the generic resource list was the reason nobody found the Bills page #}
+  <a class="card tile-link" style="margin:0;text-decoration:none;"
+     href="{{ ('/clouds/bills?account=' ~ sel.id) if g.key == 'billing'
+              else ('/clouds/r/' ~ sel.id ~ '/' ~ g.key ~ '?region=' ~ inv.region) }}"><div class="card-b">
+    <div class="stat">{{ g.rows|length }}</div>
+    <div class="statsub">{{ g.icon }} {{ g.label|lower }} <span class="tile-go">→</span></div>
+  </div></a>
+  {% endfor %}
+</div>
+<style>
+  .tile-link { display:block; transition:border-color .12s ease, transform .12s ease; }
+  .tile-link:hover { border-color:var(--accent); transform:translateY(-1px); }
+  .tile-go { opacity:0; transition:opacity .12s ease; }
+  .tile-link:hover .tile-go { opacity:.7; }
+</style>
+
+{# the network as it is: VPCs, their subnets, and what sits in each — with
+   membership worked out from addresses rather than asked for #}
+<div class="card">
+  <div class="card-h">Network
+    <span class="hint">{{ inv.region }} · placed by address, live</span></div>
+  <div class="card-b">{{ topology }}</div>
+</div>
+
+<details class="adv" style="margin:0 0 18px;">
+  <summary>Account map by resource kind</summary>
+  <div style="overflow-x:auto;margin-top:10px;">{{ diagram|safe }}</div>
+</details>
+
+<style>
+  .tp { display:flex; flex-direction:column; gap:12px; }
+  .tp-lab { font-size:10px; text-transform:uppercase; letter-spacing:.9px;
+            color:var(--muted); margin-bottom:7px; }
+  .tp-edge { border:1px dashed var(--line); border-radius:12px; padding:11px 13px; }
+  .tp-vpc { border:1px solid var(--line); border-radius:14px; overflow:hidden; }
+  .tp-vpc-h { display:flex; align-items:center; gap:10px; padding:10px 14px;
+              background:color-mix(in srgb, var(--text) 4%, transparent);
+              border-bottom:1px solid var(--line); }
+  .tp-vpc-h b { font-size:13px; }
+  .tp-vpc-h code, .tp-sn-h code { font-family:var(--mono); font-size:11px;
+              color:var(--muted); border:1px solid var(--line);
+              border-radius:5px; padding:1px 6px; }
+  .tp-vpc-h span, .tp-sn-h span { font-size:10.5px; color:var(--muted); }
+  .tp-subnets { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
+                gap:10px; padding:12px 14px; }
+  .tp-subnet { border:1px solid color-mix(in srgb, var(--line) 70%, transparent);
+               border-radius:11px; padding:9px 11px;
+               background:color-mix(in srgb, var(--text) 2%, transparent); }
+  .tp-sn-h { display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+             margin-bottom:8px; }
+  .tp-sn-h b { font-size:12px; }
+  .tp-use { flex:1; min-width:44px; height:3px; border-radius:2px;
+            background:var(--well); overflow:hidden; }
+  .tp-use span { display:block; height:100%; background:var(--accent); }
+  .tp-vpc-extra { padding:0 14px 12px; }
+  .tp-chips { display:flex; flex-wrap:wrap; gap:6px; }
+  .tp-chip { display:flex; align-items:center; gap:6px; padding:4px 9px;
+             border:1px solid var(--line); border-radius:8px;
+             background:var(--panel); font-size:11.5px; }
+  .tp-chip b { font-weight:600; }
+  .tp-chip i { font-style:normal; font-size:10px; color:var(--muted); }
+  .tp-chip.tp-off { opacity:.55; border-style:dashed; }
+  .tp-none { font-size:11px; color:var(--muted); font-style:italic; }
+</style>
+
+{% for g in inv.groups %}
+<div class="card">
+  <div class="card-h">{{ g.icon }} {{ g.label }}
+    <span class="hint">{{ g.rows|length }}</span></div>
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      {# a group may name its own columns: "product / subscription / amount" says
+         more for a bill than "name / type / detail" does #}
+      {% set cols = g.columns or ['Name', 'Type', 'State', 'Detail', 'Zone / location'] %}
+      <thead><tr>
+        <th style="min-width:200px;">{{ cols[0] }}</th>
+        <th style="min-width:150px;">{{ cols[1] }}</th>
+        <th style="width:110px;">{{ cols[2] }}</th>
+        <th style="min-width:130px;">{{ cols[3] }}</th>
+        <th style="width:140px;">{{ cols[4] }}</th>
+      </tr></thead>
+      <tbody>
+      {% for it in g.rows %}
+      <tr>
+        <td class="jname"><b>{{ it.name }}</b>
+          {% if it.id and it.id != it.name %}
+          <span class="hint" style="font-family:var(--mono);font-size:11px;"> {{ it.id }}</span>{% endif %}</td>
+        <td>{{ it.kind }}</td>
+        <td>{% if it.state %}<span class="sv {{ 'sv-ok' if it.state.lower() in ('running','available','succeeded') else 'sv-medium' }}"
+              style="{{ 'color:var(--ok-ink);' if it.state.lower() in ('running','available','succeeded') }}">{{ it.state }}</span>{% else %}—{% endif %}</td>
+        <td class="hint" style="font-family:var(--mono);font-size:11.5px;">{{ it.extra }}</td>
+        <td class="hint">{{ it.zone }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endfor %}
+{% endif %}
+
+{% if inv.notes %}
+<div class="card">
+  <div class="card-h">What is and is not read here</div>
+  <div class="card-b">
+    {% for n in inv.notes %}
+    <div class="sec-note" style="margin-bottom:8px;">{{ n }}</div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+{% endif %}
+{% endblock %}

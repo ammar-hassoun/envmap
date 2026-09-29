@@ -1,0 +1,410 @@
+{# Starting a run, and watching it, in one window over the page.
+
+   WHY ONE WINDOW AND NOT TWO PAGES
+       Starting a playbook and watching it are the same moment. A form that
+       posted and navigated to a run page would take you off the list you were
+       working from, and — worse — the thing you most want while a run is going
+       is the list of what else is going.
+
+   WHY IT POLLS AND DOES NOT STREAM
+       The pod-log window holds a socket open because a log has no end. A run
+       does: it prints, it stops, and it means something by its exit code. So
+       this asks for "whatever you have printed since byte N" every second and
+       stops asking when the run says it is done. No socket to keep alive
+       through a proxy, no reconnect logic, and a run whose portal restarted is
+       simply a run that answers `done` — which is exactly what happened to it.
+
+   THE ORDER OF THE TWO BUTTONS IS THE SAFETY FEATURE
+       Check is first and is the default. Apply — "run for real" — is second, is
+       styled as the dangerous thing it is, carries a confirm, and on a group
+       marked production additionally needs that group's name typed. The same
+       shape as the cluster YAML editor, for the same reason.
+#}
+<dialog id="arDlg" class="psh arwin">
+  <div class="psh-bar">
+    <span class="psh-dots"><b title="close" data-ardot="close">✕</b><b
+      title="minimise" data-ardot="mini">–</b><b title="maximise" data-ardot="maxi">+</b></span>
+    <b>ansible</b>
+    <span class="psh-ns" id="arWhat"></span>
+    <span style="flex:1"></span>
+    <span class="psh-state" id="arState"></span>
+    <button type="button" class="psh-x" id="arClose">close</button>
+  </div>
+
+  <div class="arform" id="arForm">
+    <div class="arrow1">
+      <label class="arlab">hosts
+        <select id="arGroup" class="psh-pick">
+          {% for g in groups %}
+          <option value="{{ g.id }}" data-prod="{{ 1 if g.is_prod else 0 }}"
+                  data-hosts="{{ g.hosts|length }}"
+                  data-nokey="{{ 0 if (g.key_sealed or g.key_path) else 1 }}">
+            {{ g.name }} — {{ g.hosts|length }} host{{ 's' if g.hosts|length != 1 }}
+            {%- if g.is_prod %} · production{% endif %}</option>
+          {% endfor %}
+          {% if not groups %}<option value="">no groups yet</option>{% endif %}
+        </select>
+      </label>
+      <label class="arlab">limit to
+        <input type="text" id="arLimit" class="psh-find" spellcheck="false"
+               autocomplete="off" placeholder="web-1,web-2 — blank = all of them">
+      </label>
+      <label class="arlab">tags
+        <input type="text" id="arTags" class="psh-find" spellcheck="false"
+               autocomplete="off" placeholder="blank = every task">
+      </label>
+    </div>
+    <div class="arrow1">
+      <label class="arlab" style="flex:1;min-width:240px;">extra variables (JSON)
+        <input type="text" id="arVars" class="psh-find" spellcheck="false"
+               autocomplete="off" style="width:100%;"
+               placeholder='{"version": "1.4.2"} — optional'>
+      </label>
+      <span class="arconfirm" id="arConfirmWrap" hidden>
+        <label class="arlab">type the group's name
+          <input type="text" id="arConfirm" class="psh-find" spellcheck="false"
+                 autocomplete="off" placeholder="production group">
+        </label>
+      </span>
+    </div>
+    <div class="arrow1">
+      <button type="button" class="psh-x" id="arCheck"
+              title="a --check dry run: ansible reports what it would change and changes nothing">
+        ▷ Check (dry run)</button>
+      <button type="button" class="psh-x danger" id="arReal"
+              title="run it for real against every host in the group">
+        ⚡ Run for real</button>
+      <button type="button" class="psh-x" id="arStop" hidden>■ Stop</button>
+      <span style="flex:1"></span>
+      <span class="psh-state" id="arNote"></span>
+    </div>
+  </div>
+
+  <div class="lgbar" id="arTools" hidden>
+    <input type="search" class="psh-find" id="arFind" placeholder="filter lines…"
+           spellcheck="false" autocomplete="off">
+    <button type="button" class="psh-x" id="arWrap" title="wrap long lines">wrap</button>
+    <button type="button" class="psh-x" id="arCopy">copy</button>
+    <button type="button" class="psh-x" id="arDownload">download</button>
+    <span style="flex:1"></span>
+    <span class="psh-state" id="arCount"></span>
+  </div>
+  <div class="arv" id="arView" tabindex="0"></div>
+</dialog>
+
+<style>
+  dialog.arwin { width:min(1080px,95vw); height:min(720px,88vh); }
+  /* The window is a column: bar, form, tools, then the output taking the rest.
+     `[open]` is not optional — an author `display` unscoped beats the user
+     agent's `dialog:not([open]){display:none}` and renders a closed window in
+     the middle of the page. `min-height:0` is what lets the output shrink below
+     its content so it scrolls instead of growing. */
+  dialog.psh.arwin[open] { display:flex; flex-direction:column; }
+  .arwin .arv { flex:1 1 auto; min-height:0; }
+  .arform { flex:none; padding:10px 14px 12px; border-bottom:1px solid #202839;
+    display:flex; flex-direction:column; gap:9px; }
+  .arform[hidden] { display:none; }
+  .arrow1 { display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; }
+  .arlab { display:flex; flex-direction:column; gap:4px; font-family:var(--mono);
+    font-size:10.5px; color:#7f93b4; text-transform:uppercase;
+    letter-spacing:.04em; }
+  .arlab .psh-find, .arlab .psh-pick { text-transform:none; letter-spacing:0; }
+  .arconfirm { display:inline-flex; }
+  .arconfirm[hidden] { display:none; }
+  .arv { overflow:auto; padding:11px 14px 16px; font-family:var(--mono);
+    font-size:12px; line-height:1.5; white-space:pre; color:#cfe0f5; }
+  .arv.wrap { white-space:pre-wrap; word-break:break-word; }
+  .arv .l { display:block; }
+  .arv .off { display:none; }
+  /* Ansible's own vocabulary, coloured the way its own output is: this is the
+     line people scan for, and "changed" and "failed" mean different things. */
+  .arv .l-ok { color:var(--ok-ink); }
+  .arv .l-changed { color:var(--warn-ink); }
+  .arv .l-fail { color:var(--danger-ink); font-weight:600; }
+  .arv .l-skip { color:#7f93b4; }
+  .arv .l-head { color:#eaf2ff; font-weight:650; }
+  .arv .l-cmd { color:#8fa8cc; }
+  .arv mark { background:rgba(245,196,81,.28); color:var(--warn-on-wash);
+    border-radius:3px; }
+  .arv .none { color:var(--muted); font-family:var(--sans); white-space:normal; }
+  .psh-x.danger { color:var(--danger-ink); border-color:var(--danger-line); }
+  .psh-x[disabled] { opacity:.45; cursor:not-allowed; }
+</style>
+
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  const dlg = document.getElementById('arDlg');
+  const view = document.getElementById('arView');
+  const what = document.getElementById('arWhat');
+  const state = document.getElementById('arState');
+  const note = document.getElementById('arNote');
+  const count = document.getElementById('arCount');
+  const find = document.getElementById('arFind');
+  const form = document.getElementById('arForm');
+  const tools = document.getElementById('arTools');
+  const groupSel = document.getElementById('arGroup');
+  const confirmWrap = document.getElementById('arConfirmWrap');
+  const confirmIn = document.getElementById('arConfirm');
+  const checkBtn = document.getElementById('arCheck');
+  const realBtn = document.getElementById('arReal');
+  const stopBtn = document.getElementById('arStop');
+  const MAY_RUN = {{ 'true' if may_run else 'false' }};
+  const ALLOW_REAL = {{ 'true' if cfg.allow_real else 'false' }};
+  let pb = null, runId = null, at = 0, lines = [], timer = null, live = false;
+
+  // The <option> label is written over two lines in the template, so its
+  // textContent carries the newline and the indentation with it — which ended up
+  // inside a confirm() dialog reading "…for real against\n            web-1".
+  const groupLabel = () => {
+    const o = groupSel.selectedOptions[0];
+    return o ? o.textContent.replace(/\s+/g, ' ').trim() : '';
+  };
+
+  function say(text, tone) {
+    note.textContent = text || '';
+    note.style.color = tone === 'bad' ? 'var(--danger-ink)'
+                     : (tone === 'ok' ? 'var(--ok-ink)' : '');
+  }
+
+  // Ansible's own line vocabulary. Read from the start of the line, because that
+  // is where ansible puts its verdict, and a message that happens to contain the
+  // word "failed" is not a failed task.
+  function classOf(line) {
+    if (/^(PLAY|TASK|PLAY RECAP|RUNNING HANDLER)/.test(line)) return 'l-head';
+    if (/^\$ /.test(line)) return 'l-cmd';
+    if (/^(ok|included):/.test(line)) return 'l-ok';
+    if (/^changed:/.test(line)) return 'l-changed';
+    if (/^(fatal|failed|unreachable):/.test(line)) return 'l-fail';
+    if (/^(skipping|ignoring):/.test(line)) return 'l-skip';
+    if (/^\[(cancelled|stopped)/.test(line)) return 'l-fail';
+    return '';
+  }
+
+  function paint() {
+    const needle = find.value.trim().toLowerCase();
+    const frag = document.createDocumentFragment();
+    let shown = 0;
+    for (const line of lines) {
+      if (needle && !line.toLowerCase().includes(needle)) continue;
+      shown++;
+      const el = document.createElement('span');
+      el.className = 'l ' + classOf(line);
+      if (needle) {
+        const cut = line.toLowerCase().indexOf(needle);
+        el.append(document.createTextNode(line.slice(0, cut)));
+        const m = document.createElement('mark');
+        m.textContent = line.slice(cut, cut + needle.length);
+        el.append(m, document.createTextNode(line.slice(cut + needle.length)));
+      } else {
+        el.textContent = line || ' ';
+      }
+      frag.appendChild(el);
+    }
+    view.replaceChildren(frag);
+    if (!shown) {
+      const p = document.createElement('span');
+      p.className = 'none';
+      p.textContent = needle ? 'No line contains “' + find.value.trim() + '”.'
+                             : 'Nothing yet.';
+      view.appendChild(p);
+    }
+    count.textContent = needle
+      ? shown + ' of ' + lines.length + ' lines' : lines.length + ' lines';
+  }
+
+  function follow() {
+    fetch('/ansible/run/' + encodeURIComponent(runId) + '.json?since=' + at)
+      .then(r => r.json())
+      .then(d => {
+        if (d.error) { say(d.error, 'bad'); stopFollowing(); return; }
+        if (d.text) {
+          // The tail may be a partial line; splitting on \n and dropping the
+          // empty last element keeps the seam invisible.
+          const fresh = d.text.split('\n');
+          if (fresh.length && fresh[fresh.length - 1] === '') fresh.pop();
+          lines = lines.concat(fresh);
+          at = d.at;
+          const stuck = view.scrollHeight - view.scrollTop - view.clientHeight < 40;
+          paint();
+          if (stuck) view.scrollTop = view.scrollHeight;   // follow unless read back
+        }
+        state.textContent = d.done
+          ? d.status + (d.took ? ' · ' + d.took : '')
+          : 'running… ' + (d.took || '');
+        if (d.done) {
+          stopFollowing();
+          const t = (d.stats && d.stats.totals) || null;
+          say(t ? (t.ok + ' ok · ' + t.changed + ' changed · ' + t.failed
+                   + ' failed · ' + t.unreachable + ' unreachable')
+                : (d.why || ''), d.status === 'ok' ? 'ok' : 'bad');
+        }
+      })
+      .catch(e => { say(String(e), 'bad'); stopFollowing(); });
+  }
+
+  function stopFollowing() {
+    live = false;
+    if (timer) { clearInterval(timer); timer = null; }
+    stopBtn.hidden = true;
+    setButtons();
+  }
+
+  function setButtons() {
+    const g = groupSel.selectedOptions[0];
+    const hosts = g ? Number(g.dataset.hosts || 0) : 0;
+    const prod = !!(g && g.dataset.prod === '1');
+    confirmWrap.hidden = !prod;
+    if (prod && g) confirmIn.placeholder = 'type ' + groupLabel().split(' —')[0];
+    checkBtn.disabled = live || !MAY_RUN || !hosts;
+    realBtn.disabled = live || !MAY_RUN || !ALLOW_REAL || !hosts;
+    realBtn.title = !MAY_RUN ? 'your role may not start runs'
+      : (!ALLOW_REAL ? 'real runs are switched off in Settings → Ansible'
+         : (!hosts ? 'this group has no hosts' : 'run it for real'));
+    if (!live && !hosts && g) say('that group has no hosts in it yet', 'bad');
+  }
+
+  function start(check) {
+    if (!pb) return;
+    const g = groupSel.value;
+    if (!check && !confirm('Run ' + pb.name + ' for real against '
+        + groupLabel() + '?\n\nThis changes those hosts now.')) return;
+    lines = []; at = 0; paint();
+    tools.hidden = false;
+    say(check ? 'starting a dry run…' : 'starting…');
+    state.textContent = 'starting…';
+    live = true; setButtons();
+    const body = new URLSearchParams({
+      pb_id: pb.id, gid: g, check: check ? '1' : '', limit: document.getElementById('arLimit').value,
+      tags: document.getElementById('arTags').value,
+      extra_vars: document.getElementById('arVars').value,
+      confirm: confirmIn.value});
+    fetch('/ansible/run', {method: 'POST', body: body})
+      .then(r => r.json())
+      .then(d => {
+        if (!d.ok) { live = false; state.textContent = ''; say(d.error, 'bad');
+                     setButtons(); return; }
+        runId = d.run_id;
+        stopBtn.hidden = false;
+        say(check ? 'dry run — nothing is being changed' : '');
+        follow();
+        timer = setInterval(follow, 1000);
+      })
+      .catch(e => { live = false; say(String(e), 'bad'); setButtons(); });
+  }
+
+  checkBtn.addEventListener('click', () => start(true));
+  realBtn.addEventListener('click', () => start(false));
+  groupSel.addEventListener('change', setButtons);
+  find.addEventListener('input', paint);
+  stopBtn.addEventListener('click', () => {
+    if (!runId || !confirm('Stop this run? What it has already done stays done.')) return;
+    fetch('/ansible/run/' + encodeURIComponent(runId) + '/cancel', {method: 'POST'})
+      .then(r => r.json()).then(d => { if (!d.ok) say(d.error, 'bad'); });
+  });
+  document.getElementById('arWrap').addEventListener('click', e => {
+    view.classList.toggle('wrap');
+    e.currentTarget.classList.toggle('on', view.classList.contains('wrap'));
+  });
+  document.getElementById('arCopy').addEventListener('click', e => {
+    navigator.clipboard.writeText(lines.join('\n')).then(() => {
+      const b = e.currentTarget, was = b.textContent;
+      b.textContent = 'copied';
+      setTimeout(() => { b.textContent = was; }, 1200);
+    }).catch(() => {});
+  });
+  document.getElementById('arDownload').addEventListener('click', () => {
+    const blob = new Blob([lines.join('\n')], {type: 'text/plain'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = (runId || 'ansible-run') + '.txt';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  });
+
+  function shut() {
+    // Closing the window does not stop the run — it is a process on a server,
+    // not a page. Said out loud, because a window that vanished silently while
+    // forty hosts were mid-play would be read as "it stopped".
+    if (live && !confirm('This run keeps going without the window open. '
+        + 'Close it?\n\nIt is in the Runs list with its full output.')) return;
+    stopFollowing();
+    dlg.close();
+  }
+  document.getElementById('arClose').addEventListener('click', shut);
+  dlg.querySelector('[data-ardot="close"]').addEventListener('click', shut);
+  dlg.querySelector('[data-ardot="mini"]').addEventListener('click', shut);
+  dlg.querySelector('[data-ardot="maxi"]').addEventListener('click',
+    () => dlg.classList.toggle('maxi'));
+  dlg.addEventListener('cancel', e => { e.preventDefault(); shut(); });
+
+  // Delegated: any button on any page opens this by carrying data- attributes,
+  // the same contract the log, describe and YAML windows use.
+  document.addEventListener('click', e => {
+    const run = e.target.closest && e.target.closest('[data-ansrun]');
+    if (run) {
+      e.preventDefault();
+      openAnsibleRun({id: run.dataset.ansrun, name: run.dataset.ansname,
+                      group: run.dataset.ansgroup,
+                      auto: run.dataset.ansauto || ''});
+      return;
+    }
+    const out = e.target.closest && e.target.closest('[data-ansout]');
+    if (out) {
+      e.preventDefault();
+      openAnsibleOutput(out.dataset.ansout, out.dataset.anstitle || '');
+    }
+  });
+
+  window.openAnsibleRun = function (opts) {
+    // `auto` starts the run as the window opens. Used by "test connection" on a
+    // host group: the reader asked a yes/no question and pressing a second
+    // button to have it answered is a step for nothing.
+    pb = {id: opts.id, name: opts.name};
+    runId = null; at = 0; lines = []; live = false;
+    if (timer) { clearInterval(timer); timer = null; }
+    what.textContent = opts.name;
+    state.textContent = '';
+    form.hidden = false;
+    tools.hidden = true;
+    stopBtn.hidden = true;
+    find.value = '';
+    say('');
+    if (opts.group) groupSel.value = opts.group;
+    setButtons();
+    paint();
+    if (!dlg.open) dlg.showModal();
+    if (opts.auto) start(opts.auto !== 'real');
+  };
+
+  // The same window with the form withdrawn: an old run has nothing to start.
+  window.openAnsibleOutput = function (id, title) {
+    pb = null; runId = id; at = 0; lines = []; live = false;
+    if (timer) { clearInterval(timer); timer = null; }
+    what.textContent = title || id;
+    form.hidden = true;
+    tools.hidden = false;
+    stopBtn.hidden = true;
+    find.value = '';
+    say('');
+    paint();
+    if (!dlg.open) dlg.showModal();
+    fetch('/ansible/run/' + encodeURIComponent(id) + '.json')
+      .then(r => r.json())
+      .then(d => {
+        if (d.error) { say(d.error, 'bad'); return; }
+        lines = (d.text || '').replace(/\s+$/, '').split('\n');
+        at = d.at;
+        paint();
+        state.textContent = d.status + (d.took ? ' · ' + d.took : '');
+        const t = (d.stats && d.stats.totals) || null;
+        say(t ? (t.ok + ' ok · ' + t.changed + ' changed · ' + t.failed
+                 + ' failed · ' + t.unreachable + ' unreachable')
+              : (d.why || ''), d.status === 'ok' ? 'ok' : '');
+        // A run still going, opened from the list: follow it from here.
+        if (!d.done) { live = true; stopBtn.hidden = false;
+                       timer = setInterval(follow, 1000); }
+      })
+      .catch(e => say(String(e), 'bad'));
+  };
+})();
+</script>

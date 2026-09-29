@@ -1,0 +1,127 @@
+{#- "What breaks if I do not renew this?" — the window.
+
+    WHY A WINDOW AND NOT A COLUMN
+        The answer is several hosts, each with its own routes and services, and
+        it is asked about one row out of hundreds. A column would either
+        truncate it to a number or make every row pay for a cluster read.
+
+    WHY THE BODY IS FETCHED
+        The walk reads the cluster's ingress objects. Doing that for every
+        certificate on the radar would put a 24-cluster fan-out behind a page
+        the house rules already bound to a deadline.
+-#}
+<dialog id="blDlg" class="psh blwin">
+  <div class="psh-bar">
+    <span class="psh-dots"><b title="close" data-bldot="close">✕</b></span>
+    <b>blast radius</b>
+    <span class="psh-ns" id="blWhat"></span>
+    <span style="flex:1"></span>
+    <span class="psh-state" id="blState"></span>
+    <button type="button" class="psh-x" id="blAgain" title="read the cluster again">↻ refresh</button>
+    <button type="button" class="psh-x" id="blClose">close</button>
+  </div>
+  {#- `.psh-body` is `white-space:pre-wrap` in app.css because the LOG window's
+      content is preformatted text. This window is ordinary markup, so every
+      newline in it would become ~40px of blank space. Opting out is one line
+      and it is the documented trap for any non-log `.psh` window. -#}
+  <div class="psh-body bl-body" id="blBody"></div>
+</dialog>
+<style>
+  .blwin { width: min(880px, 94vw); }
+  .bl-body { white-space: normal; padding: 14px 16px; }
+  .bl-tiles { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 12px; }
+  .bl-tile { flex: 1 1 120px; border: 1px solid var(--line); border-radius: 8px;
+             padding: 8px 10px; background: var(--panel); }
+  .bl-tile b { display: block; font-size: 20px; line-height: 1.1; }
+  .bl-tile span { font-size: 11px; color: var(--muted); }
+  .bl-tile.act { border-left: 3px solid var(--accent); }
+  .bl-tile.warn { border-left: 3px solid var(--warn); }
+  .bl-tile.quiet b { color: var(--muted); }
+  /* Wide content scrolls inside its own box rather than pushing the window
+     open -- an in-cluster FQDN is long, and the exposure chip was clipping
+     off the right edge. */
+  .bl-wrap { overflow-x: auto; }
+  /* An in-cluster FQDN is long enough to push the exposure chip off the edge.
+     Letting the name WRAP keeps everything visible without a scrollbar --
+     preferred here over the house scroll rule because the last column is the
+     answer ("can anything outside reach this?") and a cut-off answer is
+     worse than a two-line name. */
+  .bl-tbl { width: 100%; table-layout: fixed; }
+  .bl-tbl td, .bl-tbl th { overflow-wrap: anywhere; }
+  .bl-form { font-size: 10px; color: var(--muted); margin-top: 2px;
+             font-family: var(--mono); overflow-wrap: anywhere;
+             white-space: normal; }
+  .bl-c-exp { width: 150px; }
+  .bl-tbl code { font-size: 11.5px; }
+  .bl-how { font-size: 10.5px; padding: 1px 6px; border-radius: 999px;
+            border: 1px solid var(--line); color: var(--muted); }
+  .bl-how.exact { border-color: var(--ok); color: var(--ok); }
+  .bl-how.wildcard { border-color: var(--warn); color: var(--warn); }
+  .bl-rt, .bl-svc { display: inline-block; font-size: 10.5px; margin: 1px 3px 1px 0;
+                    padding: 1px 6px; border-radius: 4px; background: var(--well);
+                    border: 1px solid var(--line); }
+  .bl-dash { color: var(--muted); }
+  /* CHIPS, not bare links. Rendered as plain anchors they ran together --
+     "KE / preprod KE / test TZ / preprod" -- because each label already
+     contains a slash and a space, so there was no visual break between one
+     environment and the next. Caught in a screenshot, not in the markup. */
+  .bl-env { display: inline-block; margin: 2px 4px 0 0; padding: 1px 7px;
+            font-size: 11px; border-radius: 999px; background: var(--well);
+            border: 1px solid var(--line); text-decoration: none; }
+  .bl-env:hover { border-color: var(--accent); color: var(--accent-ink); }
+  .bl-sec { font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
+            color: var(--muted); margin: 18px 0 6px; font-weight: 700; }
+  .bl-form { font-size: 10.5px; }
+  .bl-note { font-size: 12px; margin: 10px 0 0; line-height: 1.5; }
+  .bl-note.bad { color: var(--danger-ink); }
+  .bl-note.warn { color: var(--warn); }
+  .bl-note.dim { color: var(--muted); font-size: 11px; }
+</style>
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  const dlg = document.getElementById('blDlg');
+  if (!dlg) return;
+  const body = document.getElementById('blBody');
+  const what = document.getElementById('blWhat');
+  const state = document.getElementById('blState');
+  let last = null, seq = 0;
+
+  function shut() { try { dlg.close(); } catch (e) {} }
+  document.getElementById('blClose').addEventListener('click', shut);
+  dlg.querySelector('[data-bldot="close"]').addEventListener('click', shut);
+
+  async function load(q, again) {
+    // NUMBER THE OPENS. Two rows clicked in quick succession are two fetches
+    // and the slower one lands last -- which fills the window with one
+    // certificate's answer under another certificate's title.
+    const mine = ++seq;
+    state.textContent = again ? 'reading the cluster…' : 'tracing…';
+    body.innerHTML = '';
+    try {
+      const r = await fetch('/expiry/blast?' + q + (again ? '&refresh=1' : ''));
+      const html = await r.text();
+      if (mine !== seq) return;
+      body.innerHTML = html;
+      state.textContent = '';
+    } catch (e) {
+      if (mine !== seq) return;
+      state.textContent = '';
+      body.innerHTML = '<p class="bl-note bad">could not reach the portal</p>';
+    }
+  }
+
+  document.getElementById('blAgain').addEventListener('click', function () {
+    if (last) load(last, true);
+  });
+
+  document.addEventListener('click', function (e) {
+    const el = e.target.closest('[data-blast]');
+    if (!el) return;
+    e.preventDefault();
+    last = el.getAttribute('data-blast');
+    what.textContent = el.getAttribute('data-blast-name') || '';
+    if (!dlg.open) dlg.showModal();
+    load(last, false);
+  });
+})();
+</script>

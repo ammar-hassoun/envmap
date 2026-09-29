@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% import "_bits.html" as bits %}
+{% block crumbs %}<a href="/">Overview</a> <span>›</span> <b>Nodes</b>{% endblock %}
+{% block content %}
+{{ bits.collecting(pending, "The counts below are of the clusters that have
+   answered so far.") }}
+<div class="page-head">
+  <div>
+    <h1>Nodes — whole fleet</h1>
+    <p class="sub">{{ rows|length }} node{{ 's' if rows|length != 1 }} across
+      {{ groups|length }} cluster{{ 's' if groups|length != 1 }}
+      {% if broken %} · <span style="color:var(--warn-ink);">{{ broken|length }}
+        cluster{{ 's' if broken|length != 1 }} unreachable</span>{% endif %}</p>
+  </div>
+  <a class="btn btn-ghost" href="/nodes?refresh=1{{ '&cluster=' ~ (want_cluster|urlencode) if want_cluster }}{{ '&q=' ~ (q|urlencode) if q }}">↻ Refresh</a>
+</div>
+
+<form method="get" action="/nodes" class="card" style="margin-bottom:14px;">
+  <div class="card-b" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+    <select name="cluster" data-submit>
+      <option value="">every cluster</option>
+      {% for g in groups %}
+      <option value="{{ g.cid }}" {% if g.cid == want_cluster %}selected{% endif %}>
+        {{ g.project }} · {{ g.cluster }}</option>
+      {% endfor %}
+    </select>
+    <input type="search" name="q" value="{{ q }}" placeholder="filter by name, role, version…"
+           style="flex:1;min-width:180px;">
+    <label class="chk"><input type="checkbox" name="problems" value="1"
+      {% if problems %}checked{% endif %} data-submit> problems only</label>
+    <button class="btn-ghost tbtn" type="submit">Apply</button>
+  </div>
+</form>
+
+{% for b in broken %}
+<div class="flash err">⚠ {{ b.project }} · {{ b.cluster }}: {{ b.error }}
+  — <a href="/clusters?project={{ b.pid|urlencode }}&cluster={{ b.cid|urlencode }}">open</a></div>
+{% endfor %}
+
+{% if rows %}
+<div class="card"><div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+  <table class="jenkins">
+    <thead><tr>
+      <th style="min-width:200px;">Node</th><th style="min-width:150px;">Cluster</th>
+      <th style="width:110px;">Role</th><th style="width:150px;">CPU</th>
+      <th style="width:150px;">Memory</th><th style="width:110px;">Version</th>
+      <th style="width:130px;">Runtime</th><th style="width:55px;">Age</th>
+    </tr></thead>
+    <tbody>
+    {% for n in rows %}
+    <tr>
+      <td class="jname"><b>{{ n.name }}</b>
+        {% if not n.ready %}<span class="sv sv-critical">NotReady</span>{% endif %}
+        {% if not n.schedulable %}<span class="sv sv-medium">cordoned</span>{% endif %}
+        {% for pr in n.pressure %}<span class="sv sv-high">{{ pr }}</span>{% endfor %}
+      </td>
+      <td><a href="/clusters?project={{ n.pid|urlencode }}&cluster={{ n.cid|urlencode }}&tab=nodes">
+        {{ n.project }} · {{ n.cluster }}</a></td>
+      <td>{{ n.roles|join(', ') }}</td>
+      <td>{% if n.cpu_use is not none and n.cpu_cap %}
+        {{ (n.cpu_use / 1000)|round(1) }} / {{ (n.cpu_cap / 1000)|round(1) }} cores
+        ({{ (n.cpu_use / n.cpu_cap * 100)|round|int }}%)
+        {% elif n.cpu_cap %}{{ (n.cpu_cap / 1000)|round(1) }} cores{% else %}—{% endif %}</td>
+      <td>{% if n.mem_use is not none and n.mem_cap %}
+        {{ (n.mem_use / 1024)|round(1) }} / {{ (n.mem_cap / 1024)|round(1) }} GiB
+        ({{ (n.mem_use / n.mem_cap * 100)|round|int }}%)
+        {% elif n.mem_cap %}{{ (n.mem_cap / 1024)|round(1) }} GiB{% else %}—{% endif %}</td>
+      <td>{{ n.version }}</td>
+      <td class="hint">{{ n.runtime }}</td>
+      <td>{{ n.age }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div></div>
+{% elif not broken %}
+<div class="empty"><div class="big">{{ glyph("server", 40) }}</div><h2>No nodes to show</h2>
+  <p>{% if want_cluster or q or problems %}Nothing matches this filter.{% else %}
+     Connect a cluster and its nodes appear here.{% endif %}</p></div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,230 @@
+{% extends "base.html" %}
+{% import "_bits.html" as bits %}
+{% block crumbs %}<b>Workflows</b>{% endblock %}
+{% block content %}
+{{ bits.collecting(pending, "The engines below are the ones that have answered so far.") }}
+
+{% if not conns %}
+<div class="empty">
+  <div class="big">{{ glyph("workflow", 40) }}</div>
+  <h2>No workflow engine connected</h2>
+  <p>Connect Temporal or Airflow and the portal shows what is running and what
+     failed recently — the work that outlives a request, next to the clusters
+     its workers run on.</p>
+  <a class="btn" href="/settings/conns/wf">＋ Connect an engine</a>
+</div>
+
+{% else %}
+{%- set cur = sec if sec in ('overview','failed','running','namespaces') else 'overview' -%}
+
+{# flatten every workflow row across engines + namespaces, tagged with where it
+   lives, so Failed/Running are one estate-wide table; the per-namespace breakdown
+   stays on the Namespaces tab. Counts come from the rows themselves, so a tile's
+   number equals exactly the rows its tab opens. #}
+{%- set running_rows = [] -%}
+{%- set failed_rows = [] -%}
+{%- set ns_total = namespace(n=0) -%}
+{%- set wf_total = namespace(n=0) -%}
+{%- for e in engines if not e.error -%}
+  {%- for g in e.over.groups -%}
+    {%- set ns_total.n = ns_total.n + 1 -%}
+    {%- for r in g.rows -%}
+      {%- set wf_total.n = wf_total.n + 1 -%}
+      {%- set item = {'r': r, 'engine': e.conn.name, 'ns': g.name} -%}
+      {%- if r.state == 'Running' %}{% set _ = running_rows.append(item) %}
+      {%- elif r.state == 'Failed' %}{% set _ = failed_rows.append(item) %}{% endif -%}
+    {%- endfor -%}
+  {%- endfor -%}
+{%- endfor -%}
+
+<div class="page-head"><div>
+  <h1>Workflow engines</h1>
+  <p class="sub">Every workflow engine connected to the portal — what is running now
+    and what failed recently, next to the clusters its workers run on.</p>
+</div><div style="display:flex;gap:10px;">
+  <a class="btn btn-ghost" href="/workflows?sec={{ cur }}&refresh=1">↻ Refresh</a>
+  <a class="btn btn-ghost" href="/settings/conns/wf">⚙ Manage</a>
+</div></div>
+
+{{ bits.subtabs('/workflows?', 'sec', cur, [
+     {'key':'overview','label':'Overview','count':none,'icon':'chart-line'},
+     {'key':'failed','label':'Failed','count':failed_rows|length,'icon':'triangle-alert'},
+     {'key':'running','label':'Running','count':running_rows|length,'icon':'zap'},
+     {'key':'namespaces','label':'Namespaces','count':ns_total.n,'icon':'layers'}], wide=true) }}
+
+{% for e in engines if e.error %}
+<div class="flash err">⚠ {{ e.conn.name }}: {{ e.error }}
+  — <a href="/settings/conns/wf#{{ e.conn.id }}">check the connection</a></div>
+{% endfor %}
+
+{# a state pill, matching the house tones #}
+{% macro statepill(state) %}<span class="sv {{ 'sv-high' if state == 'Failed' else 'sv-ok' if state == 'Running' else 'sv-medium' }}"
+     style="{{ 'color:var(--ok-ink);' if state == 'Running' }}">{{ state }}</span>{% endmacro %}
+
+{# the estate-wide flat table used by both Failed and Running #}
+{% macro flat(items, empty_note) %}
+{% if items %}
+<div class="card"><div class="card-b" style="overflow-x:auto;">
+  <table class="jenkins"><thead><tr>
+    <th style="min-width:220px;">Workflow / DAG</th><th style="min-width:150px;">Type</th>
+    <th style="min-width:150px;">Engine · Namespace</th><th style="width:96px;">State</th>
+    <th style="width:96px;">Started</th><th style="min-width:150px;">Queue / schedule</th>
+    <th style="width:80px;"></th>
+  </tr></thead><tbody>
+  {% for it in items %}{% set r = it.r %}
+  <tr>
+    <td class="jname" style="font-family:var(--mono);font-size:11.5px;">
+      {% if r.href %}<a href="{{ r.href }}">{{ r.name }}</a>{% else %}{{ r.name }}{% endif %}</td>
+    <td>{{ r.kind }}</td>
+    <td class="hint">{{ it.engine }} · <b style="color:var(--text2);">{{ it.ns }}</b></td>
+    <td>{{ statepill(r.state) }}</td>
+    <td class="hint">{{ r.when }}</td>
+    <td class="hint">{{ r.extra }}</td>
+    <td>{% if r.href %}<a class="abtn" href="{{ r.href }}">Details</a>
+        {% elif r.url %}<a class="abtn" href="{{ r.url }}" target="_blank" rel="noopener">Open →</a>{% endif %}</td>
+  </tr>
+  {% endfor %}
+  </tbody></table>
+</div></div>
+{% else %}
+<div class="empty"><div class="big">{{ glyph('circle-check', 34) }}</div><p>{{ empty_note }}</p></div>
+{% endif %}
+{% endmacro %}
+
+{% if cur == 'overview' %}
+<div class="ex-tiles">
+  <a class="ex-tile" href="/settings/conns/wf">
+    <span class="ico">{{ glyph("workflow", 17) }}</span>
+    <span><span class="big">{{ conns|length }}</span>
+      <span class="cap">engine{{ 's' if conns|length != 1 }}</span>
+      <span class="sub">Temporal &amp; Airflow</span></span></a>
+  <a class="ex-tile {{ 'quiet' if not ns_total.n }}" href="/workflows?sec=namespaces">
+    <span class="ico">{{ glyph("layers", 17) }}</span>
+    <span><span class="big">{{ ns_total.n }}</span>
+      <span class="cap">namespace{{ 's' if ns_total.n != 1 }}</span>
+      <span class="sub">across every engine</span></span></a>
+  <a class="ex-tile act {{ 'quiet' if not running_rows }}" href="/workflows?sec=running">
+    <span class="ico">{{ glyph("zap", 17) }}</span>
+    <span><span class="big">{{ running_rows|length }}</span>
+      <span class="cap">running now</span>
+      <span class="sub">work in flight</span></span></a>
+  <a class="ex-tile bad {{ 'quiet' if not failed_rows }}" href="/workflows?sec=failed">
+    <span class="ico">{{ glyph("triangle-alert", 17) }}</span>
+    <span><span class="big">{{ failed_rows|length }}</span>
+      <span class="cap">failed recently</span>
+      <span class="sub">needs a look</span></span></a>
+</div>
+
+{# shared chart overview — how workflows sit + namespaces by engine #}
+{% set engrows = [] %}
+{% for e in engines if not e.error %}{{ engrows.append({'label': e.conn.name, 'n': e.over.groups|length, 'href':'/workflows?sec=namespaces', 'note': (e.over.failed ~ ' failed') if e.over.failed else ''}) or '' }}{% endfor %}
+<div class="apanels">
+  {{ bits.donut_panel('Workflow state',
+       [{'label':'settled','value':wf_total.n - running_rows|length - failed_rows|length,'color':'var(--ok)'},
+        {'label':'failed','value':failed_rows|length,'color':'var(--danger)','href':'/workflows?sec=failed'},
+        {'label':'running','value':running_rows|length,'color':'var(--accent)','href':'/workflows?sec=running'}],
+       centre=wf_total.n, sub='workflows', icon='activity', hint='across every engine') }}
+  {{ bits.bars_panel('Namespaces by engine', engrows | sort(attribute='n', reverse=true),
+       hint='most first', icon='layers', empty='No namespaces reported yet.') }}
+</div>
+
+{# a compact card per engine — its namespaces with counts, linking into the detail #}
+{% for e in engines if not e.error %}
+<div class="card">
+  <div class="card-h">
+    {{ plogo(e.provider, 18) if e.provider else glyph('workflow', 18) }}
+    <b>{{ e.conn.name }}</b>
+    <span class="badge">{{ e.provider.label if e.provider else e.conn.type }}</span>
+    <span class="hint">{{ e.over.groups|length }} {{ e.over.unit }}{{ 's' if e.over.groups|length != 1 }} ·
+      {{ e.over.running }} running{% if e.over.failed %} ·
+      <span style="color:var(--danger-ink);">{{ e.over.failed }} failed</span>{% endif %}</span>
+    <span style="flex:1"></span>
+    <a class="btn btn-ghost" style="padding:4px 13px;font-size:11.5px;"
+       href="/workflows?sec=namespaces">Open →</a>
+  </div>
+  <div class="card-b">
+    {% for g in e.over.groups %}
+    <div class="rowcard"><div class="kv">
+      {% if g.href %}<a href="{{ g.href }}" style="font-size:13.5px;font-weight:600;">{{ g.name }}</a>
+      {% else %}<b style="font-size:13.5px;">{{ g.name }}</b>{% endif %}
+      {% if g.note %}<span class="hint">{{ g.note }}</span>{% endif %}
+      <span style="flex:1"></span>
+      <span class="badge">{{ g.running }} running</span>
+      {% if g.failed %}<span class="badge" style="color:var(--danger-ink);">{{ g.failed }} failed</span>{% endif %}
+    </div></div>
+    {% else %}
+    <div class="sec-note">This engine reported no {{ e.over.unit }}s.</div>
+    {% endfor %}
+  </div>
+</div>
+{% endfor %}
+
+{% elif cur == 'failed' %}
+{{ flat(failed_rows, 'Nothing has failed recently on any engine.') }}
+
+{% elif cur == 'running' %}
+{{ flat(running_rows, 'Nothing is running right now.') }}
+
+{% elif cur == 'namespaces' %}
+{# the full per-engine, per-namespace breakdown — the operational detail #}
+{% for e in engines if not e.error %}
+<div class="card">
+  <div class="card-h">
+    {{ plogo(e.provider, 18) if e.provider else glyph('workflow', 18) }}
+    <b>{{ e.conn.name }}</b>
+    <span class="badge">{{ e.provider.label if e.provider else e.conn.type }}</span>
+    <span class="hint">{{ e.over.groups|length }} {{ e.over.unit }}{{ 's' if e.over.groups|length != 1 }} ·
+      {{ e.over.running }} running{% if e.over.failed %} ·
+      <span style="color:var(--danger-ink);">{{ e.over.failed }} failed</span>{% endif %}</span>
+  </div>
+  <div class="card-b">
+    {% for g in e.over.groups %}
+    <div class="rowcard">
+      <div class="kv">
+        {% if g.href %}<a href="{{ g.href }}" style="font-size:13.5px;font-weight:600;">{{ g.name }}</a>
+        {% else %}<b style="font-size:13.5px;">{{ g.name }}</b>{% endif %}
+        {% if g.note %}<span class="hint">{{ g.note }}</span>{% endif %}
+        <span style="flex:1"></span>
+        {% if g.href %}<a class="btn btn-ghost" style="padding:4px 11px;font-size:11px;"
+           href="{{ g.href }}">Search &amp; filter</a>{% endif %}
+        <span class="badge">{{ g.running }} running</span>
+        {% if g.failed %}<span class="badge" style="color:var(--danger-ink);">{{ g.failed }} failed</span>{% endif %}
+      </div>
+      {% if g.rows %}
+      <div style="overflow-x:auto;margin-top:8px;">
+        <table class="jenkins">
+          <thead><tr>
+            <th style="min-width:220px;">Workflow / DAG</th><th style="min-width:150px;">Type</th>
+            <th style="width:110px;">State</th><th style="width:110px;">Started</th>
+            <th style="min-width:130px;">Queue / schedule</th><th style="width:80px;"></th>
+          </tr></thead>
+          <tbody>
+          {% for r in g.rows %}
+          <tr>
+            <td class="jname" style="font-family:var(--mono);font-size:11.5px;">
+              {% if r.href %}<a href="{{ r.href }}">{{ r.name }}</a>{% else %}{{ r.name }}{% endif %}</td>
+            <td>{{ r.kind }}</td>
+            <td>{{ statepill(r.state) }}</td>
+            <td class="hint">{{ r.when }}</td>
+            <td class="hint">{{ r.extra }}</td>
+            <td>{% if r.href %}<a class="abtn" href="{{ r.href }}">Details</a>
+                {% elif r.url %}<a class="abtn" href="{{ r.url }}" target="_blank" rel="noopener">Open →</a>{% endif %}</td>
+          </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <div class="sec-note" style="margin:8px 0 0;">Nothing running or recently
+        failed in this {{ e.over.unit }}.</div>
+      {% endif %}
+    </div>
+    {% else %}
+    <div class="sec-note">This engine reported no {{ e.over.unit }}s.</div>
+    {% endfor %}
+  </div>
+</div>
+{% endfor %}
+{% endif %}
+{% endif %}
+{% endblock %}

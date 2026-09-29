@@ -1,0 +1,584 @@
+{% extends "base.html" %}
+{% from "_set_head.html" import head %}
+{% block crumbs %}<b>Administration</b> <span class="sep">/</span> <b>Users</b>{% endblock %}
+{% block content %}
+{{ head("Users",
+        "Accounts use the email address as the username. What each person may see comes from the roles you assign here — an administrator bypasses roles entirely, so that the portal can never lock its own admins out.",
+        msg, err) }}
+
+{% if invited_link %}
+{# Shown once and never again: only a hash of the token is stored, so the
+   portal genuinely cannot produce this link a second time. Saying so here is
+   the difference between "copy it now" reading as a nag and as a fact. #}
+<div class="card" style="border-color:var(--accent);">
+  <div class="card-h">{{ 'Reset link' if invited_kind == 'reset'
+      else 'Invitation' }} for {{ invited_user.email
+    if invited_user else 'the new account' }}
+    {% if invited_sent %}
+    <span class="badge" style="color:var(--ok-ink);">emailed</span>
+    {% endif %}
+    <span class="hint">valid {{ invite_days }} day{{ 's' if invite_days != 1 }}
+      · copy it now</span></div>
+  <div class="card-b">
+    {% if invited_sent %}
+    {# Emailed and shown. Mail is slow and mail is filtered, and the person
+       asking "did it arrive?" is usually standing next to you — so the link is
+       here too, for reading it out or pasting it into a chat. #}
+    <p class="sub" style="margin:0 0 12px;">Sent to
+      <b>{{ invited_user.email if invited_user else 'them' }}</b>. The same link
+      is below if you need to pass it on another way — it is the one in the
+      email, not a second one, so using either spends it.</p>
+    {% endif %}
+    {% if invited_kind == 'reset' %}
+    <p class="sub" style="margin:0 0 12px;">Pass this to them however you
+      normally would. They choose a new password with it <b>and enrol their
+      authenticator again</b> — a lost password usually arrives with a lost
+      phone. It does not sign them in by itself: they still go through the
+      sign-in page afterwards.</p>
+    {% else %}
+    <p class="sub" style="margin:0 0 12px;">Send this link to them however you
+      normally would. Opening it is what verifies their address; they choose
+      their own password and add an authenticator app, and you never see
+      either.</p>
+    {% endif %}
+    <div class="kv" style="gap:8px;">
+      <input id="invlink" readonly value="{{ invited_link }}"
+             style="flex:1;min-width:240px;font-family:var(--mono);font-size:12px;"
+             data-selectall>
+      <button type="button" class="btn" id="invcopy">Copy link</button>
+    </div>
+    <div class="sec-note" style="margin-top:10px;">Only a hash of this link is
+      stored, so this is the one moment it can be shown — leave the page and it
+      is gone from here{{ ', though it is still in their inbox'
+      if invited_sent else '' }}. Issue a new one from the account below if it
+      is lost; that also stops this one working.</div>
+  </div>
+</div>
+<script nonce="{{ csp_nonce() }}">
+document.getElementById('invcopy').addEventListener('click', function () {
+  var f = document.getElementById('invlink');
+  f.select();
+  navigator.clipboard.writeText(f.value).then(function () {
+    var b = document.getElementById('invcopy');
+    b.textContent = 'Copied';
+    setTimeout(function () { b.textContent = 'Copy link'; }, 1600);
+  }, function () { document.execCommand('copy'); });
+});
+</script>
+{% endif %}
+
+{% if resets %}
+{# There is no mail sender here, so a forgotten password arrives as a request
+   rather than as a link in somebody's inbox. Showing it to whoever typed the
+   address would let anybody reset anybody's password, so it lands here. #}
+<div class="card" style="border-color:var(--warn);">
+  <div class="card-h">Password resets asked for
+    <span class="hint">{{ resets|length }} waiting</span></div>
+  <div class="card-b">
+    <table class="jenkins">
+      <thead><tr><th>address</th><th>asked</th><th>from</th>
+        <th></th></tr></thead>
+      <tbody>
+        {% for rq in resets %}
+        <tr>
+          <td><b>{{ rq.email }}</b>
+            {% if not rq.uid %}
+            <div class="sec-note" style="margin:2px 0 0;color:var(--warn-ink);"
+              >no account has this address — nothing to reset</div>
+            {% endif %}</td>
+          <td class="hint">{{ rq.at }}</td>
+          <td class="hint" style="font-family:var(--mono);font-size:11px;"
+            >{{ rq.ip or '—' }}</td>
+          <td style="text-align:right;white-space:nowrap;">
+            {% if rq.uid %}
+            <form method="post" action="/admin/users/{{ rq.uid }}/reset-link"
+                  style="display:inline;">
+              <button class="btn" style="padding:5px 13px;font-size:11.5px;"
+                >Issue a reset link</button></form>
+            {% endif %}
+            <form method="post" action="/admin/resets/{{ rq.id }}/dismiss"
+                  style="display:inline;">
+              <button class="btn-ghost" style="padding:5px 13px;font-size:11.5px;"
+                >Dismiss</button></form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div class="sec-note" style="margin-top:10px;">Check who is asking before
+      issuing one — a request proves only that somebody typed the address into
+      the form.</div>
+  </div>
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="card-h">Accounts <span class="hint" id="aucount">{{ users|length }}</span>
+    <span style="flex:1"></span>
+    <input type="search" id="aufind" placeholder="filter by name, email or role…"
+           style="flex:0 1 260px;min-width:0;">
+    <a class="btn btn-ghost tbtn" href="/admin/roles">manage roles →</a></div>
+  <div class="card-b" style="padding:0 0 4px;overflow-x:auto;">
+    {#- ONE ROW PER ACCOUNT, not a card each.
+
+        Seventeen accounts meant seventeen cards, each carrying a name, an
+        email, three badges, a role chip, two closed <details> and up to five
+        buttons — so the answer to "who has an admin account here" was three
+        screens of scrolling. As rows it is one glance.
+
+        The row's own operations — a reset link, resetting MFA, an invitation,
+        deleting — moved INTO the Account panel. They are things you do to an
+        account, not furniture the list needs, and five buttons per row is what
+        made the cards as tall as they were.
+
+        NO-SORT on every header: this table has detail rows and the house
+        sorter is flat, so a sort would scramble a form away from the account
+        it belongs to. The filter above does the finding instead. -#}
+    <table class="jenkins acc-t">
+      <thead><tr>
+        <th class="no-sort">Account</th>
+        <th class="no-sort" style="width:34%;">Access</th>
+        <th class="no-sort" style="width:210px;">Status</th>
+        <th class="no-sort actcol" style="width:180px;"></th>
+      </tr></thead>
+      <tbody>
+      {% for uid, u in users.items() %}
+      {%- set st = states.get(uid) %}
+      {%- set sso = u.password == sso_sentinel %}
+      {%- set pending = u.password == pending_sentinel %}
+      {#- The haystack carries the words as rendered as well as the plain ones,
+          so typing what is on screen finds the row. -#}
+      <tr class="au-row" id="{{ uid }}"
+          data-find="{{ (u.name ~ ' ' ~ u.email ~ ' ' ~ u.role ~ ' '
+                         ~ (st.label if st else '')
+                         ~ (' disabled' if u.disabled else ''))|lower }}">
+        <td>
+          <span class="cl-cell">
+            <span class="cl-dot {{ 'bad' if u.disabled else 'ok' }}"
+                  title="{{ 'disabled' if u.disabled else 'enabled' }}"></span>
+            <span style="min-width:0;">
+              <b class="cl-nm">{{ u.name or u.email }}</b>
+              {%- if uid == me.id %} <span class="cl-mark">you</span>{% endif %}
+              <div class="hint" style="font-family:var(--mono);font-size:11px;
+                   overflow:hidden;text-overflow:ellipsis;">{{ u.email }}</div>
+            </span></span></td>
+        <td class="wrap">
+          {%- if u.role == 'admin' %}
+          <span class="cl-mark rw" title="an administrator bypasses roles entirely"
+                >admin — every area, every cluster</span>
+          {%- elif user_roles.get(uid) %}
+          <span class="cl-serves">
+            {%- for r in user_roles[uid] %}
+            <span class="cl-env" title="{{ role_desc.get(r.id, '') }}">{{ r.name }}</span>
+            {%- endfor %}</span>
+          {%- else %}
+          <span class="cl-mark" style="color:var(--warn-ink);"
+                >no roles — sees only the Overview</span>
+          {%- endif %}</td>
+        <td class="wrap">
+          {%- if sso %}<span class="cl-mark" style="color:var(--accent-ink);"
+            >Microsoft</span>
+          {%- elif st %}<span class="cl-mark" style="color:{{ {'active':'var(--ok-ink)',
+                'invited':'var(--accent-ink)', 'no-mfa':'var(--warn-ink)',
+                'stalled':'var(--danger-ink)',
+                'disabled':'var(--danger-ink)'}[st.key] }};"
+                title="{{ st.note }}">{{ st.label }}</span>
+            {%- if st.note %}<div class="hint">{{ st.note }}</div>{% endif %}
+          {%- endif %}</td>
+        <td class="actcol"><span class="actrow oneline">
+          <button type="button" class="abtn" data-acc="roles-{{ uid }}">roles</button>
+          <button type="button" class="abtn" data-acc="acct-{{ uid }}">account</button>
+        </span></td>
+      </tr>
+
+      <tr class="acc-form au-row-of-{{ uid }}" id="acc-roles-{{ uid }}" hidden>
+        <td colspan="4">
+        <form method="post" action="/admin/users/{{ uid }}/roles">
+          {% if u.role == 'admin' %}
+          <div class="sec-note">This account is an administrator, so roles do not
+            restrict it. Change the role to <b>user</b> under <b>account</b>
+            first if you want role-based limits to apply.</div>
+          {% endif %}
+          <div class="pickgrid">
+            {% for r in roles %}
+            <label class="pick">
+              <input type="checkbox" name="roles" value="{{ r.id }}"
+                     {% if user_roles.get(uid) and r.id in user_roles[uid]|map(attribute='id')|list %}checked{% endif %}>
+              <span><b>{{ r.name }}</b><small>{{ role_desc.get(r.id, '') }}</small></span>
+            </label>
+            {% endfor %}
+          </div>
+          {% if not roles %}
+          <div class="sec-note">No roles exist yet —
+            <a href="/admin/roles">create one</a>.</div>
+          {% endif %}
+          <div class="actions"><button type="submit">Save roles</button>
+            <button type="button" class="btn btn-ghost acc-cancel">Cancel</button></div>
+        </form></td></tr>
+
+      <tr class="acc-form au-row-of-{{ uid }}" id="acc-acct-{{ uid }}" hidden>
+        <td colspan="4">
+        <form method="post" action="/admin/users/{{ uid }}/update">
+          <div class="field-row"><label>full name</label>
+            <input type="text" name="name" value="{{ u.name }}"></div>
+          <div class="field-row"><label>role</label>
+            <select name="role">
+              <option value="user" {% if u.role == 'user' %}selected{% endif %}>user — governed by the roles above</option>
+              <option value="admin" {% if u.role == 'admin' %}selected{% endif %}>admin — bypasses all roles</option>
+            </select></div>
+          {% if not sso and not pending %}
+          <div class="field-row"><label>new password</label>
+            <input type="password" name="password" autocomplete="new-password"
+                   placeholder="leave blank to keep"></div>
+          {% elif sso %}
+          <div class="sec-note">This account signs in with Microsoft, so it has
+            no password to set.</div>
+          {% endif %}
+          <div class="field-row"><label>disabled</label>
+            <input type="checkbox" name="disabled" style="width:auto"
+                   {% if u.disabled %}checked{% endif %}></div>
+          <div class="actions"><button type="submit">Save</button>
+            <button type="button" class="btn btn-ghost acc-cancel">Cancel</button></div>
+        </form>
+
+        {#- The operations, kept apart from the form above and from each other:
+            these do something the moment they are pressed, where the form only
+            does when Save is. -#}
+        <div style="border-top:1px solid var(--line);">
+          <div class="mcp-lbl" style="margin-bottom:9px;">what you can do to this account</div>
+          <div class="actrow" style="justify-content:flex-start;">
+            {% if pending %}
+            <form method="post" action="/admin/users/{{ uid }}/invite">
+              <button class="abtn go" type="submit"
+                >{{ 'New link' if st and st.key == 'invited' else 'Send invitation' }}</button></form>
+            {% if st and st.key == 'invited' %}
+            <form method="post" action="/admin/users/{{ uid }}/invite/revoke"
+                  data-confirm="Revoke the invitation for {{ u.email }}? The link stops working immediately.">
+              <button class="abtn" type="submit">Revoke invitation</button></form>
+            {% endif %}
+            {% endif %}
+            {% if not sso and not pending %}
+            <form method="post" action="/admin/users/{{ uid }}/reset-link">
+              <button class="abtn" type="submit"
+                      title="A one-time link to choose a new password. It resets their authenticator too, so they enrol again — the usual case when somebody has lost the phone as well."
+                >Password reset link</button></form>
+            <form method="post" action="/admin/users/{{ uid }}/reset-mfa"
+                  data-confirm="Reset MFA for {{ u.email }}? They will enrol again at next sign-in.">
+              <button class="abtn" type="submit">Reset MFA</button></form>
+            {% endif %}
+            {% if uid != me.id %}
+            {#- A browser confirm() is one careless Return away from gone.
+                Deleting an account takes its roles and its history with it, so
+                it asks for the word — exactly as removing a subscription does. -#}
+            <button type="button" class="abtn danger"
+                    data-call="dropUserRow" data-arg-self data-uid="{{ uid }}" data-email='{{ u.email|tojson }}'
+              >Delete account</button>
+            {% endif %}
+          </div>
+        </div></td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <div id="aunone" class="cl-empty" style="padding:14px 16px;" hidden>
+      No account matches that.</div>
+  </div>
+</div>
+
+{#- Adding somebody is a once-in-a-while job, so it is shut on arrival like
+    every other section rather than sitting open under a list of seventeen. -#}
+<details class="acc-sec">
+  <summary><span class="acc-chev">{{ glyph('chevron-right', 14) }}</span>
+    <b>Add someone</b>
+    <span class="hint">creates an account with no password and gives you a link
+      to send</span>
+  </summary>
+  <div class="acc-secb"><div class="card-b">
+<form method="post" action="/admin/users/invite" style="margin-top:12px;">
+        <div class="field-row"><label>email (username)</label>
+          <input type="email" name="email" required placeholder="person@example.com"></div>
+        <div class="field-row"><label>full name</label>
+          <input type="text" name="name" placeholder="used as their git commit author"></div>
+        <div class="field-row"><label>role</label>
+          <select name="role"><option value="user">user</option>
+            <option value="admin">admin</option></select></div>
+        {% if roles %}
+        <div class="field-row" style="align-items:flex-start;">
+          <label style="padding-top:6px;">roles</label>
+          <div class="pickgrid">
+            {% for r in roles %}
+            <label class="pick"><input type="checkbox" name="roles" value="{{ r.id }}">
+              <span><b>{{ r.name }}</b><small>{{ role_desc.get(r.id, '') }}</small></span></label>
+            {% endfor %}
+          </div>
+        </div>
+        {% endif %}
+        <div class="sec-note">You do not choose a password for them. The
+          account is created with none, and you get a link to send: opening it
+          verifies their address, then they set a password and add an
+          authenticator app. You never see either.</div>
+        <div class="actions"><button type="submit">Create the invitation</button></div>
+      </form>
+  </div></div>
+</details>
+
+{# ── Microsoft sign-in: a switch, and a dialog only when you ask for it ── #}
+<div class="card">
+  <div class="card-h">Sign in with Microsoft
+    <span class="hint">{{ 'enabled' if sso_cfg.enabled else 'off' }}</span>
+    <span style="flex:1"></span>
+    <label class="switch" title="{{ 'Turn Microsoft sign-in off' if sso_cfg.enabled else 'Turn Microsoft sign-in on' }}">
+      <input type="checkbox" id="ssoToggle" {% if sso_cfg.enabled %}checked{% endif %}>
+      <span class="track"><span class="knob"></span></span>
+    </label>
+  </div>
+  <div class="card-b">
+    {% if sso_msg %}<div class="flash">✓ {{ sso_msg }}</div>{% endif %}
+    {% if sso_err %}<div class="flash err">⚠ {{ sso_err }}</div>{% endif %}
+    {% if sso_cfg.enabled %}
+    <div class="kv">
+      <span class="dot"></span>
+      <span>Enabled for tenant <b style="font-family:var(--mono);">{{ sso_cfg.tenant }}</b>{% if sso_cfg.auto_create %}
+        · new people are given a <b>user</b> account automatically{% else %}
+        · only people who already have an account here{% endif %}</span>
+      <span style="flex:1"></span>
+      <button type="button" class="btn-ghost tbtn" data-call="ssoOpen">edit configuration</button>
+    </div>
+    {% else %}
+    <div class="sec-note" style="margin:0;">Off. The sign-in page shows the local
+      email-and-password form only. Turn the switch on to configure an Entra ID
+      application — local accounts keep working either way, and remain the way in
+      if the tenant is ever misconfigured.</div>
+    {% endif %}
+  </div>
+</div>
+
+{# the dialog: every field starts empty, nothing is pre-filled #}
+<dialog id="ssoDialog" class="pdialog">
+  <form method="post" action="/admin/sso">
+    <div class="dhead">
+      <span class="dmark">
+        {# the Microsoft mark, drawn: a font glyph cannot be brand-coloured #}
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+          <rect x="0" y="0" width="7" height="7" fill="#f25022"/>
+          <rect x="9" y="0" width="7" height="7" fill="#7fba00"/>
+          <rect x="0" y="9" width="7" height="7" fill="#00a4ef"/>
+          <rect x="9" y="9" width="7" height="7" fill="#ffb900"/>
+        </svg>
+      </span>
+      <span>
+        <span class="dtitle">Microsoft sign-in</span>
+        <span class="dwhere">Entra ID · OpenID Connect</span>
+      </span>
+      <span style="flex:1"></span>
+      <button type="button" class="dx" data-call="ssoClose" aria-label="Close">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2.2" stroke-linecap="round"
+             aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div class="dbody">
+      <input type="hidden" name="enabled" value="1">
+
+      <div class="dsec">Register the portal in Azure</div>
+      <div class="dfield">
+        <label>Redirect URL</label>
+        <div class="dcopy">
+          <code>{{ sso_redirect }}</code>
+          <button type="button" data-call="portalCopy" data-arg-self>copy</button>
+        </div>
+        <div class="dhelp">In <b>Entra ID → App registrations → New
+          registration</b>, add this as a <b>Web</b> platform redirect URI, then
+          create a client secret.</div>
+      </div>
+
+      <div class="dsec">From the registration</div>
+      <div class="dfield">
+        <label>Tenant ID</label>
+        <input type="text" name="tenant" required autocomplete="off"
+               placeholder="00000000-0000-0000-0000-000000000000">
+        <div class="dhelp">The Directory (tenant) ID, or your verified domain
+          such as <b>yourcompany.com</b>.</div>
+      </div>
+      <div class="dfield">
+        <label>Application (client) ID</label>
+        <input type="text" name="client_id" required autocomplete="off"
+               placeholder="00000000-0000-0000-0000-000000000000">
+      </div>
+      <div class="dfield">
+        <label>Client secret</label>
+        <input type="password" name="client_secret" autocomplete="new-password"
+               placeholder="{{ '•••••••• — stored' if sso_cfg.client_secret else 'paste the secret' }}">
+        <div class="dhelp">{% if sso_cfg.client_secret %}Leave this blank to keep
+          the secret already stored. {% endif %}Azure shows the secret
+          <b>Value</b> once — that is the one to paste, not its Secret ID.</div>
+      </div>
+
+      <div class="dsec">Who may sign in</div>
+      <div class="dfield">
+        <label class="pick" style="width:100%;">
+          <input type="checkbox" name="auto_create">
+          <span><b style="font-weight:600;">Create an account on first sign-in</b>
+            <small>Anyone in the tenant may sign in and is given a <b>user</b>
+              account. Left off, only people who already have an account
+              here can use it.</small></span>
+        </label>
+      </div>
+
+      <details class="adv">
+        <summary>Advanced</summary>
+        <div class="dfield" style="margin:10px 0 4px;">
+          <label>Redirect URL override <span class="opt">optional</span></label>
+          <input type="text" name="redirect_override" autocomplete="off"
+                 placeholder="https://portal.example.com/auth/microsoft/callback">
+          <div class="dhelp">Only needed if the URL above is wrong because a
+            proxy terminates TLS or rewrites the host.</div>
+        </div>
+      </details>
+
+      <div class="dnote" style="margin-top:18px;">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2" stroke-linecap="round"
+             aria-hidden="true"><circle cx="12" cy="12" r="9"/>
+          <path d="M12 11v5M12 7.6v.1"/></svg>
+        <span>Entra applies your organisation's own MFA policy, so people signing
+          in this way are not asked for the portal's authenticator code as well.
+          Local accounts keep working either way.</span>
+      </div>
+    </div>
+    <div class="dfoot">
+      <button type="button" class="btn-ghost" data-call="ssoClose">Cancel</button>
+      <span class="spacer"></span>
+      <button type="submit" name="do_test" value="1" class="btn-ghost">Save &amp; test tenant</button>
+      <button type="submit">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<form method="post" action="/admin/sso" id="ssoOffForm" hidden>
+  <input type="hidden" name="enabled" value="">
+  <input type="hidden" name="keep" value="1">
+</form>
+
+<script nonce="{{ csp_nonce() }}">
+const dlg = document.getElementById('ssoDialog');
+function ssoOpen() { dlg.showModal(); }
+function ssoClose() {
+  dlg.close();
+  // the switch reflects stored state, so put it back if the dialog was dismissed
+  document.getElementById('ssoToggle').checked = {{ 'true' if sso_cfg.enabled else 'false' }};
+}
+document.getElementById('ssoToggle').addEventListener('change', e => {
+  if (e.target.checked) { ssoOpen(); }
+  else if (confirm('Turn Microsoft sign-in off? The configuration is kept, so you can switch it back on without retyping it.')) {
+    document.getElementById('ssoOffForm').submit();
+  } else { e.target.checked = true; }
+});
+</script>
+
+{# ── deleting an account ────────────────────────────────────────────────── #}
+<dialog id="dropUser" class="pdialog">
+  {# owns its own typed-"Delete" confirm (server-enforced via the confirm field),
+     so the house auto-gate in base.html must not double-prompt on top of it. #}
+  <form method="post" id="dropUserForm" data-del-skip>
+    <div class="dhead">
+      <span><span class="dtitle">Delete this account</span>
+        <span class="dwhere" id="du_name"></span></span>
+      <span style="flex:1"></span>
+      <button type="button" class="dx" aria-label="Close"
+              data-dlg-close="dropUser">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2.2" stroke-linecap="round"
+             aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div class="dbody">
+      <p class="sub" style="margin:0 0 14px;">The account goes, and its roles
+        with it. Anything they did stays in the audit log under their address.
+        If you only want to stop them signing in, <b>disable</b> the account
+        instead — it keeps the record and can be undone.</p>
+      <div class="dfield" style="margin:0;">
+        <label for="du_word">type <b>Delete</b> to confirm</label>
+        <input id="du_word" type="text" name="confirm" required
+               autocomplete="off" placeholder="Delete">
+      </div>
+    </div>
+    <div class="dfoot">
+      <button type="button" class="btn-ghost"
+              data-dlg-close="dropUser">Cancel</button>
+      <span class="spacer"></span>
+      <button type="submit" class="btn-danger">Delete the account</button>
+    </div>
+  </form>
+</dialog>
+
+<script nonce="{{ csp_nonce() }}">
+function dropUser(uid, email) {
+  const f = document.getElementById("dropUserForm");
+  f.action = "/admin/users/" + uid + "/delete";
+  document.getElementById("du_name").textContent = email;
+  document.getElementById("du_word").value = "";
+  document.getElementById("dropUser").showModal();
+}
+</script>
+
+<script nonce="{{ csp_nonce() }}">
+(() => {
+  // ── one panel open at a time ──
+  // Same handler as the account page. A second click, Cancel, or opening
+  // another one puts it away; nothing is remembered, because arriving at a
+  // list of seventeen accounts should show the list.
+  const forms = () => [...document.querySelectorAll('.acc-form')];
+  const shut = except => forms().forEach(f => { if (f !== except) f.hidden = true; });
+  document.addEventListener('click', ev => {
+    const b = ev.target.closest('[data-acc]');
+    if (b) {
+      const box = document.getElementById('acc-' + b.dataset.acc);
+      if (!box) return;
+      const opening = box.hidden;
+      shut(box);
+      box.hidden = !opening;
+      if (opening) {
+        const first = box.querySelector('input:not([type=hidden]):not([type=checkbox]), select');
+        if (first) first.focus({preventScroll: true});
+      }
+      return;
+    }
+    if (ev.target.closest('.acc-cancel')) shut(null);
+  });
+
+  // ── the filter ──
+  // Seventeen accounts and a good few of them are test rows: the way to one is
+  // typing three letters, not scrolling. Browser-side because at this size a
+  // round trip per keystroke would be slower than reading the list.
+  const find = document.getElementById('aufind');
+  if (!find) return;
+  const rows = [...document.querySelectorAll('.au-row')];
+  const count = document.getElementById('aucount');
+  const none = document.getElementById('aunone');
+  const paint = () => {
+    const q = find.value.trim().toLowerCase();
+    let shown = 0;
+    rows.forEach(r => {
+      const hit = !q || (r.dataset.find || '').includes(q);
+      r.hidden = !hit;
+      r.style.display = hit ? '' : 'none';
+      // A filtered-out row must take its open panel with it, or a form floats
+      // under a row that is no longer there.
+      document.querySelectorAll('.au-row-of-' + r.id).forEach(f => {
+        f.style.display = hit ? '' : 'none';
+        if (!hit) f.hidden = true;
+      });
+      if (hit) shown++;
+    });
+    if (count) count.textContent = shown + (q ? ' of ' + rows.length : '');
+    if (none) none.hidden = shown > 0;
+  };
+  find.addEventListener('input', paint);
+  if (find.value.trim()) paint();
+})();
+
+window.dropUserRow = function (el) {
+  dropUser(el.dataset.uid, JSON.parse(el.dataset.email));
+};
+</script>
+{% endblock %}

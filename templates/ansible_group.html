@@ -1,0 +1,781 @@
+{% extends "base.html" %}
+{% import "_bits.html" as bits %}
+{% block crumbs %}<a href="/ansible">Ansible</a> <span class="sep">/</span>
+  <a href="/ansible?sec=inventory">Inventory</a> <span class="sep">/</span>
+  <b>{{ g.name if g and g.id else 'New group' }}</b>{% endblock %}
+{% block content %}
+{#- One group, on its own page — the same shape a playbook already had.
+
+    It used to be a card inside the inventory list, with these thirteen fields
+    behind a disclosure. Two things were wrong with that: the list of groups was
+    unreadable because each row carried a form, and the first thing a new group
+    needs — somewhere to type its hosts — was the thing hidden deepest. Here the
+    form is the page, and it is in four parts that each answer one question. -#}
+<style>
+  /* Sections down the page rather than a wall of rows: what it is, how to reach
+     it, what to trust it with, what to hand every host. */
+  .gsec { margin:0 0 14px; }
+  .gsec .card-h .hint { font-weight:400; }
+  .gwhy { font-size:11.5px; color:var(--muted); margin:-2px 0 12px; }
+  .gchips { display:flex; gap:7px; flex-wrap:wrap; align-items:center; }
+  .gsplit { display:grid; gap:14px; align-items:start;
+    grid-template-columns:minmax(0,1.15fr) minmax(300px,1fr); }
+  @media (max-width:1000px) { .gsplit { grid-template-columns:minmax(0,1fr); } }
+</style>
+
+<div class="page-head">
+  <div>
+    <h1>{{ g.name if g and g.id else 'New group' }}</h1>
+    <p class="sub">{% if g and g.id %}{{ g.hosts|length }}
+      host{{ 's' if g.hosts|length != 1 }} ·
+      reached as <b>{{ g.ssh_user or "ansible's default user" }}</b> on port
+      {{ g.ssh_port or 22 }}{% if g.notes %} · {{ g.notes }}{% endif %}
+      {%- else %}A group is what a playbook runs against. Name it, paste the
+      hosts, and it is ready — everything else has a working default.{% endif %}</p>
+  </div>
+  <div style="display:flex;gap:9px;align-items:center;">
+    {% if g and g.id %}
+    <button type="button" class="btn btn-ghost"
+            {{ bits.ansrun_attrs('builtin:ping', 'connection test', g.id, 'check') }}
+            {% if not g.hosts %}disabled title="add a host first"
+            {% elif not may_run %}disabled title="{{ why_no_run }}"
+            {% elif not tool.found %}disabled title="ansible-playbook is not installed"
+            {% else %}title="reach every host in {{ g.name }} and report"{% endif %}
+            >◉ Test connection</button>
+    {% endif %}
+    <a class="btn btn-ghost" href="/ansible?sec=inventory">← All groups</a>
+  </div>
+</div>
+
+{% if msg %}<div class="flash ok">✓ {{ msg }}</div>{% endif %}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+
+{% if g and not g.hosts %}
+<div class="flash">This group has no hosts yet, so nothing can run against it.
+  Add one below — a name and an address, or just a name for ansible to resolve.</div>
+{% endif %}
+
+{# A stored key that ssh cannot read is reported HERE, where it can be replaced.
+   It used to be reported by every host of the next run at once, as ssh's own
+   `Load key "…/id_key": invalid format` against a temporary file whose name
+   means nothing to anybody. #}
+{% if key.state == 'broken' %}
+<div class="flash err">⚠ <b>The stored key cannot be used.</b> {{ key.why }}<br>
+  Paste it again below, or use <b>Set up key access</b> further down to have the
+  portal make one and install it with a password.</div>
+{% endif %}
+
+{% if g and g.hosts and key.state in ('none', 'broken') %}
+<div class="flash">Nothing here can log in yet.
+  {% if key.state == 'none' %}This group has no key, so ansible will fall back to
+  whatever default authentication the portal's own environment has — usually
+  nothing.{% endif %}
+  <b>Set up key access</b> below asks for the password once and takes care of the
+  rest.</div>
+{% endif %}
+
+{#- The whole group in four fields.
+
+    It was eleven, in three cards, and the reason to cut it is that ten of them
+    have a working default and one of them — the hosts — is what somebody came
+    here to type. The rest is real and still here, one control down: a group that
+    needs a non-standard port or a pasted key is a group somebody is thinking
+    about, and the first one never is.
+
+    The password field is the same simplification: making a group, adding its
+    hosts and getting key access onto them used to be three visits to two pages.
+    Fill in four boxes and press one button. -#}
+<form method="post" action="/ansible/group/save">
+  <input type="hidden" name="gid" value="{{ g.id if g else '' }}">
+
+  <div class="card gsec">
+    <div class="card-h" style="flex-wrap:wrap;">
+      {{ 'This group' if g and g.id else 'A new group of hosts' }}
+      <span class="hint">{{ 'four things decide everything else' if not g
+                            else 'everything else is under Advanced' }}</span>
+      <span style="flex:1"></span>
+      <button type="submit" class="btn" style="padding:4px 15px;font-size:11.5px;">
+        {{ 'Save changes' if g and g.id else 'Create group' }}</button>
+    </div>
+    <div class="card-b">
+      <div class="field-row"><label>name</label>
+        <div><input type="text" name="name" required placeholder="web-servers"
+                    value="{{ g.name if g else '' }}" spellcheck="false"
+                    autocomplete="off" autofocus>
+          <div class="sec-note">A playbook then says
+            <code>hosts: {{ g.name if g else 'web-servers' }}</code> — or
+            <code>hosts: all</code>, which every group answers to.</div>
+        </div></div>
+
+      {#- Shown while the group is not SAVED yet, which is not the same as "no
+          g": a refused save re-renders with the values that were typed, so `g`
+          is present and the paste must still be here to be handed back. Keyed
+          on `g.id` -- a submission that never became a row has none. -#}
+      {% if not (g and g.id) %}
+      <div class="field-row"><label>hosts</label>
+        <div><textarea name="hosts" rows="5" spellcheck="false" autocomplete="off"
+                       placeholder="10.0.10.53&#10;10.0.10.54&#10;web-1 10.20.0.11&#10;db-1.internal"
+                       >{{ g.hosts_text if g and g.hosts_text else '' }}</textarea>
+          <div class="sec-note">One per line. An address on its own is enough; add
+            a name in front of it if you want one. More can be added later, or
+            taken from <a href="/assets">Server Assets</a>.</div>
+        </div></div>
+      {% endif %}
+
+      <div class="field-row"><label>ssh user</label>
+        <div><input type="text" name="ssh_user" placeholder="root"
+                    value="{{ g.ssh_user if g else '' }}" spellcheck="false"
+                    autocomplete="off">
+          <div class="sec-note">Blank uses ansible's own default, which is
+            whoever the portal runs as.</div>
+        </div></div>
+
+      {% if not g or key.state != 'ok' %}
+      <div class="field-row"><label>password
+          <span style="text-transform:none;letter-spacing:0;">(optional)</span></label>
+        <div><input type="password" name="password" autocomplete="new-password"
+                    placeholder="{{ 'to set up key access now' if not g else 'to set up key access' }}">
+          <div class="sec-note">Give it and the portal makes a key, installs it on
+            {{ 'every host' if not g else 'all ' ~ g.hosts|length ~ ' host(s)' }}
+            here at once, and proves it works — all in this one save. Used once,
+            never stored. Leave it blank if these hosts already take a key.</div>
+        </div></div>
+      {% endif %}
+    </div>
+  </div>
+
+  {# Everything with a working default, one control down. #}
+  <details class="adv" style="margin:0 0 14px;">
+    <summary>Advanced — port, keys, sudo, production, variables</summary>
+    <div class="card gsec" style="margin-top:10px;">
+      <div class="card-b">
+        <div class="field-row"><label>what these machines are</label>
+          <input type="text" name="notes" value="{{ g.notes if g else '' }}"
+                 placeholder="the front-end fleet in Frankfurt"></div>
+        {{ bits.place_fields(g.pid if g else '', g.rgid if g else '', place_options,
+                             g.env if g else '', env_suggest) }}
+        <div class="field-row"><label>ssh port</label>
+          <input type="number" name="ssh_port" min="1" max="65535" placeholder="22"
+                 value="{{ g.ssh_port if g and g.ssh_port else '' }}"></div>
+        <div class="field-row"><label>private key</label>
+          {#- NOT KEPT when a save is refused: a private key must not sit in
+              browser storage to make a form more convenient. It comes back
+              empty and is pasted again, which is the one thing on this page
+              worth retyping. See base.html. -#}
+          <div><textarea name="key" rows="4" spellcheck="false" autocomplete="off"
+                         data-nosave
+                         placeholder="{% if g and g.key_sealed %}•••••• stored — paste to replace{% else %}-----BEGIN OPENSSH PRIVATE KEY----- …{% endif %}"></textarea>
+            <div class="sec-note">Only needed if you already have one — the
+              password field above makes one instead. Checked on the way in, so a
+              paste that lost its line breaks is refused here rather than by every
+              host of the next run. Encrypted at rest; written to a 0600 file only
+              while a run is going.</div>
+          </div></div>
+        <div class="field-row"><label>…or a key file path</label>
+          <div><input type="text" name="key_path" placeholder="/keys/id_ed25519"
+                      value="{{ g.key_path if g else '' }}" spellcheck="false"
+                      autocomplete="off">
+            <div class="sec-note">For an installation that must not hold private
+              keys in its database: mount the key and name it here.</div>
+          </div></div>
+        {% if g and g.key_sealed %}
+        <div class="field-row"><label>stored key</label>
+          <div><label class="inline-ck"><input type="checkbox" name="drop_key" value="1">
+            forget it — go back to ansible's own default authentication</label></div></div>
+        {% endif %}
+        <div class="field-row"><label>become</label>
+          <div><label class="inline-ck"><input type="checkbox" name="become_root" value="1"
+              {% if g and g.become_root %}checked{% endif %}> run tasks through
+              sudo on these hosts</label>
+            <div class="sec-note">Needed by anything that installs a package,
+              writes under <code>/etc</code> or touches a service. The ssh user
+              needs passwordless sudo on the hosts themselves.</div>
+          </div></div>
+        <div class="field-row"><label>production</label>
+          <div><label class="inline-ck"><input type="checkbox" name="is_prod" value="1"
+              {% if g and g.is_prod %}checked{% endif %}> a real run against this
+              group needs its name typed to confirm</label>
+            <div class="sec-note">Check runs are never gated by this — reading
+              what would change is not a change. Set automatically when the
+              environment above is production.</div>
+          </div></div>
+        <div class="field-row"><label>ssh host keys</label>
+          <div><label class="inline-ck"><input type="checkbox" name="no_host_key_check"
+              value="1" {% if g and not g.host_key_checking %}checked{% endif %}>
+              skip host key checking</label>
+            <div class="sec-note">Only for machines you rebuild constantly. With
+              this on, nothing detects a host being impersonated.</div>
+          </div></div>
+        <div class="field-row"><label>group variables</label>
+          <div><textarea name="group_vars" rows="3" spellcheck="false"
+                         placeholder="ansible_python_interpreter: /usr/bin/python3">{{ g.group_vars if g else '' }}</textarea>
+            <div class="sec-note">One <code>key: value</code> per line, handed to
+              every host in the group.</div>
+          </div></div>
+      </div>
+    </div>
+  </details>
+
+  <div class="actions" style="margin:0 0 16px;">
+    <button type="submit" style="padding:6px 16px;font-size:12.5px;">
+      {{ 'Save changes' if g and g.id else 'Create group' }}</button>
+    <a class="btn btn-ghost" href="/ansible?sec=inventory"
+       style="padding:6px 16px;font-size:12.5px;">Cancel</a>
+    {% if g and g.id %}
+    <span style="flex:1"></span>
+    <button type="submit" class="btn-danger" form="delgroup"
+            style="padding:6px 16px;font-size:12.5px;"
+            data-del="{{ g.name }} and its {{ g.hosts|length }} host(s) (runs already recorded are kept)"
+            >Delete this group</button>
+    {% endif %}
+  </div>
+</form>
+
+{#- SAVED, not merely present. A refused save re-renders this page with the
+    values that were typed, so `g` is a submission rather than a row -- and a
+    submission has no host table, no stored key, no runs and nothing to
+    delete. Keyed on `g.id`, which only a saved group has. -#}
+{% if g and g.id %}
+{# outside the form above: a nested form is not valid HTML and the browser drops it #}
+<form method="post" action="/ansible/group/delete" id="delgroup">
+  <input type="hidden" name="gid" value="{{ g.id }}">
+</form>
+
+{# ── the hosts ─────────────────────────────────────────────── #}
+<div class="card gsec">
+  <div class="card-h" style="flex-wrap:wrap;">{{ glyph('server', 16) }} Hosts
+    <span class="hint">{{ g.hosts|length }} in this group · adding one is the last
+      row</span>
+    <span style="flex:1"></span>
+    {% if g.env_label %}<span class="envtag {{ g.env_tone }}">{{ g.env_label }}</span>
+    {% elif g.is_prod %}<span class="sv sv-high">production</span>{% endif %}
+    {% if g.become_root %}<span class="badge">sudo</span>{% endif %}
+    {% if g.key_sealed %}<span class="badge">key stored</span>
+    {% elif g.key_path %}<span class="badge">key at {{ g.key_path }}</span>
+    {% else %}<span class="badge">no key</span>{% endif %}
+    {# The one button this page is really for, next to the hosts it acts on. It
+       was a form in a card further down, which is a long way from the list of
+       machines it copies the key to. #}
+    <button type="button" class="btn" style="padding:4px 13px;font-size:11.5px;"
+            id="k_open" data-call="keyDlg"
+            {% if not g.hosts %}disabled title="add a host first"
+            {% elif not may_run %}disabled title="{{ why_no_run }}"
+            {% else %}title="copy this group's public key to every host, using a password once"{% endif %}
+            >＋ Add ssh key</button>
+    {#- THE ACTION THE TICKS LOOKED LIKE THEY WERE FOR. This page had one
+        selection, whose only consumer was the key dialog, and one control
+        labelled delete -- "Delete this group" -- which ignored it. Somebody
+        ticked a few hosts, pressed delete, and lost the group. The button did
+        what it said; the page implied something else. So the selection now has
+        a removal of its own, next to the other thing that reads it, and it
+        says how many it will take. -#}
+    {% if may_run %}
+    <button type="button" class="btn btn-danger" id="h_del"
+            style="padding:4px 13px;font-size:11.5px;" disabled
+            data-call="removePicked"
+            title="tick the hosts to remove">Remove selected</button>
+    {% endif %}
+  </div>
+  <div class="card-b" style="padding:0 0 4px;">
+    <div style="overflow-x:auto;">
+      <table class="jenkins gtable">
+        <thead><tr>
+          {# The ticks belong to the KEY dialog's form, through `form=` — the same
+             trick the add row uses. So the browser submits the chosen hosts with
+             no script collecting them, and what is ticked is what is sent. #}
+          <th style="width:34px;padding-right:0;">
+            <input type="checkbox" id="k_all"
+                   title="all of them" aria-label="select every host"></th>
+          <th style="min-width:150px;">Host</th>
+          <th style="min-width:140px;">Address</th><th style="width:120px;">User</th>
+          <th style="width:64px;">Port</th><th style="width:118px;">Env</th>
+          <th style="min-width:120px;">Variables</th>
+          <th class="actcol" style="width:150px;"></th></tr></thead>
+        <tbody>
+        {% for h in g.hosts %}
+        <tr>
+          <td style="padding-right:0;">
+            {#- `form=` binds a tick to ONE form, and this selection now has
+                two consumers -- the key dialog and Remove selected -- so the
+                second reads the ids from here. The NAME still goes to the key
+                form through `form=`, unchanged. -#}
+            <input type="checkbox" class="kpick" form="keyForm" name="only_hosts"
+                   value="{{ h.name }}" data-hid="{{ h.id }}"
+                   data-call-change="keyPick"
+                   aria-label="select {{ h.name }}"></td>
+          <td class="jname"><b>{{ h.name }}</b>
+            {% if h.label %}<div class="sec-note" style="margin:2px 0 0;">{{ h.label }}</div>{% endif %}</td>
+          <td class="mono-c">
+            {% if h.address %}{{ h.address }}
+            {% elif h.asset_id %}<span class="badge"
+              title="read from the server inventory each time it runs, so it cannot go stale here"
+              >{{ h.live_address or 'from inventory' }} ↗</span>
+            {% else %}<span class="na">by name</span>{% endif %}</td>
+          <td>{{ h.ssh_user or g.ssh_user or '—' }}</td>
+          <td>{{ h.ssh_port or g.ssh_port or '—' }}</td>
+          <td>{% if h.env_label %}<span class="envtag {{ h.env_tone }}"
+                >{{ h.env_label }}</span>{% else %}<span class="na">—</span>{% endif %}</td>
+          <td class="mono-c">
+            {{ (h.host_vars or '')|replace('\n', ' · ')|truncate(34) or '—' }}</td>
+          <td class="mid actcol">
+            {# Edit this host — name, address, ssh, environment, variables. The
+               env flows straight to its PAM target. #}
+            <button type="button" class="abtn" data-hostedit
+                    data-hid="{{ h.id }}" data-name="{{ h.name }}"
+                    data-address="{{ h.address or '' }}" data-user="{{ h.ssh_user or '' }}"
+                    data-port="{{ h.ssh_port or '' }}" data-env="{{ h.env or '' }}"
+                    data-vars="{{ h.host_vars or '' }}"
+                    data-label="{{ h.label or '' }}"
+                    title="edit {{ h.name }}">edit</button>
+            {# A terminal on this host, over the group's key. Disabled with the
+               reason when there is no key or no permission — the reason a run
+               would give, said before the click rather than after. #}
+            {# The terminal lives in Privileged Access now — one door for every
+               host, with its recording and its per-device access. This host is
+               already a PAM target under its own id, so the button just points
+               there. #}
+            {# The shell button routes into Privileged Access, which is archived
+               behind PORTAL_PAM — so it appears only while PAM is switched on. #}
+            {% if pam_enabled() %}
+              {% if may_run and (g.key_sealed or g.key_path) %}
+                {% if may('pam_connect') %}
+                <a class="abtn go" href="/pam/targets/{{ h.id }}/terminal"
+                   title="open a recorded terminal on {{ h.name }} in Privileged Access">shell</a>
+                {% else %}
+                {# Full Ansible access does not include Privileged Access: the shell
+                   goes through PAM, so say so up front instead of letting the
+                   middleware 403 the click. #}
+                <button type="button" class="abtn" data-pamgate
+                        title="opening a shell needs Privileged Access">shell</button>
+                {% endif %}
+              {% else %}
+              <button type="button" class="abtn" disabled
+                      title="{{ why_no_run or 'this group has no key — set one up first' }}"
+                      >shell</button>
+              {% endif %}
+            {% endif %}
+            {# Same dialog, aimed at this host — for the machine whose password
+               differs, or the one added after the rest were done. #}
+            <button type="button" class="abtn" data-call="keyDlg" data-arg="{{ h.name }}"
+                    {% if not may_run %}disabled title="{{ why_no_run }}"
+                    {% else %}title="copy the key to {{ h.name }} only"{% endif %}
+                    >key</button>
+            <button type="submit" class="abtn danger"
+                    form="delh-{{ h.id }}" data-del="{{ h.name }} from this group">remove</button>
+          </td>
+        </tr>
+        {% endfor %}
+        {# The inputs belong to a form outside the table — a <form> inside a <tr>
+           is invalid and the browser drops it — which is what `form=` is for. #}
+        <tr class="addrow">
+          <td></td>
+          <td><input type="text" name="name" required placeholder="web-3"
+                     form="addh" spellcheck="false" autocomplete="off"></td>
+          <td><input type="text" name="address" placeholder="10.0.0.9 · or blank"
+                     form="addh" spellcheck="false" autocomplete="off"></td>
+          <td><input type="text" name="ssh_user" placeholder="{{ g.ssh_user or 'default' }}"
+                     form="addh" spellcheck="false" autocomplete="off"></td>
+          <td><input type="number" name="ssh_port" min="1" max="65535"
+                     placeholder="{{ g.ssh_port or '22' }}" form="addh"></td>
+          <td><input type="text" name="env" list="hostEnvs" form="addh"
+                     placeholder="{{ g.env or 'inherit' }}" spellcheck="false"
+                     autocomplete="off">
+            <datalist id="hostEnvs">
+              {% for e in env_suggest %}<option value="{{ e }}">{% endfor %}
+            </datalist></td>
+          <td><input type="text" name="host_vars" placeholder="key: value"
+                     form="addh" spellcheck="false" autocomplete="off"></td>
+          <td class="mid actcol">
+            <button type="submit" class="abtn go" form="addh">＋ add</button>
+          </td>
+        </tr>
+        </tbody>
+      </table>
+    </div>
+    {# The row above is one host with its own user or port. This is the list of
+       addresses somebody already has, which only the create form used to take. #}
+    <div class="card-b" style="padding-top:0;">
+      <form method="post" action="/ansible/host/paste"
+            style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap;">
+        <input type="hidden" name="gid" value="{{ g.id }}">
+        <div style="flex:1 1 320px;min-width:0;">
+          <textarea name="hosts" rows="3" spellcheck="false" autocomplete="off"
+                    placeholder="…or paste several at once, one per line&#10;10.0.10.53&#10;web-2 10.20.0.12"></textarea>
+        </div>
+        <button class="btn btn-ghost" type="submit"
+                style="padding:6px 15px;font-size:12px;">Add these</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+{% for h in g.hosts %}
+<form method="post" action="/ansible/host/delete" id="delh-{{ h.id }}">
+  <input type="hidden" name="hid" value="{{ h.id }}">
+  <input type="hidden" name="gid" value="{{ g.id }}">
+</form>
+{% endfor %}
+{#- Outside the table: a <form> in a <tr> is invalid and the browser drops it.
+    Filled from the ticks on submit, then posted. -#}
+<form method="post" action="/ansible/hosts/delete" id="delpicked">
+  <input type="hidden" name="gid" value="{{ g.id }}">
+</form>
+<form method="post" action="/ansible/host/add" id="addh">
+  <input type="hidden" name="gid" value="{{ g.id }}">
+</form>
+
+{# ── the popup that copies the key ──────────────────────────────
+   The one step everybody otherwise does by hand: make a pair, paste the private
+   half in here without breaking it, copy the public half to every host. The
+   pasted key is where it goes wrong, so this does all three — and it lives in a
+   dialog next to the host table rather than as a fourth form down the page,
+   because it is an action on those hosts, not a setting of this group. #}
+<dialog id="keyDlg" class="pdialog">
+  <form method="post" action="/ansible/group/keys" id="keyForm">
+    <input type="hidden" name="gid" value="{{ g.id }}">
+    <div class="dhead">
+      <span>
+        <span class="dtitle">Add ssh key</span>
+        <span class="dwhere" id="k_where">to every host in {{ g.name }}</span>
+      </span>
+      <span style="flex:1"></span>
+      <button type="button" class="dx" aria-label="Close"
+              data-dlg-close="keyDlg">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2.2" stroke-linecap="round"
+             aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div class="dbody">
+      <p class="sec-note" style="margin:0 0 12px;">
+        {% if key.state == 'ok' %}Installs <b>this group's public key</b>
+        ({{ key.kind }}){% else %}Makes a key pair, keeps the private half
+        encrypted here, and installs the public half{% endif %} into
+        <code>~/.ssh/authorized_keys</code>, then logs in again with the key alone
+        to prove it worked. Every host at once. Runs after this need no password,
+        and pressing it twice changes nothing the second time.</p>
+      <div class="dfield"><label for="k_user">User on the host<span class="req" title="required">*</span></label>
+        <input id="k_user" name="ssh_user" value="{{ g.ssh_user }}" required
+               placeholder="root" spellcheck="false" autocomplete="off">
+        <div class="sec-note">The account the key is installed for. It has to
+          accept a password over SSH — which many hosts allow for a first login
+          and nothing else, and that is the gap this closes.</div></div>
+      <div class="dfield"><label for="k_pw">Its password<span class="req" title="required">*</span></label>
+        <input id="k_pw" name="password" type="password" required
+               autocomplete="new-password" placeholder="used once, then forgotten">
+        <div class="sec-note">Handed to ssh through a terminal, so it never
+          becomes an argument another process could read out of <code>ps</code>.
+          It is not written to disk and not audited — only that a key was
+          installed, by whom, on how many hosts.</div></div>
+      <div class="dfield"><label for="k_type">Key type</label>
+        <select id="k_type" name="key_type">
+          <option value="">{{ "keep this group's key (" ~ key.kind ~ ")" if key.state == 'ok' else 'ed25519 — short, fast, the default' }}</option>
+          {% if key.state != 'ok' or key.kind != 'Ed25519' %}
+          <option value="ed25519">ed25519 — short, fast, the default</option>
+          {% endif %}
+          <option value="rsa">RSA 4096 — for a host that refuses ed25519</option>
+        </select>
+        <div class="sec-note">A hardened or FIPS host leaves ed25519 out of
+          <code>PubkeyAcceptedAlgorithms</code>, and then the key installs
+          perfectly and the login is still refused. This page says so when it
+          happens, and RSA is the answer.</div></div>
+      {% if g.is_prod %}
+      <div class="dfield"><label for="k_conf">Type {{ g.name }} to confirm<span class="req" title="required">*</span></label>
+        <input id="k_conf" name="confirm" required placeholder="{{ g.name }}"
+               spellcheck="false" autocomplete="off">
+        <div class="sec-note">This group is marked production, and this writes to
+          every host in it.</div></div>
+      {% endif %}
+    </div>
+    <div class="dfoot">
+      <button type="button" class="btn btn-ghost"
+              data-dlg-close="keyDlg">Cancel</button>
+      <span style="flex:1"></span>
+      <button type="submit" class="btn" id="k_go">Copy the key</button>
+    </div>
+  </form>
+</dialog>
+<script nonce="{{ csp_nonce() }}">
+// The ticks in the table are the selection, and this only keeps the words in step
+// with them. Nothing here collects values: the checkboxes carry
+// form="keyForm", so the browser submits exactly what is ticked — a script that
+// gathered them into hidden inputs would be a second copy of the truth.
+function removePicked() {
+  const picked = [...document.querySelectorAll('.kpick')].filter(c => c.checked);
+  if (!picked.length) return;
+  const form = document.getElementById('delpicked');
+  if (!form) return;
+  // Rebuilt each time, so a tick changed after a cancelled confirm is not
+  // still carried in a stale hidden field.
+  form.querySelectorAll('input[name="hid"]').forEach(n => n.remove());
+  for (const c of picked) {
+    const i = document.createElement('input');
+    i.type = 'hidden'; i.name = 'hid'; i.value = c.dataset.hid;
+    form.appendChild(i);
+  }
+  const names = picked.map(c => c.value);
+  form.setAttribute('data-del', names.length === 1
+    ? (names[0] + ' from this group')
+    : (names.length + ' hosts from this group — ' + names.join(', ')));
+  // requestSubmit, NOT submit(): the house typed-delete confirm listens for
+  // the submit EVENT, and form.submit() does not fire one -- it would post
+  // straight through the guard, which on this particular form is the last
+  // thing anybody wants.
+  form.requestSubmit();
+}
+function keyPicked() {
+  return [...document.querySelectorAll('.kpick')].filter(c => c.checked)
+                                                 .map(c => c.value);
+}
+function keyPick() {
+  const boxes = [...document.querySelectorAll('.kpick')];
+  const picked = keyPicked();
+  const all = document.getElementById('k_all');
+  if (all) {
+    // The header tick reflects the rows rather than driving them one way only:
+    // ticking it takes everything, and un-ticking one row un-ticks it.
+    all.indeterminate = picked.length > 0 && picked.length < boxes.length;
+    all.checked = picked.length === boxes.length && boxes.length > 0;
+  }
+  // The removal says how many it will take, and is dead until something is
+  // ticked -- a destructive button that is always live, on a page whose
+  // selection it used to ignore, is how this went wrong the first time.
+  const del = document.getElementById('h_del');
+  if (del) {
+    del.disabled = picked.length === 0;
+    del.textContent = picked.length ? ('Remove selected (' + picked.length + ')')
+                                    : 'Remove selected';
+    del.title = picked.length ? ('remove ' + picked.join(', '))
+                              : 'tick the hosts to remove';
+  }
+  const open = document.getElementById('k_open');
+  if (open) {
+    open.textContent = picked.length ? ('＋ Add ssh key (' + picked.length + ')')
+                                     : '＋ Add ssh key';
+  }
+  const where = document.getElementById('k_where');
+  const go = document.getElementById('k_go');
+  if (!where || !go) return;
+  if (!picked.length) {
+    where.textContent = 'to every host in {{ g.name }} ({{ g.hosts|length }})';
+    go.textContent = 'Copy the key to {{ g.hosts|length }} host{{ "s" if g.hosts|length != 1 }}';
+  } else {
+    where.textContent = 'to ' + (picked.length > 3
+      ? picked.slice(0, 3).join(', ') + ' and ' + (picked.length - 3) + ' more'
+      : picked.join(', '));
+    go.textContent = 'Copy the key to ' + picked.length + ' host'
+                     + (picked.length === 1 ? '' : 's');
+  }
+}
+// The header button opens it for whatever is ticked — or for everything, when
+// nothing is. The button on a row means "just this one", so it becomes the
+// selection rather than a separate path through the form.
+function keyDlg(host) {
+  if (host) {
+    document.querySelectorAll('.kpick').forEach(c => { c.checked = c.value === host; });
+  }
+  keyPick();
+  document.getElementById('keyDlg').showModal();
+  document.getElementById('k_pw').focus();
+}
+const kAll = document.getElementById('k_all');
+if (kAll) {
+  kAll.addEventListener('change', function () {
+    document.querySelectorAll('.kpick').forEach(c => { c.checked = this.checked; });
+    keyPick();
+  });
+}
+keyPick();
+</script>
+
+{% if key.public %}
+{# The escape hatch: the same public line, to paste by hand on a host the dialog
+   cannot reach — a jump box, or a machine with password login switched off. #}
+<div class="card gsec">
+  <div class="card-h" style="flex-wrap:wrap;">{{ glyph('key-round', 16) }}
+    This group's public key
+    <span class="hint">to install by hand where a password will not work</span>
+    <span style="flex:1"></span>
+    <span class="badge">{{ key.kind }}</span>
+  </div>
+  <div class="card-b">
+    <pre class="cmdout" style="margin:0;white-space:pre-wrap;word-break:break-all;">{{ key.public }}</pre>
+    <div class="sec-note">Append that line to
+      <code>~/.ssh/authorized_keys</code> for {{ g.ssh_user or 'the user' }} on the
+      host, with the directory at 700 and the file at 600. The private half stays
+      here, encrypted.</div>
+  </div>
+</div>
+{% endif %}
+
+<div class="gsplit">
+  <div class="card" style="margin:0;">
+    <div class="card-h">What ansible is given
+      <span class="hint">the inventory file, exactly</span></div>
+    <div class="card-b">
+      {# The first question of every Ansible problem, answered honestly. #}
+      <pre class="cmdout" style="margin:0;">{{ inventory }}</pre>
+    </div>
+  </div>
+
+  {% if assets_free %}
+  <div class="card" style="margin:0;">
+    <div class="card-h">Take hosts from Server Assets
+      <span class="hint">the machines the portal already knows about</span></div>
+    <div class="card-b">
+      <form method="post" action="/ansible/host/import" class="gimport">
+        <input type="hidden" name="gid" value="{{ g.id }}">
+        <select name="asset_ids" multiple size="6">
+          {% for a in assets_free %}
+          <option value="{{ a.id }}">{{ a.hostname }}{% if a.ip %} · {{ a.ip }}{% endif %}
+            {%- if a.env %} · {{ a.env }}{% endif %}</option>
+          {% endfor %}
+        </select>
+        <div class="sec-note">⌘ or Ctrl to pick several. Their addresses keep
+          following the inventory instead of being copied here, so a machine that
+          is re-addressed does not leave a playbook pointed at whatever answers on
+          the old one.</div>
+        <button class="btn btn-ghost" type="submit"
+                style="padding:5px 14px;font-size:11.5px;">Add selected</button>
+      </form>
+    </div>
+  </div>
+  {% endif %}
+</div>
+
+{# Full width, not beside the inventory: five columns squeezed into a third of
+   the page had its last one clipped, and a table you have to scroll sideways to
+   read the timestamp of is a table nobody reads. #}
+<div class="card gsec">
+  <div class="card-h">Runs against this group <span class="hint">newest first</span></div>
+  {% if runs %}
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr>
+        <th style="width:120px;">Result</th>
+        <th style="min-width:200px;">Playbook</th>
+        <th style="width:80px;">Mode</th>
+        <th style="min-width:170px;">Hosts</th>
+        <th style="min-width:150px;">Who, when</th>
+        <th class="actcol" style="width:110px;"></th>
+      </tr></thead>
+      <tbody>
+      {% for r in runs %}
+      <tr>
+        <td>{{ bits.runpill(r) }}</td>
+        <td class="jname">
+          {% if r.pb_id %}<a class="wname" href="/ansible/playbooks/{{ r.pb_id }}">
+            <b>{{ r.pb_name or '—' }}</b></a>
+          {% else %}<b>{{ r.pb_name or '—' }}</b>{% endif %}
+          {% if r.limit_to %}<div class="sec-note" style="margin:2px 0 0;">
+            limit {{ r.limit_to }}</div>{% endif %}</td>
+        <td>{% if r.check_mode %}<span class="badge">check</span>
+            {% else %}<span class="sv sv-medium">real</span>{% endif %}</td>
+        <td>{% set t = r.stats.get('totals') if r.stats else none %}
+            {% if t %}<span class="sv sv-clean">{{ t.ok }} ok</span>
+              {% if t.changed %}<span class="sv sv-info">{{ t.changed }} changed</span>{% endif %}
+              {% if t.failed %}<span class="sv sv-high">{{ t.failed }} failed</span>{% endif %}
+              {% if t.unreachable %}<span class="sv sv-critical">{{ t.unreachable }} unreachable</span>{% endif %}
+            {% else %}<span class="hint">{{ r.hosts }} host{{ 's' if r.hosts != 1 }}</span>{% endif %}</td>
+        <td><div class="sec-note" style="margin:0;">{{ r.by }}<br>{{ r.ago }}</div></td>
+        <td class="mid actcol">
+          <button type="button" class="abtn" data-ansout="{{ r.id }}"
+                  data-anstitle="{{ r.pb_name }} → {{ g.name }}">output</button>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-b" style="color:var(--muted);font-size:13px;">
+    Nothing has run against this group yet.
+    {% if playbooks %}Pick a playbook from <a href="/ansible">the list</a>, or
+    press Test connection above.
+    {% else %}<a href="/ansible/playbooks/new">Write a playbook</a> first.{% endif %}</div>
+  {% endif %}
+</div>
+{% endif %}
+
+{% include "_ansible_run.html" %}
+
+{# Shown when someone with Ansible access but no Privileged Access clicks a host
+   shell — a clear ask, instead of the middleware's 403 page. #}
+<dialog id="pamGate" style="width:min(460px,92vw);border:1px solid var(--line2);
+        border-radius:14px;background:var(--panel);color:var(--text);padding:0;">
+  <div class="psh-bar"><b>Privileged Access needed</b><span style="flex:1"></span>
+    <button type="button" class="psh-x" data-dlg-close-self>close</button></div>
+  <div style="padding:16px 18px;font-size:13.5px;line-height:1.6;">
+    Opening a shell on a host goes through <b>Privileged Access</b>, and your
+    roles don't include it. Ask an administrator for the
+    <b>Privileged Access: connect</b> role — then the shell button opens a
+    recorded session here.
+    <div style="margin-top:16px;text-align:right;">
+      <button type="button" class="abtn go" data-dlg-close-self>OK</button>
+    </div>
+  </div>
+</dialog>
+<script nonce="{{ csp_nonce() }}">
+document.addEventListener('click', function (e) {
+  const b = e.target.closest && e.target.closest('[data-pamgate]');
+  if (!b) return;
+  e.preventDefault();
+  const d = document.getElementById('pamGate');
+  if (d && d.showModal) d.showModal();
+});
+</script>
+
+{% if g %}
+{# Edit one existing host — the same fields the add row has, plus its
+   environment, which flows straight to the host's PAM target. #}
+<dialog id="hostEdit" style="width:min(520px,94vw);border:1px solid var(--line2);
+        border-radius:14px;background:var(--panel);color:var(--text);padding:0;">
+  <div class="psh-bar"><b>Edit host</b><span style="flex:1"></span>
+    <button type="button" class="psh-x" data-dlg-close-self>close</button></div>
+  <form method="post" action="/ansible/host/update" class="card-b" style="border:0;">
+    <input type="hidden" name="gid" value="{{ g.id }}">
+    <input type="hidden" name="hid" id="he_hid">
+    <div class="field-row"><label>name</label>
+      <div><input type="text" name="name" id="he_name" required spellcheck="false" autocomplete="off"></div></div>
+    <div class="field-row"><label>address</label>
+      <div><input type="text" name="address" id="he_address" placeholder="10.0.0.9 · or blank" spellcheck="false" autocomplete="off"></div></div>
+    {#- A label, because an inventory imported as a list of IPs is unreadable
+        and the Privileged Access catalogue shows this column. It lives here
+        rather than in PAM: a host is edited in Ansible, and a second place to
+        type it would be the two drifting. -#}
+    <div class="field-row"><label>label</label>
+      <div><input type="text" name="label" id="he_label"
+             placeholder="KE preprod WAF, rack 4" autocomplete="off">
+        <div class="sec-note">Free text — shown and searchable in the
+          Privileged Access catalogue.</div></div></div>
+    <div class="field-row"><label>ssh user</label>
+      <div><input type="text" name="ssh_user" id="he_user" placeholder="{{ g.ssh_user or 'default' }}" spellcheck="false" autocomplete="off"></div></div>
+    <div class="field-row"><label>ssh port</label>
+      <div><input type="number" name="ssh_port" id="he_port" min="1" max="65535" placeholder="{{ g.ssh_port or '22' }}"></div></div>
+    <div class="field-row"><label>environment</label>
+      <div><input type="text" name="env" id="he_env" list="hostEnvs" placeholder="{{ g.env or 'inherit from group' }}" spellcheck="false" autocomplete="off">
+        <div class="sec-note">Colour-coded, filterable in Privileged Access.
+          Blank inherits the group's environment.</div></div></div>
+    <div class="field-row"><label>variables</label>
+      <div><input type="text" name="host_vars" id="he_vars" placeholder="key: value" spellcheck="false" autocomplete="off"></div></div>
+    <div class="actions" style="margin-top:8px;">
+      <button type="submit" class="abtn go">Save host</button>
+      <button type="button" class="abtn" data-dlg-close-self>Cancel</button>
+    </div>
+  </form>
+</dialog>
+<script nonce="{{ csp_nonce() }}">
+document.addEventListener('click', function (e) {
+  const b = e.target.closest && e.target.closest('[data-hostedit]');
+  if (!b) return;
+  const set = (id, v) => { document.getElementById(id).value = v || ''; };
+  set('he_hid', b.dataset.hid); set('he_name', b.dataset.name);
+  set('he_address', b.dataset.address); set('he_user', b.dataset.user);
+  set('he_port', b.dataset.port); set('he_env', b.dataset.env);
+  set('he_vars', b.dataset.vars); set('he_label', b.dataset.label);
+  const d = document.getElementById('hostEdit');
+  if (d && d.showModal) d.showModal();
+});
+</script>
+{% endif %}
+{% endblock %}

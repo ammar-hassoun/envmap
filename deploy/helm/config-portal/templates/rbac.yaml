@@ -1,0 +1,89 @@
+{{- if .Values.rbac.createReadOnly }}
+{{/* Optional, and off by default: the portal reads other clusters with
+     kubeconfigs pasted into it and needs no permissions of its own. Turn this on
+     only if you want it to watch the cluster it runs in as well. */}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "config-portal.fullname" . }}-read
+  labels: {{- include "config-portal.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [nodes, nodes/proxy, pods, namespaces, services, endpoints,
+                persistentvolumes, persistentvolumeclaims, events,
+                serviceaccounts, configmaps]
+    verbs: [get, list]
+  - apiGroups: [apps]
+    resources: [deployments, statefulsets, daemonsets, replicasets]
+    verbs: [get, list]
+  - apiGroups: [batch]
+    resources: [jobs, cronjobs]
+    verbs: [get, list]
+  - apiGroups: [networking.k8s.io]
+    resources: [ingresses, networkpolicies]
+    verbs: [get, list]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [roles, rolebindings, clusterroles, clusterrolebindings]
+    verbs: [get, list]
+  - apiGroups: [storage.k8s.io]
+    resources: [storageclasses]
+    verbs: [get, list]
+  - apiGroups: [metrics.k8s.io]
+    resources: [nodes, pods]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "config-portal.fullname" . }}-read
+  labels: {{- include "config-portal.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "config-portal.fullname" . }}-read
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "config-portal.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- if .Values.rbac.selfUpdate }}
+---
+{{/* One-click updating, and off by default.
+
+     This is the only write the portal is ever granted, and it is granted over
+     exactly one object: `resourceNames` names this release's own Deployment, so
+     the API server itself refuses everything else — the limit is Kubernetes',
+     not a conditional in the application. A Role, not a ClusterRole, so it does
+     not reach past this namespace either.
+
+     `patch` and not `update`: a strategic-merge patch changes the image and
+     leaves every other field of the pod template alone, so nothing the operator
+     set can be dropped by a portal that only meant to move a tag. */}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "config-portal.fullname" . }}-self-update
+  labels: {{- include "config-portal.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [apps]
+    resources: [deployments]
+    resourceNames: [{{ include "config-portal.fullname" . }}]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "config-portal.fullname" . }}-self-update
+  labels: {{- include "config-portal.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "config-portal.fullname" . }}-self-update
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "config-portal.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

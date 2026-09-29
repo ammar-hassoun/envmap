@@ -1,0 +1,137 @@
+{% if section_error %}
+<div class="flash err">⚠ {{ section_error }}</div>
+{% endif %}
+{% set u = users %}
+<div class="card" style="margin-bottom:14px;">
+  <div class="card-h">Cluster users
+    {% if u and u.supported %}<span class="hint">{{ u.rows|length }}</span>{% endif %}</div>
+  <div class="card-b">
+    {% if u and not u.supported %}
+    {# The whole reason this tab renders at all on an old server: an empty table
+       here would read as "this cluster has no users", which is the opposite of
+       the truth. It has accounts — they are just per-bucket, and this endpoint
+       does not exist to list them. #}
+    <p class="sub" style="margin:0;">This cluster reports itself as
+      <b>{{ u.version }}</b>, and {{ u.why }}. There is nothing to list here —
+      not because no accounts exist, but because on this version authentication
+      is per bucket rather than cluster-wide, and the portal will not invent a
+      list it cannot read.</p>
+    {% elif u and u.why %}
+    <p class="sub" style="margin:0;">{{ u.why }}</p>
+    {% elif not u or not u.rows %}
+    <p class="sub" style="margin:0;">No users returned.</p>
+    {% else %}
+    <table class="jenkins" style="width:100%;">
+      <thead><tr><th style="width:22%;">account</th><th>roles</th>
+        <th style="width:14%;">domain</th>
+        {% if held.write %}<th style="width:9%;"></th>{% endif %}</tr></thead>
+      <tbody>
+        {% for r in u.rows %}
+        <tr>
+          <td><b>{{ r.id }}</b>
+            {% if r.name %}<div class="hint" style="font-size:11px;">{{ r.name }}</div>{% endif %}</td>
+          <td>
+            {# roles wrap as chips rather than one long line, which is what made
+               this table need a sideways scroll #}
+            <div style="display:flex;flex-wrap:wrap;gap:5px;">
+              {% for role in r.roles %}
+              <span class="badge" style="font-family:var(--mono);font-size:11px;">{{ role }}</span>
+              {% endfor %}
+              {% if not r.roles %}<span class="hint">none</span>{% endif %}
+            </div>
+          </td>
+          <td class="hint">{{ r.domain }}</td>
+          {% if held.write %}
+          <td>
+            {# Only local accounts can be edited here. An external account lives
+               in the directory this cluster is wired to, and writing one from
+               here would create a local account that shadows the real one. #}
+            {% if r.domain == 'local' %}
+            <a href="#" class="cbedit hint" data-uid="{{ r.id }}"
+               data-name="{{ r.name }}" data-roles="{{ r.roles|join(',') }}">edit</a>
+            {% else %}
+            <span class="hint" title="external accounts live in the directory this cluster authenticates against">—</span>
+            {% endif %}
+          </td>
+          {% endif %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </div>
+</div>
+
+{% if u and u.supported and not u.why %}
+<div class="card">
+  <div class="card-h"><span id="uformtitle">Add an account</span>
+    {% if not held.write %}<span class="hint">needs write mode</span>{% endif %}</div>
+  <div class="card-b">
+    {% if not held.write %}
+    <p class="sub" style="margin:0;">This console is read-only. Creating or
+      changing an account is a permission change on this cluster, so it needs
+      write mode — which is its own audited action.</p>
+    {% else %}
+    <form method="post" action="/db/{{ server.id }}/cbuser" id="uform">
+      <input type="hidden" name="new" id="unew" value="1">
+      <div style="display:grid;gap:12px;
+                  grid-template-columns:repeat(auto-fit,minmax(170px,1fr));">
+        <div><div class="cmp-lbl">Username</div>
+          <input type="text" name="uid" id="uuid" required maxlength="128"
+                 placeholder="svc_reporting"
+                 style="width:100%;box-sizing:border-box;"></div>
+        <div><div class="cmp-lbl">Full name <span class="hint">optional</span></div>
+          <input type="text" name="name" id="uname" maxlength="128"
+                 placeholder="Reporting service"
+                 style="width:100%;box-sizing:border-box;"></div>
+        <div><div class="cmp-lbl">Password
+            <span class="hint" id="upwhint">required for a new account</span></div>
+          <input type="password" name="password" id="upw"
+                 autocomplete="new-password"
+                 style="width:100%;box-sizing:border-box;"></div>
+      </div>
+
+      <div class="cmp-lbl" style="margin-top:14px;">Roles</div>
+      <input type="text" name="roles" id="uroles" required
+             placeholder="data_reader[orders],bucket_admin[orders]"
+             style="width:100%;box-sizing:border-box;font-family:var(--mono);
+                    font-size:12.5px;">
+      <div class="sec-note" style="margin:6px 0 10px;">Comma separated. A role
+        shown below with <b>[bucket]</b> must name the bucket it applies to —
+        Couchbase rejects it bare. Click one to add it.</div>
+
+      {% if roles and roles.rows %}
+      <input type="search" id="ufilter" placeholder="filter roles…"
+             style="width:100%;max-width:280px;margin-bottom:8px;">
+      {# The cluster's own catalogue, because the names are not guessable and a
+         wrong one comes back as "roles: invalid" with nothing to go on. #}
+      <div style="max-height:190px;overflow:auto;border:1px solid var(--line);
+                  border-radius:9px;background:var(--well);padding:7px;
+                  display:flex;flex-wrap:wrap;gap:5px;" id="urolelist">
+        {% for r in roles.rows %}
+        <span class="badge urole" data-role="{{ r.role }}"
+              data-scoped="{{ '1' if r.scoped else '' }}"
+              data-find="{{ (r.role ~ ' ' ~ r.name)|lower }}"
+              title="{{ r.desc or r.name }}"
+              style="cursor:pointer;font-family:var(--mono);font-size:11px;">{{
+          r.role }}{{ '[bucket]' if r.scoped }}</span>
+        {% endfor %}
+      </div>
+      {% elif roles and roles.why %}
+      <div class="sec-note">The role catalogue could not be read: {{ roles.why }}
+        Roles can still be typed by hand.</div>
+      {% endif %}
+
+      <div class="actions" style="margin-top:14px;">
+        <button class="btn" id="usave">Create account</button>
+        <button type="button" class="btn-ghost" id="ureset"
+                style="margin-left:8px;display:none;">Cancel edit</button>
+        <span class="hint" style="margin-left:10px;">Local accounts only.
+          Deleting an account is not offered here.</span>
+      </div>
+    </form>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+

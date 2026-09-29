@@ -1,0 +1,185 @@
+{% extends "base.html" %}
+{% block crumbs %}<a href="/">Projects</a> <span class="sep">/</span> <b>GitOps repos</b>{% endblock %}
+{% block content %}
+{#- The live board for every GitOps repository the portal reads.
+
+    A ROW IS A (REPOSITORY, BRANCH), NOT A REGION. Environments carry their own
+    bindings, so one region can read from several repositories and several
+    environments usually share one — the row groups the environments that read
+    the same checkout, which is also the unit a Sync actually pulls. There is
+    no settings page behind this any more: a binding is edited on the cluster
+    that serves its environment (Settings → Kubernetes clusters), which is
+    where every Edit link on this page lands. -#}
+<style>
+  .rpill { font-size:10px; text-transform:uppercase; letter-spacing:.05em; font-weight:700;
+    border-radius:99px; padding:3px 9px; border:1px solid var(--line2); color:var(--muted); flex:none; }
+  .rpill.ok { color:var(--ok-ink); border-color:var(--ok-ink); }
+  .rpill.warn { color:var(--warn-ink); border-color:var(--warn-ink); }
+  /* the latest commit — the operational line a settings form never shows */
+  .rcommit { display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+    font-size:12.5px; color:var(--muted); margin-top:7px; }
+  .rcommit .sha { font-family:var(--mono); color:var(--text2); }
+  .rcommit .subj { color:var(--text2); max-width:52ch; overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap; }
+  .rcommit .meta { color:var(--faint); }
+  .rcommit .brc { font-family:var(--mono); font-size:11px; color:var(--muted);
+    border:1px solid var(--line); border-radius:99px; padding:2px 8px; }
+  .rurl { display:flex; align-items:center; gap:8px; margin-top:8px; font-family:var(--mono);
+    font-size:12px; color:var(--muted); word-break:break-all; }
+  .rurl a { color:var(--accent-ink); font-family:inherit; }
+  .ractions { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
+  .ractions .abtn[disabled], .ractions .abtn[disabled]:hover { opacity:.45;
+    cursor:not-allowed; color:var(--muted); border-color:var(--line); background:transparent; }
+  .rgone { color:var(--muted); font-size:13px; padding:6px 0 4px; }
+</style>
+
+<div class="page-head">
+  <div>
+    <h1>GitOps repos</h1>
+    <p class="sub">The live state of every repository the environments read —
+      sync health, the latest commit, and which environments come from which.
+      {% if stat.repos %}<b style="color:var(--text2);">{{ stat.repos }}</b> repositor{{ 'y' if stat.repos == 1 else 'ies' }} ·
+        <b style="color:var(--text2);">{{ stat.envs }}</b> environment{{ 's' if stat.envs != 1 }} ·
+        <b style="color:var(--text2);">{{ stat.svc }}</b> service{{ 's' if stat.svc != 1 }}
+        across {{ stat.regions }} region{{ 's' if stat.regions != 1 }}.{% endif %}
+      A binding is edited on the cluster that serves its environment, in
+      <a href="/settings/clusters" style="color:var(--accent-ink);">Settings → Kubernetes clusters</a>.</p>
+  </div>
+</div>
+
+{% if msg %}<div class="flash">✓ {{ msg }}</div>{% endif %}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+
+{% if not projects %}
+<div class="empty">
+  <div class="big">{{ glyph("git-branch", 40) }}</div>
+  <h2>No repositories yet</h2>
+  <p>Add a cluster and declare the environment it serves — the repository,
+     branch and path travel in the same form.</p>
+  <a class="btn" href="/settings/clusters">Add a cluster</a>
+</div>
+{% else %}
+
+{# ex-tiles as the state filter (single-section page → no subtabs): each links to
+   the ?show= that lists exactly the repo rows it counts. Zero-count tiles stay
+   quiet. Same .ex-tile component every operational page uses. #}
+<div class="ex-tiles">
+  <a class="ex-tile {{ 'on' if show == 'all' }}" href="/repos">
+    <span class="ico">{{ glyph("git-branch", 17) }}</span>
+    <span><span class="big">{{ stat.repos }}</span>
+      <span class="cap">all repositories</span>
+      <span class="sub">every declared binding</span></span></a>
+  <a class="ex-tile ok {{ 'on' if show == 'connected' }} {{ 'quiet' if not stat.connected }}" href="/repos?show=connected">
+    <span class="ico">{{ glyph("circle-check", 17) }}</span>
+    <span><span class="big">{{ stat.connected }}</span>
+      <span class="cap">connected</span>
+      <span class="sub">cloned &amp; clean</span></span></a>
+  <a class="ex-tile warn {{ 'on' if show == 'attention' }} {{ 'quiet' if not stat.attention }}" href="/repos?show=attention">
+    <span class="ico">{{ glyph("triangle-alert", 17) }}</span>
+    <span><span class="big">{{ stat.attention }}</span>
+      <span class="cap">need attention</span>
+      <span class="sub">not cloned / dirty</span></span></a>
+  <a class="ex-tile bad {{ 'on' if show == 'disconnected' }} {{ 'quiet' if not stat.disconnected }}" href="/repos?show=disconnected">
+    <span class="ico">{{ glyph("unplug", 17) }}</span>
+    <span><span class="big">{{ stat.disconnected }}</span>
+      <span class="cap">no repository</span>
+      <span class="sub">environments with none declared</span></span></a>
+</div>
+{% if show != 'all' %}<div class="region-note">{{ glyph('filter', 13) }} showing
+  <b>{{ show }}</b> only — <a href="/repos">show all</a></div>{% endif %}
+
+{% for pid, p in projects.items() %}
+{# server-side state filter (the ex-tiles above): show every project on 'all',
+   else only regions with a repo row in that state, and only those rows #}
+{% set nvis = namespace(n=0) %}
+{% for rgid, rg in p.region_view.items() %}
+  {% set nvis.n = nvis.n + (rg.rows|selectattr('state', 'equalto', show)|list|length
+                            if show != 'all' else rg.rows|length) %}
+{% endfor %}
+{% if show == 'all' or nvis.n %}
+<div class="card projcard">
+  <div class="card-h">{{ project_icon(p.icon, 20) }} {{ p.name }}
+    <span class="hint">{{ nvis.n }} repositor{{ 'y' if nvis.n == 1 else 'ies' }}</span>
+    <span style="flex:1"></span>
+    <a class="btn btn-ghost" style="padding:4px 14px;font-size:12px;"
+       href="/p/{{ pid }}">Open project →</a>
+  </div>
+  <div class="card-b">
+    {% for rgid, rg in p.region_view.items() %}
+    {% set rows = rg.rows if show == 'all'
+                  else rg.rows|selectattr('state', 'equalto', show)|list %}
+    {% for r in rows %}
+    <div class="rowcard" id="{{ rgid }}">
+      <div class="kv" style="margin-bottom:2px;">
+        <b style="font-size:14.5px;">{{ rg.flag or flag_for(rg.name) }} {{ rg.name }}</b>
+        {% if r.state == 'connected' %}<span class="rpill ok">connected</span>
+        {% elif r.state == 'attention' %}<span class="rpill warn">needs attention</span>
+        {% else %}<span class="rpill">no repository</span>{% endif %}
+        {% if r.git.dirty %}<span class="rpill warn">uncommitted</span>{% endif %}
+        {% if r.auth %}<span class="rpill">creds ✓</span>{% endif %}
+        <span style="flex:1"></span>
+      </div>
+
+      {% if r.url %}
+      <div class="rurl">{{ glyph('link', 13) }}<span>{{ r.url }}</span>
+        {% if r.web_url %}<a href="{{ r.web_url }}" target="_blank" rel="noopener">open ↗</a>{% endif %}</div>
+
+      {% if r.git.cloned %}
+      <div class="rcommit">
+        <span class="brc">{{ r.git.branch }}</span>
+        {% if r.commit_url %}<a class="sha" href="{{ r.commit_url }}" target="_blank" rel="noopener">{{ r.git.sha }}</a>
+        {% else %}<span class="sha">{{ r.git.sha }}</span>{% endif %}
+        <span class="subj">{{ r.git.subject or 'no commits yet' }}</span>
+        {% if r.git.author %}<span class="meta">— {{ r.git.author }}{% if r.git.when %}, {{ r.git.when }}{% endif %}</span>{% endif %}
+      </div>
+      {% endif %}
+      {% else %}
+      <div class="rgone">No repository declared for
+        {{ r.envs|join(', ') }} — config and namespaces stay empty until one
+        is set on the cluster serving {{ 'it' if r.envs|length == 1 else 'them' }}.</div>
+      {% endif %}
+
+      <div class="sec-note" style="margin-top:8px;">
+        {{ r.envs|length }} environment{{ 's' if r.envs|length != 1 }}
+        · {{ r.files }} service{{ 's' if r.files != 1 }}</div>
+      <div class="chipgrid" style="margin-top:8px;">
+        {% for env in r.envs|sort %}
+        <a class="chip" href="/p/{{ pid }}/{{ rgid }}/{{ env }}">{{ env }}
+          <span style="color:var(--faint);">{{ rg.envs.get(env, [])|length }}</span></a>
+        {% endfor %}
+      </div>
+
+      {# every row shows the same actions; an inapplicable one is disabled, not hidden #}
+      <div class="ractions">
+        {% if r.url %}
+        <form method="post" action="/settings/project/{{ pid }}/region/{{ rgid }}/env/sync">
+          <input type="hidden" name="name" value="{{ r.first }}">
+          <input type="hidden" name="back" value="/repos">
+          <button class="abtn go" type="submit">↻ Sync</button></form>
+        {% else %}
+        <button class="abtn go" disabled title="no repository to pull">↻ Sync</button>
+        {% endif %}
+        <a class="abtn" href="/p/{{ pid }}/{{ rgid }}">Browse</a>
+        {% if r.web_url %}
+        <a class="abtn" href="{{ r.web_url }}" target="_blank" rel="noopener">Open ↗</a>
+        {% else %}
+        <button class="abtn" disabled title="no browsable URL for this remote">Open ↗</button>
+        {% endif %}
+        <a class="abtn" href="/settings/clusters#{{ pid }}">Edit</a>
+      </div>
+    </div>
+    {% endfor %}
+    {% else %}
+    <div class="rgone">No regions in this project yet —
+      <a href="/settings/clusters#{{ pid }}" style="color:var(--accent-ink);">add one in Settings</a>.</div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+{% endfor %}
+
+<div style="margin-top:16px;">
+  <a class="btn btn-ghost" href="/settings/clusters">＋ Add a cluster &amp; declare its environment</a>
+</div>
+{% endif %}
+{% endblock %}

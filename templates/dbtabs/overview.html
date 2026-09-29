@@ -1,0 +1,47 @@
+{% if section_error %}
+<div class="flash err">⚠ {{ section_error }}</div>
+{% endif %}
+<div class="card">
+  <div class="card-h">{{ 'Databases' if server.type == 'postgres' else 'Schemas' }}
+    <span class="hint">what {{ held.user }} can see</span></div>
+  <div class="card-b">
+    <table class="jenkins">
+      <thead><tr><th>name</th>{% if server.type == 'postgres' %}<th>owner</th>{% endif %}
+        <th>encoding</th><th class="num">size</th><th></th></tr></thead>
+      <tbody>
+        {% for d in databases %}
+        <tr>
+          <td><b>{{ d.name }}</b></td>
+          {% if server.type == 'postgres' %}<td>{{ d.owner or '—' }}</td>{% endif %}
+          <td>{{ d.encoding or '—' }}</td>
+          <td class="num">{{ d.size or '—' }}</td>
+          <td class="num"><button class="btn-ghost dbgo" data-db="{{ d.name }}"
+                data-tab="tables" style="padding:4px 11px;font-size:11px;">Tables</button></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% if tables %}
+<div class="card">
+  <div class="card-h">Largest in {{ database }}
+    <span class="hint">top {{ [tables|length, 10]|min }} of {{ tables|length }}</span></div>
+  <div class="card-b">
+    <table class="jenkins">
+      <thead><tr><th>table</th><th class="num">rows</th><th class="num">size</th></tr></thead>
+      <tbody>
+        {% for t in tables[:10] %}
+        <tr>
+          <td><a href="#" class="tablink" data-schema="{{ t.schema }}"
+                 data-name="{{ t.name }}">{{ t.schema }}.{{ t.name }}</a></td>
+          <td class="num">{{ "{:,}".format(t.rows) }}</td>
+          <td class="num">{{ t.size }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}

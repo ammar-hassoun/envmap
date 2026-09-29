@@ -1,0 +1,10 @@
+data/
+certs/
+.venv/
+.git/
+**/__pycache__/
+*.pyc
+deploy/
+scripts/
+*.md
+!VERSION

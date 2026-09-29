@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block crumbs %}<a href="/">Projects</a> <span class="sep">/</span> <b>Search</b>{% endblock %}
+{% block content %}
+<h1>Search</h1>
+{% if not results.query %}
+<p class="sub">Type at least two characters. Searches service names, config keys and
+   values, secret key names, environments and clusters. Press <b>/</b> anywhere to focus.</p>
+{% else %}
+<p class="sub">{{ results.total }} result{{ 's' if results.total != 1 }}
+   for “{{ results.query }}”</p>
+{% endif %}
+
+{% if results.query and not results.groups %}
+<div class="empty">
+  <div class="big">🔍</div>
+  <h2>Nothing found</h2>
+  <p>No services, config keys, secrets, environments or clusters match “{{ results.query }}”.</p>
+</div>
+{% endif %}
+
+{% for g in results.groups %}
+<div class="card">
+  <div class="card-h">{{ g.title }}
+    <span class="hint">{{ g.hits|length }}{% if g.more %} shown · {{ g.more }} more{% endif %}</span></div>
+  <div class="card-b" style="padding:8px 12px;">
+    {% for it in g.hits %}
+    <a class="hit" href="{{ it.url }}">
+      <div class="h1">{{ it.label }}</div>
+      <div class="h2">{{ it.sub }}</div>
+      {% if it.extra %}<div class="h3">{{ it.extra }}</div>{% endif %}
+    </a>
+    {% endfor %}
+  </div>
+</div>
+{% endfor %}
+
+<script nonce="{{ csp_nonce() }}">
+// highlight the query inside results
+(function () {
+  const q = {{ results.query|tojson }};
+  if (!q) return;
+  const rx = new RegExp('(' + q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'ig');
+  document.querySelectorAll('.hit .h1, .hit .h3').forEach(el => {
+    el.innerHTML = el.textContent.replace(rx, '<mark>$1</mark>');
+  });
+})();
+</script>
+{% endblock %}

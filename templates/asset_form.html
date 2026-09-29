@@ -1,0 +1,174 @@
+{% extends "base.html" %}
+{% from "_back.html" import back %}
+{% block crumbs %}<a href="{{ back_to or '/assets' }}">Server Assets</a> <span class="sep">/</span>
+  <b>{{ asset.hostname if asset else 'Add a server' }}</b>{% endblock %}
+{% block content %}
+
+<div class="page-head">
+  <div>
+    {{ back(back_to or '/assets', 'Back to the list' if back_to else 'All servers') }}
+    <h1>{{ asset.hostname if asset else 'Add a server' }}</h1>
+    <p class="sub">
+      {% if asset %}
+        added {{ (asset.created or '')[:10] }}{% if asset.created_by %} by {{ asset.created_by }}{% endif %}
+        {%- if asset.updated and asset.updated != asset.created %} · last changed
+        {{ asset.updated[:16]|replace('T', ' ') }}{% if asset.updated_by %} by {{ asset.updated_by }}{% endif %}{% endif %}
+      {% else %}Every field except the hostname is optional — record what you know
+        and fill the rest in later.{% endif %}</p>
+  </div>
+  {% if asset %}
+  <form method="post" action="/assets/{{ asset.id }}/delete"
+        data-del="{{ asset.hostname }} from the inventory">
+    <input type="hidden" name="back" value="{{ back_to }}">
+    <button class="btn-danger" style="padding:8px 16px;">Remove</button>
+  </form>
+  {% endif %}
+</div>
+
+{% if msg %}<div class="flash">✓ {{ msg }}</div>{% endif %}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+
+{# Every picker is a datalist, never a fixed dropdown: it suggests what this
+   deployment already uses while still accepting anything typed. That is what
+   keeps the vocabulary out of the code. #}
+{% for col, vals in suggest.items() %}
+<datalist id="dl-{{ col }}">{% for v in vals %}<option value="{{ v }}"></option>{% endfor %}</datalist>
+{% endfor %}
+<datalist id="dl-attr">{% for k in attr_keys %}<option value="{{ k }}"></option>{% endfor %}</datalist>
+
+{% macro field(name, label, value='', ph='', kind='text', list=false) %}
+<div class="field-row"><label>{{ label }}</label>
+  <input type="{{ kind }}" name="{{ name }}" value="{{ value or '' }}"
+         placeholder="{{ ph }}"{% if list %} list="dl-{{ name }}" autocomplete="off"{% endif %}></div>
+{% endmacro %}
+
+<form method="post" action="{{ '/assets/' ~ asset.id if asset else '/assets/new' }}">
+{# where the editor came from, so saving returns to the same filtered list #}
+<input type="hidden" name="back" value="{{ back_to }}">
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(360px,1fr));">
+
+  <div class="card" style="margin:0;">
+    <div class="card-h">Identity</div>
+    <div class="card-b">
+      {{ field('hostname', 'hostname', asset.hostname if asset else '',
+               'the name people actually use') }}
+      {{ field('serial', 'service tag / serial', asset.serial if asset else '',
+               'from the chassis label or the cloud instance id') }}
+      {{ field('model', 'model', asset.model if asset else '',
+               'e.g. PowerEdge R750, m6i.2xlarge', list=true) }}
+      {{ field('kind', 'kind', asset.kind if asset else '',
+               'physical, virtual machine, appliance…', list=true) }}
+      {{ field('status', 'status', asset.status if asset else '',
+               'active, spare, decommissioned…', list=true) }}
+      {{ field('owner', 'owner', asset.owner if asset else '',
+               'team or person accountable', list=true) }}
+    </div>
+  </div>
+
+  <div class="card" style="margin:0;">
+    <div class="card-h">Where it lives</div>
+    <div class="card-b">
+      <div class="field-row"><label>project</label>
+        <select name="pid">
+          <option value="">— not tied to a project —</option>
+          {% for pid2, nm in project_names.items() %}
+          <option value="{{ pid2 }}" {% if asset and asset.pid == pid2 %}selected{% endif %}>{{ nm }}</option>
+          {% endfor %}
+        </select></div>
+      {{ field('region', 'region', asset.region if asset else '',
+               'matches your project regions, or anything else', list=true) }}
+      {{ field('env', 'environment', asset.env if asset else '',
+               'prod, staging, dev…', list=true) }}
+      {{ field('placement', 'placement', asset.placement if asset else '',
+               'on-prem, cloud, colocation…', list=true) }}
+      {{ field('provider', 'provider', asset.provider if asset else '',
+               'AWS, Azure, VMware, bare metal…', list=true) }}
+      {{ field('location', 'location', asset.location if asset else '',
+               'datacentre, rack, availability zone', list=true) }}
+    </div>
+  </div>
+
+  <div class="card" style="margin:0;">
+    <div class="card-h">Capacity &amp; access</div>
+    <div class="card-b">
+      {{ field('cpu', 'cpu cores', asset.cpu if asset else '', 'e.g. 64') }}
+      {{ field('ram_gb', 'memory (GB)', asset.ram_gb if asset else '', 'e.g. 512') }}
+      {{ field('disk_gb', 'disk (GB)', asset.disk_gb if asset else '', 'e.g. 7680') }}
+      {{ field('os', 'operating system', asset.os if asset else '',
+               'e.g. Rocky 9, Ubuntu 24.04, Talos', list=true) }}
+      {{ field('ip', 'address', asset.ip if asset else '', 'primary IP or DNS name') }}
+      {{ field('mgmt_ip', 'management address', asset.mgmt_ip if asset else '',
+               'iDRAC, iLO, IPMI — the one that works when the OS does not') }}
+    </div>
+  </div>
+
+  <div class="card" style="margin:0;">
+    <div class="card-h">Lifecycle</div>
+    <div class="card-b">
+      {{ field('purchased', 'purchased', asset.purchased if asset else '',
+               'YYYY-MM-DD, or type it however you like') }}
+      {{ field('warranty_until', 'warranty / support ends',
+               asset.warranty_until if asset else '',
+               'flagged on the list as it approaches') }}
+      {% if asset and asset.warranty.state %}
+      <div class="sec-note" style="color:{{ 'var(--danger-ink)' if asset.warranty.state == 'expired' else 'var(--warn-ink)' if asset.warranty.state in ('soon','watch') else 'var(--ok-ink)' }};">
+        {{ asset.warranty.label }}</div>
+      {% endif %}
+      {{ field('tags', 'tags', asset.tags if asset else '',
+               'comma separated, whatever is useful to you') }}
+      <div class="field-row"><label>notes</label>
+        <textarea name="notes" rows="3"
+                  placeholder="anything the next person needs to know">{{ asset.notes if asset else '' }}</textarea></div>
+    </div>
+  </div>
+
+</div>
+
+<div class="card">
+  <div class="card-h">Custom fields
+    <span class="hint">for whatever this list needs that the form does not have</span></div>
+  <div class="card-b">
+    {% if asset and asset.attributes %}
+    {% for k, v in asset.attributes.items() %}
+    <div class="field-row"><label>{{ k }}</label>
+      <input type="text" name="attr_{{ k }}" value="{{ v }}"></div>
+    {% endfor %}
+    <div class="sec-note">Clear a value to drop the field on the next save.</div>
+    {% endif %}
+    <div id="newattrs"></div>
+    <div class="actions" style="margin-top:6px;">
+      <button type="button" class="btn-ghost" data-call="addAttr"
+              style="padding:6px 14px;font-size:12.5px;">＋ Add a field</button>
+    </div>
+  </div>
+</div>
+
+<div class="actions" style="margin-bottom:30px;">
+  <button type="submit">{{ 'Save changes' if asset else 'Add server' }}</button>
+  <a class="btn btn-ghost" href="{{ back_to or '/assets' }}">Cancel</a>
+</div>
+</form>
+
+<script nonce="{{ csp_nonce() }}">
+// Custom fields are name/value pairs posted as attr_<name>, so a team can track
+// something the form never anticipated without a schema change.
+let attrN = 0;
+function addAttr() {
+  const box = document.getElementById('newattrs');
+  const row = document.createElement('div');
+  row.className = 'field-row';
+  row.innerHTML =
+    '<input type="text" placeholder="field name" list="dl-attr" autocomplete="off" ' +
+    'style="max-width:200px" data-call-input="attrRename">' +
+    '<input type="text" placeholder="value">';
+  box.appendChild(row);
+  attrN++;
+}
+
+// A generated row cannot carry an inline handler under the policy either, so
+// the name it writes onto the value input is set from the delegated listener.
+window.attrRename = function (value) {
+  this.nextElementSibling.name = value ? 'attr_' + value.trim() : '';
+};
+</script>
+{% endblock %}

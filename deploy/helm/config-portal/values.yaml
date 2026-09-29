@@ -1,0 +1,321 @@
+# The portal keeps its state in one volume and everything else in these values.
+# Nothing here describes *your* environment: projects, clusters, repositories and
+# credentials are configured in the running portal and stored in its database, so
+# a chart upgrade never overwrites them.
+
+image:
+  repository: ghcr.io/ammar-hassoun/devops-portal
+  # left empty so it follows the chart's appVersion — override to pin a digest
+  tag: ""
+  digest: ""
+  pullPolicy: IfNotPresent
+
+# A private image needs a pull secret. Create it yourself and name it here:
+#   kubectl create secret docker-registry ghcr \
+#     --docker-server=ghcr.io --docker-username=<user> --docker-password=<token>
+imagePullSecrets: []
+  # - name: ghcr
+
+# ── knowing an update exists ─────────────────────────────────────
+# Where the portal looks to see whether a newer release has been published. The
+# chart index the release workflow writes is the natural answer: it is updated
+# on every release, so nothing extra has to be maintained.
+#
+#   updateUrl: https://raw.githubusercontent.com/<owner>/<repo>/gh-pages/index.yaml
+#
+# Empty means no check, no network call and nothing in the UI — which is what an
+# air-gapped install wants. The portal can never install an update itself; it
+# only reports that one exists.
+# consequences.
+updateUrl: ""
+
+# ── replicas ─────────────────────────────────────────────────────
+# One replica is the default and right for most installs. More than one is
+# supported and coherent: every settings write bumps a shared revision row that
+# each process checks before serving its cache, so replicas agree within a
+# request, not within a cache lifetime.
+#
+# The constraint that remains is the database file: SQLite's WAL journal is not
+# safe over a network filesystem, so all replicas must share ONE NODE's volume.
+# When replicaCount > 1 the chart enforces that itself with required pod
+# affinity — the pods co-schedule onto the same node, which also makes a
+# ReadWriteOnce volume sufficient. This scales capacity, not node-failure
+# survival; surviving a node needs an external database, which this chart does
+# not pretend to offer.
+replicaCount: 1
+strategy:
+  # Recreate for one replica (two processes must not overlap on the volume
+  # during an upgrade). With replicaCount > 1 you may switch to RollingUpdate:
+  # coherence across processes is exactly what the revision row provides.
+  type: Recreate
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# ── state ────────────────────────────────────────────────────────
+persistence:
+  enabled: true
+  # The database, the git working copies and the secret files all live here.
+  # Without a volume everything is lost on restart, which the portal will still
+  # run with — useful for a demo, wrong for anything else.
+  size: 8Gi
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  existingClaim: ""
+  mountPath: /data
+
+# ── how it is served ─────────────────────────────────────────────
+service:
+  type: ClusterIP
+  port: 8471
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+    # The portal has its own login with mandatory TOTP, but it holds git tokens,
+    # kubeconfigs and sealing keys — put an authenticating proxy in front of it
+    # too if your ingress can.
+  hosts:
+    - host: portal.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+    # - secretName: portal-tls
+    #   hosts: [portal.example.com]
+
+# ── the portal's own settings ────────────────────────────────────
+portal:
+  # Serving on a Service address is a non-loopback bind, so this must be true in
+  # a cluster. The chart sets it for you; it exists so that running the image
+  # locally cannot expose the portal by accident.
+  allowNetwork: true
+  # Encrypts the credentials the portal stores — connection tokens, the SMTP
+  # password. Generate one with:
+  #     python -c "import secrets,base64; \
+  #       print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())"
+  #
+  # Leave it empty and the portal makes a key file beside the database. That
+  # still protects a copy of portal.db on its own — a backup, a support export
+  # — but not a copy of the whole volume. Setting it here puts the key in a
+  # Secret and the data on a PersistentVolume, which separates the two.
+  #
+  # Losing it costs you the stored credentials, not the data: every one is a
+  # token for some other system and can be pasted in again.
+  secretKey: ""
+
+  # Marks the session cookie Secure, so it refuses to travel in clear.
+  #
+  # Left false this is not "off": enabling an ingress with TLS turns it on by
+  # itself, because that is the case where forgetting costs you the cookie.
+  # Set it true to force it on regardless — behind a TLS proxy the chart does
+  # not know about, for instance.
+  cookieSecure: false
+  sessionHours: 8
+  # Only needed when served under a sub-path, e.g. /portal
+  rootPath: ""
+  brand:
+    name: ""
+    org: ""
+    short: ""
+  # Anything else from the deployment contract, verbatim:
+  #   extraEnv:
+  #     - name: PORTAL_KUBECTL
+  #       value: /usr/local/bin/kubectl
+  extraEnv: []
+  # Extra environment from Secrets or ConfigMaps you manage yourself
+  extraEnvFrom: []
+
+# ── the pod ──────────────────────────────────────────────────────
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  # The image ships bytecode with the sources removed and needs no writable
+  # filesystem beyond its data volume and /tmp, so the root filesystem is
+  # read-only: the code cannot be edited in a running container.
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]
+
+probes:
+  enabled: true
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
+podLabels: {}
+priorityClassName: ""
+
+# ── access to clusters ───────────────────────────────────────────
+# The portal reads other clusters with kubeconfigs you paste into it, so it needs
+# no RBAC of its own. If you want it to read the cluster it runs in as well,
+# enable this and add that cluster in the UI with an in-cluster kubeconfig.
+rbac:
+  # create a read-only ClusterRole and bind it to the portal's ServiceAccount
+  createReadOnly: false
+  # Let the portal update itself from its own About page: one click moves the
+  # image tag to the release the update feed announced.
+  #
+  # Off by default, deliberately. With it off the portal holds no write anywhere
+  # and cannot change what runs — which is the promise worth keeping unless you
+  # would rather have the button. With it on it gets `get` and `patch` on exactly
+  # one object: this release's own Deployment, named in the Role, so the API
+  # server refuses anything else.
+  #
+  # Note the trade: an in-place update moves the image and not the Helm release,
+  # so Helm still records the old appVersion and the next `helm upgrade` puts the
+  # old image back. The portal says so on its own page until you reconcile.
+  selfUpdate: false
+
+# ── the assistant, and the model runtime that serves it ──────────
+# One `helm install` brings up two workloads: the portal, and an Ollama that
+# answers its questions. Splitting the *portal* further was considered and
+# rejected: fifteen of its modules share one in-process cache and one SQLite
+# database, so more services would mean either SQLite over a network (unsafe) or
+# a rewrite onto PostgreSQL with internal APIs — a large change that buys nothing
+# a single well-cached process does not already do. The model runtime is
+# genuinely different: a large image, a different resource profile, its own
+# storage, and a lifecycle nobody wants coupled to a web deploy.
+assistant:
+  # On by default — and it needs NO model. Questions are answered by real
+  # queries against live state (see app/answers.py), so the assistant works on
+  # one pod with no extra resources at all. A model is optional and only adds a
+  # written summary above each table.
+  enabled: true
+  # Empty means "no model": tables, no prose. Set it to ollama (with
+  # ollama.enabled=true below), or to anthropic / openai with a key entered in
+  # Settings, to add the summaries.
+  provider: ""
+  # leave empty to use the in-cluster Ollama below; set it to use a hosted
+  # model instead (in which case set ollama.enabled=false)
+  url:
+  # kept in step with ollama.model unless overridden
+  model: ""
+
+guacd:
+  # Apache Guacamole's guacd — the gateway that renders RDP, VNC and recorded
+  # WEB sessions to the browser for Privileged Access.
+  #
+  # ON by default, and it used to be off. The default changed because "off"
+  # produced a feature that appears and cannot work: the catalogue renders the
+  # row, the tile counts it as live-capable, and the button is greyed with a
+  # reason naming a Helm value nobody had set — from which a person reasonably
+  # concluded the feature was broken. Being on costs 50m of CPU and 64Mi of
+  # memory, idle on loopback, doing nothing until a session opens. That is a
+  # great deal less than the confusion cost.
+  #
+  # WHAT A MIRRORED OR AIR-GAPPED INSTALL MUST KNOW: this is a SIDECAR, so an
+  # image pull it cannot satisfy stops the WHOLE POD, not just this container.
+  # If your registry mirror does not carry the image below, either mirror it or
+  # set `enabled: false` — the portal runs fine without it and says so plainly,
+  # and SSH sessions are unaffected either way.
+  #
+  # When enabled it runs as a
+  # SIDECAR sharing the data volume, so the recordings it writes land where the
+  # portal serves them; the portal reaches it at 127.0.0.1:4822. Override that
+  # address only in Settings → Privileged Access, and only if you run guacd
+  # elsewhere — configuration lives in the database, not the chart.
+  #
+  # It also renders RECORDED WEB SESSIONS: a web target is opened by a browser
+  # the portal starts as a pod, and guacd renders that browser. Nothing extra
+  # is needed here for it — the browser pod is created through a registered
+  # cluster's own kubeconfig, and which cluster, which image and how long a
+  # seat lives are all set in Settings → Privileged Access.
+  enabled: true
+  image:
+    repository: guacamole/guacd
+    tag: "1.5.5"
+    pullPolicy: IfNotPresent
+  securityContext:
+    allowPrivilegeEscalation: false
+    runAsNonRoot: true
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: [ALL]
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 512Mi
+
+ollama:
+  # OFF by default, deliberately. A model runtime is a second pod with a
+  # multi-gigabyte image and several gigabytes of memory, and it buys prose on
+  # top of answers the portal already gives correctly without it. Most clusters
+  # have no GPU, where a CPU model is slow, so paying for it must be a decision
+  # rather than a default.
+  #
+  #   one pod  (this default): the assistant answers with tables. Nothing extra.
+  #   two pods (enabled: true, assistant.provider: ollama): the same answers,
+  #            plus a few sentences written above each one.
+  enabled: false
+  image:
+    repository: ollama/ollama
+    tag: "0.12.6"
+    pullPolicy: IfNotPresent
+  # The model pulled after install and used by default. Small enough to answer
+  # on CPU in a dev cluster; swap it for a larger one where there is a GPU.
+  model: llama3.2:3b
+  # A Job pulls the model after install so the first question does not wait for
+  # a multi-gigabyte download. Turn it off to pull lazily on first use instead.
+  pullOnInstall: true
+  service:
+    type: ClusterIP
+    port: 11434
+  persistence:
+    # Models are large and re-downloading them on every restart is wasteful, so
+    # they get their own volume — kept on uninstall like the portal's data.
+    enabled: true
+    size: 20Gi
+    storageClass: ""
+    accessMode: ReadWriteOnce
+  resources:
+    # A 3B model on CPU needs a few gigabytes of memory and will use whatever
+    # cores it is given. No CPU limit by default: a throttled model is a slow
+    # model, and this workload is bursty rather than constant.
+    requests:
+      cpu: 500m
+      memory: 4Gi
+    limits:
+      memory: 8Gi
+  # A GPU makes generation faster but is NOT required, and the assistant is
+  # designed on that assumption: questions are answered by real queries against
+  # live state, and the model only writes a sentence about the result — a few
+  # hundred tokens, not a description of your estate. On CPU that is seconds.
+  # Where GPU nodes do exist:
+  #   ollama.resources.limits."nvidia.com/gpu": 1
+  #   ollama.nodeSelector: {accelerator: nvidia}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podSecurityContext:
+    runAsNonRoot: false      # the upstream image runs as root and writes /root/.ollama
+  securityContext:
+    readOnlyRootFilesystem: false
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: ["ALL"]

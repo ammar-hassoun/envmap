@@ -1,0 +1,70 @@
+{{ .Chart.Name }} {{ .Chart.AppVersion }} is installed as {{ include "config-portal.fullname" . }}.
+
+1. Reach it
+{{- if .Values.ingress.enabled }}
+   {{- range .Values.ingress.hosts }}
+   http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}
+   {{- end }}
+{{- else }}
+   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "config-portal.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+   then open http://127.0.0.1:{{ .Values.service.port }}
+{{- end }}
+
+2. Create the first account
+   The first page asks you to create it, and enrolling an authenticator app is
+   mandatory — there is no way in without one.
+
+3. Add what it should watch
+   Settings → Repositories for GitOps repos, Settings → Clusters for kubeconfigs.
+   Nothing is configured from this chart: it all lives in the portal's database so
+   an upgrade never overwrites it.
+
+{{ if not .Values.persistence.enabled }}
+WARNING: persistence is disabled, so accounts, clusters and credentials are lost
+whenever the pod restarts. Set persistence.enabled=true for anything real.
+{{- end }}
+{{- if and .Values.ingress.enabled (not .Values.portal.cookieSecure) }}
+NOTE: an ingress is enabled but portal.cookieSecure is false. If that ingress
+terminates TLS, set portal.cookieSecure=true so the session cookie refuses to
+travel in clear.
+{{- end }}
+{{- if gt (int .Values.replicaCount) 1 }}
+NOTE: replicaCount is {{ .Values.replicaCount }}. Replicas stay coherent (a
+shared revision row invalidates every process's cache on write), and the chart
+pins them to one node so they can share the volume — SQLite is not safe over a
+network filesystem. This scales capacity, not node-failure survival.
+{{- end }}
+
+What it is: {{ .Values.service.port }}/tcp, one volume at {{ .Values.persistence.mountPath }},
+running as uid {{ .Values.podSecurityContext.runAsUser }} with a read-only root
+filesystem. It needs no cluster permissions of its own — it reads other clusters
+with kubeconfigs you paste into it.
+
+{{- if and .Values.persistence.enabled (not .Values.persistence.storageClass) }}
+
+CHECK YOUR DEFAULT STORAGE CLASS. The portal keeps its database in this volume,
+and SQLite's write-ahead log is not safe on a network filesystem — NFS locking
+is advisory, and a lost lock is a corrupted database rather than a slow one. If
+your default class is NFS-backed (nfs-client, nfs-subdir-provisioner, an EFS or
+Azure Files class), set a local one instead:
+
+  --set persistence.storageClass=<a local-path or hostpath class>
+
+Object storage and network volumes are fine for the Ollama model cache
+(ollama.persistence.storageClass) — those files are read-only once written.
+{{- end }}
+{{- if .Values.ollama.enabled }}
+
+The assistant is ready to use: this release also installed Ollama
+({{ .Values.ollama.model }}) and pointed the portal at it, so nothing needs
+configuring. The first answer may be slow while the model loads
+{{- if .Values.ollama.pullOnInstall }} — a Job is pulling it now; watch it with:
+
+  kubectl -n {{ .Release.Namespace }} logs job/{{ include "config-portal.ollamaName" . }}-pull -f
+{{- else }}, and the model is fetched on first use because
+ollama.pullOnInstall is off{{- end }}.
+
+On CPU, expect tens of seconds per answer for a 3B model. Where there is a GPU:
+
+  --set ollama.resources.limits."nvidia\.com/gpu"=1
+{{- end }}

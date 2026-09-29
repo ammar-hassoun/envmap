@@ -1,0 +1,208 @@
+{% extends "base.html" %}
+{% import "_bits.html" as bits %}
+{% block crumbs %}{% if sel %}<a href="/bmc">Server hardware</a> <span>›</span>
+  <b>{{ sel.name }}</b>{% else %}<b>Server hardware</b>{% endif %}{% endblock %}
+{% block content %}
+{{ bits.collecting(pending, "The hardware below is from the controllers that
+   have answered so far.") }}
+
+{% if not conns %}
+<div class="empty">
+  <div class="big">{{ glyph("cpu", 40) }}</div>
+  <h2>No server BMCs registered</h2>
+  <p>Register iDRAC, iLO, XCC or Supermicro controllers by their Redfish
+     endpoint and this page shows model, serial, power state, health,
+     temperatures and firmware — enough to triage from a desk instead of walking
+     to a rack.</p>
+  <a class="btn" href="/settings/conns/bmc">＋ Add a BMC</a>
+</div>
+
+{% elif not sel %}
+<div class="page-head">
+  <div><h1>Server hardware</h1>
+    <p class="sub">{{ conns|length }} BMC{{ 's' if conns|length != 1 }} ·
+      <span style="color:{{ 'var(--ok-ink)' if unhealthy == 0 else 'var(--danger-ink)' }};">
+        {{ conns|length - unhealthy - unreachable }} healthy</span>
+      {% if unhealthy %} · <span style="color:var(--danger-ink);">{{ unhealthy }} reporting a fault</span>{% endif %}
+      {% if unreachable %} · <span style="color:var(--warn-ink);">{{ unreachable }} unreachable</span>{% endif %}</p></div>
+  <div style="display:flex;gap:10px;">
+    <a class="btn btn-ghost" href="/bmc?refresh=1">↻ Refresh</a>
+    <a class="btn btn-ghost" href="/settings/conns/bmc">⚙ Manage</a>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-h">Servers <span class="hint">read over Redfish · faults first</span></div>
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr>
+        <th style="min-width:170px;">BMC</th><th style="min-width:180px;">Model</th>
+        <th style="min-width:110px;">Serial</th><th style="width:80px;">Power</th>
+        <th style="width:100px;">Health</th><th style="width:90px;">Hottest</th>
+        <th style="width:80px;">Draw</th><th style="min-width:140px;">Linked asset</th>
+      </tr></thead>
+      <tbody>
+      {% for r in rows %}
+      <tr>
+        <td class="jname">
+          <span class="dot {{ '' if r.ok else 'dirty' }}"></span>
+          <a href="/bmc?device={{ r.conn.id }}"><b>{{ r.conn.name }}</b></a>
+          {% if r.error %}<div class="hint" style="color:var(--danger-ink);white-space:normal;">{{ r.error }}</div>{% endif %}</td>
+        <td>{{ r.info.vendor }} {{ r.info.model }}</td>
+        <td style="font-family:var(--mono);font-size:11.5px;">{{ r.info.serial }}</td>
+        <td>{% if r.info.power %}<span class="sv {{ 'sv-ok' if r.info.power == 'On' else 'sv-medium' }}"
+              style="{{ 'color:var(--ok-ink);' if r.info.power == 'On' }}">{{ r.info.power }}</span>{% endif %}</td>
+        <td>{% if r.info.health %}<span class="sv {{ 'sv-ok' if r.info.health|upper == 'OK' else 'sv-high' }}"
+              style="{{ 'color:var(--ok-ink);' if r.info.health|upper == 'OK' }}">{{ r.info.health }}</span>{% endif %}</td>
+        <td>{% if r.info.hottest is not none %}{{ r.info.hottest }} °C{% endif %}</td>
+        <td>{% if r.info.watts %}{{ r.info.watts }} W{% endif %}</td>
+        <td class="hint">{{ asset_names.get(r.conn.asset, '—') if r.conn.asset else '—' }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% else %}
+{# ── one server ── #}
+<div class="page-head">
+  <div><h1>🔌 {{ sel.name }}</h1>
+    <p class="sub">{{ info.vendor }} {{ info.model }}
+      {% if info.serial %} · serial {{ info.serial }}{% endif %}
+      {% if info.hostname %} · {{ info.hostname }}{% endif %}</p></div>
+  <div style="display:flex;gap:10px;">
+    <a class="btn btn-ghost" href="/bmc?device={{ sel.id }}&refresh=1">↻ Refresh</a>
+    <a class="btn btn-ghost" href="{{ info.url }}" target="_blank" rel="noopener">Open the BMC →</a>
+  </div>
+</div>
+
+{% if error %}<div class="flash err">⚠ {{ error }}</div>{% else %}
+
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr));margin-bottom:18px;">
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat" style="color:{{ 'var(--ok-ink)' if info.power == 'On' else 'var(--warn-ink)' }};">{{ info.power or '—' }}</div>
+    <div class="statsub">power state</div></div></div>
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat" style="color:{{ 'var(--ok-ink)' if (info.health or 'OK')|upper == 'OK' else 'var(--danger-ink)' }};">{{ info.health or '—' }}</div>
+    <div class="statsub">reported health</div></div></div>
+  {% if info.hottest is not none %}
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat">{{ info.hottest }}<span style="font-size:15px;color:var(--muted);"> °C</span></div>
+    <div class="statsub">hottest sensor</div></div></div>
+  {% endif %}
+  {% if info.watts %}
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat">{{ info.watts }}<span style="font-size:15px;color:var(--muted);"> W</span></div>
+    <div class="statsub">power draw</div></div></div>
+  {% endif %}
+  {% if info.cpu_count %}
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat">{{ info.cpu_count }}</div>
+    <div class="statsub">processors</div></div></div>
+  {% endif %}
+  {% if info.memory_gib %}
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat">{{ info.memory_gib }}<span style="font-size:15px;color:var(--muted);"> GiB</span></div>
+    <div class="statsub">memory</div></div></div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <div class="card-h">Identity</div>
+  <div class="card-b">
+    <table class="cmp">
+      <tr><td class="k">vendor</td><td>{{ info.vendor or '—' }}</td></tr>
+      <tr><td class="k">model</td><td>{{ info.model or '—' }}</td></tr>
+      <tr><td class="k">serial / service tag</td><td style="font-family:var(--mono);">{{ info.serial or '—' }}</td></tr>
+      {% if info.sku %}<tr><td class="k">sku</td><td>{{ info.sku }}</td></tr>{% endif %}
+      <tr><td class="k">host name</td><td>{{ info.hostname or '—' }}</td></tr>
+      <tr><td class="k">processors</td><td>{{ info.cpu_count or '—' }}
+        {% if info.cpu_model %}× {{ info.cpu_model }}{% endif %}</td></tr>
+      <tr><td class="k">bios</td><td>{{ info.bios or '—' }}</td></tr>
+      <tr><td class="k">identify led</td><td>{{ info.leds or '—' }}</td></tr>
+      {% if sel.asset %}<tr><td class="k">inventory asset</td>
+        <td><a href="/assets?q={{ asset_names.get(sel.asset, '')|urlencode }}">{{ asset_names.get(sel.asset, sel.asset) }}</a></td></tr>{% endif %}
+    </table>
+  </div>
+</div>
+
+{% if info.sensors %}
+<div class="card">
+  <div class="card-h">Temperatures <span class="hint">{{ info.sensors|length }} sensors</span></div>
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr><th style="min-width:200px;">Sensor</th><th style="width:110px;">Reading</th>
+        <th style="width:130px;">Critical above</th><th style="width:100px;">Health</th></tr></thead>
+      <tbody>
+      {% for s in info.sensors %}
+      <tr><td class="jname">{{ s.name }}</td>
+        <td {% if s.limit and s.reading and s.reading >= s.limit * 0.9 %}style="color:var(--danger-ink);font-weight:600;"{% endif %}>{{ s.reading }} °C</td>
+        <td class="hint">{{ (s.limit ~ ' °C') if s.limit else '—' }}</td>
+        <td>{{ s.health or '—' }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{% if info.fans %}
+<div class="card">
+  <div class="card-h">Fans <span class="hint">{{ info.fans|length }}</span></div>
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr><th style="min-width:200px;">Fan</th><th style="width:130px;">Speed</th>
+        <th style="width:100px;">Health</th></tr></thead>
+      <tbody>{% for f in info.fans %}
+      <tr><td class="jname">{{ f.name }}</td>
+        <td>{{ f.reading }} {{ f.units }}</td><td>{{ f.health or '—' }}</td></tr>
+      {% endfor %}</tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{% if info.psus %}
+<div class="card">
+  <div class="card-h">Power supplies <span class="hint">{{ info.psus|length }}</span></div>
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr><th style="min-width:170px;">PSU</th><th style="min-width:150px;">Model</th>
+        <th style="width:110px;">Output</th><th style="width:110px;">State</th>
+        <th style="width:100px;">Health</th></tr></thead>
+      <tbody>{% for p in info.psus %}
+      <tr><td class="jname">{{ p.name }}</td><td>{{ p.model or '—' }}</td>
+        <td>{{ (p.watts ~ ' W') if p.watts else '—' }}</td>
+        <td>{{ p.state or '—' }}</td><td>{{ p.health or '—' }}</td></tr>
+      {% endfor %}</tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{% if info.firmware %}
+<div class="card">
+  <div class="card-h">Firmware <span class="hint">{{ info.firmware|length }} components</span></div>
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr><th style="min-width:280px;">Component</th><th style="min-width:150px;">Version</th></tr></thead>
+      <tbody>{% for f in info.firmware %}
+      <tr><td class="jname">{{ f.name }}</td>
+        <td style="font-family:var(--mono);font-size:11.5px;">{{ f.version }}</td></tr>
+      {% endfor %}</tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+<div class="card"><div class="card-b">
+  <div class="sec-note" style="margin:0;">The portal reads this BMC and does not
+    act on it. Redfish can power-cycle a server, and a web page that can do that
+    by mis-click is not worth the convenience — use
+    <a href="{{ info.url }}" target="_blank" rel="noopener">the BMC's own
+    interface</a> for power and virtual media.</div>
+</div></div>
+{% endif %}
+{% endif %}
+{% endblock %}

@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block crumbs %}<b>IT spend</b>{% endblock %}
+{% block content %}
+{# ── the year, month by month, and nothing else ────────────────────────────
+   This page used to carry the calendar, the month's lines, two breakdown
+   charts, the cloud accounts, the whole register and the exchange rates —
+   seven things, of which one answered the question people arrive with. The
+   rest moved to "Everything we pay for"; a month opens its own page. #}
+
+<div class="page-head">
+  <div>
+    <h1>IT spend</h1>
+    <p class="sub">What each month cost, and what it was made of. Click a month
+      to see the lines behind it.</p>
+  </div>
+  <div style="display:flex;gap:10px;align-items:center;">
+    {# show everything in any currency: every box follows it #}
+    <form method="get" action="/spend" class="curpick">
+      <label for="showin">show in</label>
+      <select id="showin" name="in" data-submit>
+        {% for c in choices %}
+        <option value="{{ c }}" {{ 'selected' if c == yv.currency }}>{{ c }}</option>
+        {% endfor %}
+      </select>
+    </form>
+    <a class="btn btn-ghost" href="/spend/manage">Everything we pay for →</a>
+    <button type="button"
+            data-dlg-open="addSub">
+      ＋ Add an expense</button>
+  </div>
+</div>
+
+{% if msg %}<div class="flash">✓ {{ msg }}</div>{% endif %}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+
+<div class="yearbar">
+  <form method="get" action="/spend#year" class="yearpick">
+    <label for="yr">year</label>
+    <select id="yr" name="year" data-submit>
+      {% for y in yv.years %}
+      <option value="{{ y }}" {{ 'selected' if y == yv.year }}>{{ y }}</option>
+      {% endfor %}
+      {# one level out: a box per year, and everything together #}
+      <option value="all">All years</option>
+    </select>
+  </form>
+  <div class="yearsum">
+    <div><span class="ys-k">total</span>
+      <span class="ys-v">{{ yv.currency }} {{ '{:,.0f}'.format(yv.total) }}</span></div>
+    {% if yv.counted %}
+    <div><span class="ys-k">typical month</span>
+      <span class="ys-v">{{ yv.currency }} {{ '{:,.0f}'.format(yv.average) }}</span></div>
+    {% endif %}
+    {% if yv.peak %}
+    <div><span class="ys-k">heaviest</span>
+      <span class="ys-v">{{ yv.peak.label }} · {{ yv.currency }}
+        {{ '{:,.0f}'.format(yv.peak.total) }}</span></div>
+    {% endif %}
+  </div>
+</div>
+
+{% if yv.cloud_gap %}
+<div class="sec-note" style="margin:-4px 0 12px;color:var(--warn-ink);">⚠ The
+  connected cloud accounts' bills only go back to {{ yv.cloud_from }}, so no
+  metered spend is shown for {{ yv.year }} — the boxes below cover the
+  subscriptions and invoices only, not the whole year's cost.</div>
+{% endif %}
+
+{% if yv.pending %}
+<div class="sec-note" style="margin:-4px 0 12px;">Still reading
+  {{ yv.pending }} cloud account{{ "'s" if yv.pending == 1 else "s'" }} bills — reload in a
+  moment for the metered figures.</div>
+{% endif %}
+
+<div class="ygrid" id="year">
+  {% for m in yv.months %}
+  {# A future month is not a link: there is nothing behind it yet, and a box
+     that clicks through to "nothing was charged" wastes the click. #}
+  {% if m.future %}
+  <span class="ybox empty future">
+    <div class="yb-top"><span class="yb-name">{{ m.label }}</span></div>
+    <div class="yb-total"><span class="absent">—</span></div>
+    <div class="yb-bar"><i style="width:0%"></i></div>
+    <div class="yb-split"><span class="yb-s dim">not yet</span></div>
+  </span>
+  {% else %}
+  <a class="ybox{{ ' empty' if not m.total }}" href="/spend/month?ym={{ m.ym }}">
+    <div class="yb-top">
+      <span class="yb-name">{{ m.label }}</span>
+      {% if m.running %}<span class="yb-tag">running</span>{% endif %}
+    </div>
+    <div class="yb-total">{{ yv.currency }} {{ '{:,.0f}'.format(m.total) }}</div>
+    {# a bar per box rather than one chart: the comparison survives being read
+       one box at a time, which a chart does not #}
+    <div class="yb-bar"><i style="width:{{ (m.frac * 100)|round(1) }}%"></i></div>
+    <div class="yb-split">
+      {% for key, lab in yv.buckets %}
+      {% if m.by[key] %}
+      <span class="yb-s yb-{{ key }}">{{ lab|lower }}
+        <b>{{ '{:,.0f}'.format(m.by[key]) }}</b></span>
+      {% endif %}
+      {% endfor %}
+      {% if not m.total %}<span class="yb-s dim">nothing charged</span>{% endif %}
+    </div>
+  </a>
+  {% endif %}
+  {% endfor %}
+
+  {# the thirteenth: the same shape, so it reads as one of the set rather than
+     as a summary bolted on the end #}
+  <a class="ybox yall" href="/spend/manage?year={{ yv.year }}&m=all#detail">
+    <div class="yb-top"><span class="yb-name">Whole year {{ yv.year }}</span></div>
+    <div class="yb-total">{{ yv.currency }} {{ '{:,.0f}'.format(yv.total) }}</div>
+    <div class="yb-bar"><i style="width:100%"></i></div>
+    <div class="yb-split">
+      {% for key, lab in yv.buckets %}
+      {% if yv.by[key] %}
+      <span class="yb-s yb-{{ key }}">{{ lab|lower }}
+        <b>{{ '{:,.0f}'.format(yv.by[key]) }}</b></span>
+      {% endif %}
+      {% endfor %}
+      {% if not yv.total %}<span class="yb-s dim">nothing charged this year</span>{% endif %}
+    </div>
+  </a>
+</div>
+
+<p class="sub" style="margin-top:16px;">
+  A recurring row is reduced to a run rate from its own billing cycle; a one-off
+  sits in the month it was charged and adds nothing to the run rate. Cloud
+  accounts are read from the provider's own bills rather than typed. Everything
+  is converted to {{ yv.currency }} — the rates live in
+  <a href="/spend/manage#rates">Everything we pay for</a>.</p>
+{% include "_spend_dialog.html" %}
+{% endblock %}

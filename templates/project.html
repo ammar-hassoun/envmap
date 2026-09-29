@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block crumbs %}
+  <a href="/">Projects</a> <span class="sep">/</span> <b>{{ pname }}</b>
+{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>{{ project.icon }} {{ pname }}</h1>
+  <p class="sub">Select a region.</p></div>
+  <div style="display:flex;gap:10px;">
+    <a class="btn" href="/settings/clusters#{{ pid }}">＋ Add region</a>
+    <a class="btn btn-ghost" href="/settings#{{ pid }}">⚙︎ Settings</a>
+  </div>
+</div>
+
+{% if not regions %}
+<div class="empty">
+  <div class="big">{{ glyph("globe", 40) }}</div>
+  <h2>No regions yet</h2>
+  <p>Add a region (for example TZ), then add a cluster and declare the
+     environments it serves — repository, branch and path travel in the same
+     form.</p>
+  <a class="btn" href="/settings/clusters#{{ pid }}">＋ Add region</a>
+</div>
+{% endif %}
+
+<div class="hub-grid">
+  {% for rgid, rg in regions.items() %}
+  <a class="hub-card" href="/p/{{ pid }}/{{ rgid }}">
+    <div class="flag">{{ rg.flag or flag_for(rg.name) }}</div>
+    <div>
+      <div class="htitle">{{ rg.name }}</div>
+      <div class="hmeta">{{ rg.label or '' }}</div>
+      <div class="hmeta" style="margin-top:4px;">
+        {% if not rg.env_count %}<span style="color:var(--warn-ink);">no environments declared</span>
+        {% elif not rg.has_repo %}<span style="color:var(--warn-ink);">no repository declared</span>
+        {% else %}{{ rg.env_count }} env{{ 's' if rg.env_count != 1 }}
+          · {{ rg.svc_count }} service{{ 's' if rg.svc_count != 1 }}{% endif %}
+      </div>
+    </div>
+    <div class="arrow">→</div>
+  </a>
+  {% endfor %}
+</div>
+{% endblock %}

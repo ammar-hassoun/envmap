@@ -1,0 +1,71 @@
+{# The action panel, shared by the resource list and the detail page.
+
+   One macro rather than two copies: an action's fields, its warning and its
+   confirmation all come from the declaration in cloudops.ACTIONS, so a new
+   action appears here with no template change — and the confirmation cannot be
+   forgotten on one of the two pages. #}
+{% macro actions(sel, region, acts, back, prefill={}) %}
+{% if acts %}
+<div class="card">
+  <div class="card-h">Actions
+    <span class="hint">every one is confirmed, and recorded in the audit log</span>
+  </div>
+  <div class="card-b">
+    {% for a in acts %}
+    <details class="adv act-{{ a.danger }}">
+      <summary>{{ a.icon }} {{ a.label }}
+        {% if a.danger == 'removal' %}<span class="act-tag danger">irreversible</span>
+        {% elif a.danger == 'care' %}<span class="act-tag warn">changes live state</span>
+        {% endif %}</summary>
+      <form method="post" action="/clouds/action" style="margin-top:10px;"
+            data-confirm="{{ 'id' if a.danger == 'removal' else 'CONFIRM' }}">
+        <input type="hidden" name="account" value="{{ sel.id }}">
+        <input type="hidden" name="region" value="{{ region }}">
+        <input type="hidden" name="action" value="{{ a.key }}">
+        <input type="hidden" name="back" value="{{ back }}">
+        <p class="sub" style="margin:0 0 12px;">{{ a.note }}</p>
+        {% for p in a.params %}
+        <div class="field-row">
+          <label>{{ p.label }}{% if not p.required %} <span
+            style="text-transform:none;letter-spacing:0;">(optional)</span>{% endif %}</label>
+          {% if p.kind == 'select' %}
+          <select name="{{ p.name }}">
+            {% if not p.required %}<option value="">—</option>{% endif %}
+            {% for o in p.options %}
+            <option value="{{ o }}" {% if prefill.get(p.name) == o %}selected{% endif %}>{{ o }}</option>
+            {% endfor %}
+          </select>
+          {% else %}
+          <input type="text" name="{{ p.name }}" value="{{ prefill.get(p.name, '') }}"
+                 {% if p.required %}required{% endif %}
+                 placeholder="{{ p.hint }}" autocomplete="off"
+                 style="font-family:var(--mono);font-size:12px;">
+          {% endif %}
+        </div>
+        {% if p.hint and p.kind != 'select' %}
+        <div class="sec-note" style="margin:-6px 0 10px;">{{ p.hint }}</div>
+        {% endif %}
+        {% endfor %}
+        <div class="field-row">
+          <label>type {% if a.danger == 'removal' %}the id{% else %}CONFIRM{% endif %}</label>
+          <input type="text" name="confirm" required autocomplete="off"
+                 placeholder="{% if a.danger == 'removal' %}the resource's own id{% else %}CONFIRM{% endif %}"></div>
+        <div class="actions">
+          <button type="submit"
+                  class="{{ 'btn-danger' if a.danger == 'removal' else '' }}">
+            {{ a.label }}</button></div>
+      </form>
+    </details>
+    {% endfor %}
+  </div>
+</div>
+<style>
+  .act-tag { font-size:9.5px; text-transform:uppercase; letter-spacing:.7px;
+             border-radius:5px; padding:1px 6px; margin-left:8px; }
+  .act-tag.danger { color:var(--danger-ink);
+                    border:1px solid color-mix(in srgb, var(--danger-ink) 40%, transparent); }
+  .act-tag.warn { color:var(--warn-ink);
+                  border:1px solid color-mix(in srgb, var(--warn-ink) 40%, transparent); }
+</style>
+{% endif %}
+{% endmacro %}

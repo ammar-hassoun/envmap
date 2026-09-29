@@ -1,0 +1,16 @@
+{# The audit log, newest first. #}
+<div class="card" style="margin:0;">
+  <div class="card-h">🕑 <a href="/users" style="color:var(--text);">Recent activity</a>
+    <span class="hint">last {{ d.activity|length }} entries</span></div>
+  <div class="card-b">
+    {% if not d.activity %}<div class="sec-note">nothing recorded yet</div>{% endif %}
+    {% for a in d.activity %}
+    <div class="mrow" style="margin-bottom:5px;">
+      <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+        <span class="badge">{{ a.action }}</span>
+        {{ a.target|truncate(46) }}</span>
+      <span class="hint" title="{{ a.user }}">{{ a.at[5:16]|replace('T', ' ') }}</span>
+    </div>
+    {% endfor %}
+  </div>
+</div>

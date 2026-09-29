@@ -1,0 +1,137 @@
+{% if section_error %}
+<div class="flash err">⚠ {{ section_error }}</div>
+{% endif %}
+{% if detail %}
+{# What this fragment is looking at, stated rather than parsed back out of the
+   heading. Paging and sorting both need it, and reading it off the title was a
+   way to get the wrong table the first time somebody put a dot in a name. #}
+<div id="tctx" hidden data-schema="{{ detail.schema }}" data-name="{{ detail.name }}"
+     data-order="{{ data.order if data else '' }}"
+     data-desc="{{ '1' if (data and data.desc) else '' }}"
+     data-page="{{ data.page if data else 1 }}"></div>
+<div class="card">
+  <div class="card-h">
+    <a href="#" class="backtab" data-tab="tables">← tables</a>
+    <span class="sep" style="margin:0 8px;">/</span>
+    <b>{{ detail.schema }}.{{ detail.name }}</b>
+    <span class="hint">{{ detail.kind }} · {{ detail.size }} ·
+      ~{{ "{:,}".format(detail.rows) }} rows</span>
+    <span style="flex:1"></span>
+    <button class="btn-ghost sqlfill" style="padding:4px 12px;font-size:11px;"
+      data-sql="SELECT * FROM {{ detail.q }} LIMIT 100">
+      Open in query</button>
+  </div>
+  <div class="card-b">
+    {% if detail.comment %}
+    <p class="sub" style="margin:0 0 12px;">{{ detail.comment }}</p>
+    {% endif %}
+    <table class="jenkins">
+      <thead><tr><th></th><th>column</th><th>type</th><th>null</th>
+        <th>default</th><th>comment</th></tr></thead>
+      <tbody>
+        {% for c in detail.columns %}
+        <tr>
+          <td style="width:26px;">{% if c.pk %}<span title="primary key">🔑</span>{% endif %}</td>
+          <td><b>{{ c.name }}</b></td>
+          <td style="font-family:var(--mono);font-size:11.5px;">{{ c.type }}</td>
+          <td>{% if c.nullable %}<span style="color:var(--muted);">yes</span>
+              {% else %}<b>no</b>{% endif %}</td>
+          <td style="font-family:var(--mono);font-size:11px;">{{ c.default or '—' }}</td>
+          <td class="sec-note" style="margin:0;">{{ c.comment or '' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(340px,1fr));">
+  <div class="card" style="margin:0;">
+    <div class="card-h">Indexes <span class="hint">{{ detail.indexes|length }}</span></div>
+    <div class="card-b">
+      {% if not detail.indexes %}
+      <p class="sub" style="margin:0;">None.</p>
+      {% else %}
+      {% for i in detail.indexes %}
+      <div style="border-top:1px solid var(--line);padding-top:8px;margin-top:8px;">
+        <b style="font-size:12.5px;">{{ i.name }}</b>
+        {% if i.size %}<span class="badge">{{ i.size }}</span>{% endif %}
+        <div class="sec-note" style="margin:3px 0 0;font-family:var(--mono);
+             font-size:11px;word-break:break-all;">{{ i.definition }}</div>
+      </div>
+      {% endfor %}
+      {% endif %}
+    </div>
+  </div>
+  <div class="card" style="margin:0;">
+    <div class="card-h">Constraints <span class="hint">{{ detail.constraints|length }}</span></div>
+    <div class="card-b">
+      {% if not detail.constraints %}
+      <p class="sub" style="margin:0;">None.</p>
+      {% else %}
+      {% for c in detail.constraints %}
+      <div style="border-top:1px solid var(--line);padding-top:8px;margin-top:8px;">
+        <b style="font-size:12.5px;">{{ c.name }}</b>
+        <span class="badge">{{ c.kind }}</span>
+        <div class="sec-note" style="margin:3px 0 0;font-family:var(--mono);
+             font-size:11px;word-break:break-all;">{{ c.definition }}</div>
+      </div>
+      {% endfor %}
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-h">Data
+    <span class="hint">page {{ data.page }}{% if data.order %} · sorted by
+      {{ data.order }}{{ ' descending' if data.desc else '' }}{% endif %} ·
+      {{ data.ms }} ms</span>
+    <span style="flex:1"></span>
+    {% if data.page > 1 %}
+    <a class="btn btn-ghost pagelink" style="padding:4px 12px;font-size:11px;"
+       href="#" data-page="{{ data.page - 1 }}">← previous</a>
+    {% endif %}
+    {% if data.more %}
+    <a class="btn btn-ghost pagelink" style="padding:4px 12px;font-size:11px;"
+       href="#" data-page="{{ data.page + 1 }}">next →</a>
+    {% endif %}
+  </div>
+  <div class="card-b">
+    {% if not data or not data.rows %}
+    <p class="sub" style="margin:0;">No rows.</p>
+    {% else %}
+    <div class="rowsbox">
+      <table class="jenkins grid-tbl">
+        <thead><tr><th class="rn"></th>
+          {% for c in data.columns %}
+          <th><a href="#" class="sortlink" data-col="{{ c }}"
+                 data-desc="{{ '1' if (data.order == c and not data.desc) else '' }}">
+            {{ c }}{% if data.order == c %} {{ '▾' if data.desc else '▴' }}{% endif %}</a></th>
+          {% endfor %}</tr></thead>
+        <tbody>
+          {% for row in data.rows %}
+          <tr><td class="rn">{{ (data.page - 1) * page_size + loop.index }}</td>
+            {% for cell in row %}
+            <td class="cell" title="{{ cell }}">
+              {%- if cell is none -%}<span class="nullv">null</span>
+              {%- else -%}{{ cell }}{%- endif -%}</td>
+            {% endfor %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-h">Definition
+    <span class="hint">built from the catalogue, so it is what the table is now</span>
+  </div>
+  <div class="card-b">
+    <pre class="ddl">{{ detail.ddl }}</pre>
+  </div>
+</div>
+{% endif %}

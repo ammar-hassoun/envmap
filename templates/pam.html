@@ -1,0 +1,598 @@
+{% extends "base.html" %}
+{% import "_bits.html" as bits %}
+{% block crumbs %}<b>Privileged Access</b>{% endblock %}
+
+{% block content %}
+{#- A bastion in three questions: what can be reached (Targets), what happened
+    once someone was in (Recordings), and who is in right now (Active). The
+    credential is brokered — the vault holds it, the person never sees it — and
+    every live session is recorded and audited. -#}
+{% set cur = sec if sec in ('targets', 'sessions', 'active') else 'targets' %}
+{% set PROTO_ICON = {'ssh':'square-terminal','rdp':'layout-grid','vnc':'layout-grid',
+    'http':'globe','https':'globe','postgres':'database','mysql':'database'} %}
+
+<div class="page-head">
+  <div>
+    <h1>Privileged Access</h1>
+    <p class="sub">Targets, the credential to reach each one — brokered, never
+      shown — and a recording of every session.</p>
+  </div>
+  <div style="display:flex;gap:9px;align-items:center;">
+    {% if may('settings') %}
+    <a class="btn btn-ghost" href="/settings/pam">Settings</a>{% endif %}
+    <a class="btn" href="/pam/targets/new">＋ New target</a>
+  </div>
+</div>
+
+{% if msg %}<div class="flash ok">✓ {{ msg }}</div>{% endif %}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+{% if not cfg.allow_connect %}
+<div class="flash">Live connections are switched off for this installation — the
+  catalogue is readable and recordings replay, but no session can be opened.
+  {% if may('settings') %}<a href="/settings/pam">Turn them on in Settings →
+  Privileged Access</a>.{% endif %}</div>
+{% endif %}
+{% if not may_connect %}
+<div class="flash">{{ why_no_connect }}. Everything here is still readable.</div>
+{% endif %}
+
+{% set tabbase = '/pam' ~ ('?proj=' ~ proj ~ ('&reg=' ~ reg if reg) if proj) %}
+{{ bits.subtabs(tabbase, 'sec', cur, [
+     {'key': 'targets', 'label': 'Targets', 'count': summary.targets,
+      'icon': 'server'},
+     {'key': 'sessions', 'label': 'Recordings', 'count': summary.sessions,
+      'icon': 'square-terminal'},
+     {'key': 'active', 'label': 'Active', 'count': active|length,
+      'icon': 'zap'}], wide=true) }}
+
+{# Every tile opens exactly what it counts. #}
+<div class="ex-tiles">
+  <a class="ex-tile {{ 'quiet' if not summary.targets }} {{ 'on' if cur == 'targets' }}"
+     href="/pam?sec=targets">
+    <span class="ico">{{ glyph("server", 17) }}</span>
+    <span><span class="big">{{ summary.targets }}</span>
+      <span class="cap">target{{ 's' if summary.targets != 1 }}</span>
+      <span class="sub">machines and apps in the catalogue</span></span>
+  </a>
+  <a class="ex-tile {{ 'quiet' if not summary.live }} {{ 'on' if cur == 'targets' and protocol in ('ssh','rdp','vnc') }}"
+     href="/pam?sec=targets">
+    <span class="ico">{{ glyph("shield-check", 17) }}</span>
+    <span><span class="big">{{ summary.live }}</span>
+      <span class="cap">live-capable</span>
+      <span class="sub">SSH, RDP or VNC — connect and record</span></span>
+  </a>
+  <a class="ex-tile act {{ 'quiet' if not active }} {{ 'on' if cur == 'active' }}"
+     href="/pam?sec=active">
+    <span class="ico">{{ glyph("zap", 17) }}</span>
+    <span><span class="big">{{ active|length }}</span>
+      <span class="cap">live now</span>
+      <span class="sub">open sessions you can watch or end</span></span>
+  </a>
+  <a class="ex-tile {{ 'quiet' if not summary.sessions }} {{ 'on' if cur == 'sessions' }}"
+     href="/pam?sec=sessions">
+    <span class="ico">{{ glyph("square-terminal", 17) }}</span>
+    <span><span class="big">{{ summary.sessions }}</span>
+      <span class="cap">recording{{ 's' if summary.sessions != 1 }}</span>
+      <span class="sub">the screen and the commands, kept</span></span>
+  </a>
+</div>
+
+{% if cur != 'active' and place_options %}
+<form method="get" action="/pam" class="placebar">
+  <input type="hidden" name="sec" value="{{ cur }}">
+  {{ glyph('layout-grid', 14) }}
+  <select name="proj" id="fltProj">
+    <option value="">every project</option>
+    {% for po in place_options %}
+    <option value="{{ po.id }}" {% if proj == po.id %}selected{% endif %}>{{ po.name }}</option>
+    {% endfor %}
+  </select>
+  <select name="reg" id="fltReg">
+    <option value="">every region</option>
+    {% for po in place_options %}{% for r in po.regions %}
+    <option value="{{ r.id }}" data-proj="{{ po.id }}"
+            {% if reg == r.id %}selected{% endif %}>{{ r.name }}</option>
+    {% endfor %}{% endfor %}
+  </select>
+  {% if protocol %}<input type="hidden" name="protocol" value="{{ protocol }}">{% endif %}
+  {% if env %}<input type="hidden" name="env" value="{{ env }}">{% endif %}
+  <button class="btn-ghost tbtn" type="submit">Apply</button>
+  {% if proj %}<span class="ex-chip">{{ (place_options | selectattr('id','eq',proj) | first).name }}
+    <a href="/pam?sec={{ cur }}" title="remove this filter">×</a></span>{% endif %}
+  <span class="hint" id="fltNote"></span>
+</form>
+<script nonce="{{ csp_nonce() }}">
+/* THE SHARED FUNCTION, not a fourth copy. This bar had the same two faults
+   the target form had — `o.hidden` on an option, which the themed dropdown
+   ignores because it builds its menu from the options it FINDS, and
+   `reg.disabled` toggled with no `ddRefresh`, so the visible control painted
+   disabled at load and stayed dead after a project was chosen. That is the
+   bug reported as "when I choose the project even though it has a region I'm
+   not able to choose the region", in a THIRD place. */
+window.placeSync(document.getElementById('fltProj'),
+                 document.getElementById('fltReg'),
+                 document.getElementById('fltNote'));
+</script>
+{% endif %}
+
+{# ── Targets ───────────────────────────────────────────────── #}
+{% if cur == 'targets' %}
+<div class="card">
+  <div class="card-h" style="flex-wrap:wrap;">Target catalogue
+    <span class="hint">the credential for each is brokered — held sealed, handed
+      to the transport at connect time, never shown here</span>
+    <span style="flex:1"></span>
+    {#- CLIENT-SIDE, unlike the two selects beside it. The protocol and
+        environment filters are server-side because they are shareable state
+        somebody links to; finding a row is typing three letters, and a round
+        trip per letter is the wrong shape for that. It searches the row as
+        RENDERED — the chips included — because searching for the thing you
+        can see is the first thing anybody tries. -#}
+    <input type="search" id="tgtQ" class="tgt-q" placeholder="search targets…"
+           autocomplete="off" spellcheck="false"
+           aria-label="search the target catalogue">
+    <span class="hint" id="tgtCount"></span>
+    <form method="get" action="/pam" style="display:inline;">
+      <input type="hidden" name="sec" value="targets">
+      {% if proj %}<input type="hidden" name="proj" value="{{ proj }}">{% endif %}
+      {% if reg %}<input type="hidden" name="reg" value="{{ reg }}">{% endif %}
+      {% if tgt_facets.envs %}
+      <select name="env" data-submit title="environment">
+        <option value="">every environment</option>
+        {% for e in tgt_facets.envs %}
+        <option value="{{ e }}" {% if env == e %}selected{% endif %}>{{ env_meta.get(e, [e])[0] }}</option>
+        {% endfor %}
+      </select>
+      {% endif %}
+      <select name="protocol" data-submit>
+        <option value="">every protocol</option>
+        {% for k, v in proto_meta.items() %}
+        <option value="{{ k }}" {% if protocol == k %}selected{% endif %}>{{ v.label }}</option>
+        {% endfor %}
+      </select>
+    </form>
+  </div>
+  {% if targets %}
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr>
+        <th style="min-width:150px;">Target</th>
+        <th style="min-width:140px;">Hostname</th>
+        <th style="min-width:130px;">Label</th>
+        <th style="width:96px;">Protocol</th>
+        <th style="min-width:150px;">Address</th>
+        <th style="width:118px;">Where</th>
+        <th style="width:120px;">Credential</th>
+        <th class="actcol" style="width:210px;"></th>
+      </tr></thead>
+      <tbody>
+      {% for t in targets %}
+      {#- The haystack carries each chip AS RENDERED ("acme · KE") as well as
+          its plain words: searching for the thing you can see is the first
+          thing anybody tries, and it is exactly what did not work on the two
+          settings pages this pattern came from. -#}
+      {% set hay = [t.name, t.hostname, t.label, t.tags, t.proto_label,
+                    t.protocol, t.address, t.address ~ ':' ~ t.port,
+                    t.username, t.auth_kind, t.env_label, t.project_name,
+                    t.region_name,
+                    (t.project_name ~ ' · ' ~ t.region_name) if t.region_name else '',
+                    'prod' if t.is_prod else '',
+                    'ansible inventory' if not t.editable else ''] %}
+      <tr id="t-{{ t.id }}" class="tgt-row"
+          data-find="{{ hay | select | join(' ') | lower }}">
+        <td class="jname"><b>{{ t.name }}</b>
+          {% if t.env_label %}<span class="envtag {{ t.env_tone }}" style="margin-left:6px;">{{ t.env_label }}</span>
+          {% elif t.is_prod %}<span class="sv sv-high" style="margin-left:6px;">prod</span>{% endif %}
+          {% if t.tags %}<div class="sec-note" style="margin:2px 0 0;">{{ t.tags }}</div>{% endif %}</td>
+        {#- An IP tells nobody which machine this is, which is the whole reason
+            these two columns exist. Both say WHY they are empty rather than
+            showing a bare dash: for an inventory host the hostname comes from
+            the asset inventory or from the host's own name, and neither is
+            edited here. -#}
+        <td style="font-family:var(--mono);font-size:12px;">
+          {% if t.hostname %}{{ t.hostname }}
+          {% elif t.editable %}<span class="hint" title="add it on this target's own page">—</span>
+          {% elif t.group_id %}<button type="button" class="hint linkish" data-describe
+            data-tid="{{ t.id }}" data-name="{{ t.name }}"
+            data-hostname="{{ t.hostname or '' }}" data-label="{{ t.label or '' }}"
+            title="set this machine's own name — it is a column on the inventory row, so Ansible shows it too">—</button>
+          {% else %}<span class="hint" title="no host name recorded — record the machine in the asset inventory">—</span>{% endif %}</td>
+        <td>{% if t.label %}<span class="badge">{{ t.label }}</span>
+          {% elif t.editable %}<span class="hint" title="add it on this target's own page">—</span>
+          {% elif t.group_id %}<button type="button" class="hint linkish" data-describe
+            data-tid="{{ t.id }}" data-name="{{ t.name }}"
+            data-hostname="{{ t.hostname or '' }}" data-label="{{ t.label or '' }}"
+            title="label this host — it is a column on the inventory row, so Ansible shows it too">—</button>
+          {% else %}<span class="hint" title="labelled on the host in Ansible">—</span>{% endif %}</td>
+        <td><span class="badge">{{ glyph(PROTO_ICON.get(t.protocol,'server'), 12) }}
+          {{ t.proto_label }}</span>
+          {#- SAID ON THE ROW, not only in a tooltip. Somebody added a web
+              target and then went looking for its live session and its
+              recording; the answer is that this protocol produces neither,
+              and the place to say so is where they looked. -#}
+          {% if t.web and t.needs_guac %}<div class="sec-note" style="margin:2px 0 0;"
+            title="a browser is started in the cluster for the session, so this is watchable and recorded like an RDP target">in
+            a browser · recorded</div>
+          {% elif not t.is_live %}<div class="sec-note" style="margin:2px 0 0;"
+            title="the portal is not in the path for this protocol, so there is nothing to watch and nothing to record">no
+            session · not recorded</div>{% endif %}</td>
+        <td style="font-family:var(--mono);font-size:12px;">{{ t.address }}<span class="muted">:{{ t.port }}</span></td>
+        <td>{% if t.project_name %}<span class="badge">{{ t.project_name }}{% if t.region_name %}
+          · {{ t.region_name }}{% endif %}</span>{% else %}<span class="hint">—</span>{% endif %}</td>
+        <td>{% if t.has_secret %}<span class="sv sv-clean">{{ t.auth_kind }}</span>
+          <span class="muted" style="font-size:11px;">{{ t.username }}</span>
+          {% else %}<span class="hint">none</span>{% endif %}</td>
+        <td class="mid actcol">
+          {# Connect — the verb depends on the protocol, and is disabled with a
+             reason rather than hidden, so the catalogue reads the same to
+             everyone and the reason is legible. #}
+          {% if t.protocol == 'ssh' %}
+            {% if may_connect and cfg.allow_connect %}
+            <a class="abtn go" href="/pam/targets/{{ t.id }}/terminal">connect</a>
+            {% else %}<button class="abtn" disabled title="{{ why_no_connect or 'live connections are off' }}">connect</button>{% endif %}
+          {% elif t.web and t.needs_guac %}
+            {#- A RECORDED WEB SESSION: guacd renders a browser this portal
+                starts for the session, so this row gets the same console,
+                the same watch/end and the same replayable recording as an
+                RDP target. `open` stays beside it — going straight to the
+                application is still the right thing most of the time, and it
+                is the only thing that works when the gateway is off. -#}
+            {% if may_connect and cfg.allow_connect and guac_ok and not web_why %}
+            <a class="abtn go" href="/pam/targets/{{ t.id }}/console"
+               data-console-window
+               title="opens the application in a browser inside the cluster, in its own window — watchable while it runs and kept as a recording">console</a>
+            {% else %}<button class="abtn" disabled title="{{ web_why or guacd_why or why_no_connect or 'live connections are off' }}">console</button>{% endif %}
+            {#- NOT ON PRODUCTION. `open` goes straight from somebody's own
+                browser to the application: the portal is not in the path, so
+                there is no session to watch, nothing is recorded, and the
+                credential is not brokered -- the audit line saying it was
+                opened is all that survives. That is a reasonable trade on a
+                test system and the wrong one on production, where the
+                recorded console is the whole reason this exists. So on a
+                production target the console is the only way through, and the
+                row says why rather than quietly dropping a button somebody
+                used yesterday. -#}
+            {% if t.is_prod %}
+            <button class="abtn" disabled
+                    title="this target is production, so it is reached through the recorded console only — an unrecorded open would leave nothing but an audit line">open</button>
+            {% else %}
+            <a class="abtn" href="/pam/targets/{{ t.id }}/launch"
+               target="_blank" rel="noopener"
+               title="opens the application straight from your browser — nothing is recorded, and the open is audited">open</a>
+            {% endif %}
+          {% elif t.needs_guac %}
+            {% if may_connect and cfg.allow_connect and guac_ok %}
+            <a class="abtn go" href="/pam/targets/{{ t.id }}/console"
+               data-console-window>connect</a>
+            {% else %}<button class="abtn" disabled title="{{ guacd_why or why_no_connect or 'live connections are off' }}">connect</button>{% endif %}
+          {% elif t.protocol in ('http','https') %}
+            {#- Through the portal, not straight out of the row. Two reasons:
+                opening a production application left no audit line at all,
+                and the stored URL in an `href` was a stored XSS — a
+                `javascript:` one rendered as a clickable link for every
+                reader of this page, and there is no CSP here. The title says
+                what this is, because somebody looked for a live session and a
+                recording and there is neither. -#}
+            {% if t.is_prod %}
+            {#- Production with no recorded path available is a row with no
+                action, and that is the honest answer: the gateway is what
+                makes a production web target reachable through this product,
+                and without it the only thing on offer would be the
+                unrecorded open that production must not have. The title says
+                which thing to fix. -#}
+            <button class="abtn" disabled
+                    title="{{ web_why or guacd_why or 'the browser gateway is not configured' }} — a production target is reached through the recorded console only, so it cannot be opened until that is working">console</button>
+            {% else %}
+            <a class="abtn go" href="/pam/targets/{{ t.id }}/launch"
+               target="_blank" rel="noopener"
+               title="opens the application in a new tab, straight from your browser — the portal is not in the path, so there is no live session and no recording. The open is audited.">open</a>
+            {% endif %}
+          {% else %}
+            <button class="abtn" disabled title="a recorded console for this protocol is on the roadmap">console</button>
+          {% endif %}
+          {% if t.editable %}
+          <a class="abtn" href="/pam/targets/{{ t.id }}">edit</a>
+          {% if may('pam') %}
+          <form method="post" action="/pam/target/delete"
+                data-del="{{ t.name }} (recordings of past sessions are kept)" style="display:inline;">
+            <input type="hidden" name="tid" value="{{ t.id }}">
+            <button type="submit" class="abtn danger">delete</button>
+          </form>{% endif %}
+          {% else %}
+          {#- DESCRIBE IT FROM HERE. The address, port, user and credential of an
+              inventory host belong to its Ansible group and are read-only here --
+              changing them would move what a playbook runs against. Its own name
+              and a label change nothing about how anything connects, and this is
+              the page where somebody is staring at a column of bare IPs trying to
+              tell them apart. -#}
+          <button type="button" class="abtn" data-describe
+                  data-tid="{{ t.id }}" data-name="{{ t.name }}"
+                  data-hostname="{{ t.hostname or '' }}" data-label="{{ t.label or '' }}"
+                  title="set this host's own name and a label">describe</button>
+          <a class="abtn" href="/ansible/groups/{{ t.group_id }}" title="this host is managed in Ansible">in Ansible</a>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+      <tr id="tgtNone" hidden><td colspan="8" class="tgt-none">
+        Nothing in the catalogue matches that. It searches the name, host name,
+        label, group, address, protocol, place and credential.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <style>
+  /* A DASH YOU CAN PRESS. The hostname and label cells of an inventory host
+     used to be a dash with a tooltip telling you to go and edit it in Ansible;
+     they are now the control that sets it. Styled here rather than in app.css
+     because that file is version-cached and would not reach a browser until a
+     release. */
+  button.hint.linkish { background:none; border:0; padding:0; cursor:pointer;
+    font:inherit; color:var(--muted); border-bottom:1px dashed var(--line);
+    /* the app.css `button` rule also adds a glow and a hover brightness
+       filter; a control meant to read as a link must answer both */
+    box-shadow:none; }
+  button.hint.linkish:hover { color:var(--text); border-bottom-color:var(--accent);
+    filter:none; }
+
+    .tgt-q { flex:0 1 260px; min-width:150px; font-size:12.5px;
+      padding:4px 9px; }
+    .tgt-none td { color:var(--muted); font-size:12.5px; padding:14px 12px; }
+  </style>
+  <script nonce="{{ csp_nonce() }}">
+  (function () {
+    const q = document.getElementById('tgtQ');
+    if (!q) return;
+    const rows = [...document.querySelectorAll('tr.tgt-row')],
+          count = document.getElementById('tgtCount'),
+          none = document.getElementById('tgtNone');
+    const paint = () => {
+      const want = q.value.trim().toLowerCase();
+      let shown = 0;
+      rows.forEach(r => {
+        const hit = !want || (r.dataset.find || '').includes(want);
+        // `hidden` on a <tr> loses to the table's own display rule in some
+        // engines, so the filter sets display too — a row still on screen
+        // while the count says it was filtered out is worse than no filter.
+        r.hidden = !hit;
+        r.style.display = hit ? '' : 'none';
+        if (hit) shown++;
+      });
+      if (count) count.textContent = want ? shown + ' of ' + rows.length : '';
+      if (none) none.hidden = !(want && !shown);
+    };
+    q.addEventListener('input', paint);
+    // Escape clears it. A filter left in the box is a page quietly showing a
+    // subset, which is the one way a list like this can lie.
+    q.addEventListener('keydown', ev => {
+      if (ev.key === 'Escape' && q.value) {
+        ev.preventDefault(); ev.stopPropagation(); q.value = ''; paint(); }
+    });
+    if (q.value.trim()) paint();
+  })();
+  </script>
+  {% else %}
+  <div class="card-b" style="color:var(--muted);font-size:13px;">
+    {% if protocol or proj %}Nothing matches this filter —
+    <a href="/pam?sec=targets">show all {{ summary.targets }}</a>.
+    {% else %}No targets yet. <a href="/pam/targets/new">Add one</a> — a host to
+    reach over SSH, a Windows box over RDP, a desktop over VNC, a web app or a
+    database. The catalogue is the map; connecting is a separate permission.{% endif %}</div>
+  {% endif %}
+</div>
+
+{# ── Recordings ────────────────────────────────────────────── #}
+{% elif cur == 'sessions' %}
+{% include "_pam_sessions.html" %}
+
+{# ── Active ────────────────────────────────────────────────── #}
+{% else %}
+<div class="card">
+  <link rel="stylesheet" href="/static/xterm.css">
+  <script nonce="{{ csp_nonce() }}" src="/static/xterm.js"></script>
+  <div class="card-h">Live sessions
+    <span class="hint">sessions open right now on this portal — watch one over
+      the operator's shoulder, take the keyboard, or end it</span></div>
+  {% if active %}
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr>
+        <th style="min-width:150px;">User</th>
+        <th style="width:96px;">Protocol</th>
+        <th style="min-width:150px;">Target</th>
+        <th style="width:80px;">For</th>
+        <th class="actcol no-sort" style="width:260px;"></th>
+      </tr></thead>
+      <tbody>
+      {% for a in active %}
+      <tr>
+        <td class="jname"><b>{{ a.who }}</b><div class="sec-note" style="margin:2px 0 0;">{{ a.ip }}</div></td>
+        <td><span class="badge">{{ a.proto_label }}</span></td>
+        <td>{{ a.target }} <span class="muted" style="font-family:var(--mono);font-size:11px;">{{ a.address }}</span></td>
+        <td>{{ a.took }}</td>
+        <td class="mid actcol">
+          <div class="actrow oneline">
+            {# Never hidden — an inapplicable action is DISABLED with a reason,
+               so every row has the same buttons in the same places.
+
+               WATCHING IS TWO MECHANISMS, and the row picks by session. An
+               SSH session is a line-buffered asciinema cast, so watching it
+               is tailing the file it is already writing. A desktop session
+               has no such tail — but guacd will let a second viewer JOIN the
+               connection it is running, which is the better thing anyway: it
+               is the same screen, live. Neither is offered where it cannot
+               work, and the button says which case it is in. #}
+            {% if a.shadowable %}
+            <a class="abtn" href="/pam/session/{{ a.id }}/shadow?mode=watch"
+               title="join this session and watch the screen live, read-only">watch</a>
+            {% elif a.watchable %}
+            <button class="abtn" data-pamwatch="{{ a.id }}"
+                    data-pamwho="{{ a.who }}"
+                    data-pamwhere="{{ a.target }} · {{ a.address }}"
+                    title="watch this session as it runs, read-only">watch</button>
+            {% else %}
+            <button class="abtn" disabled
+                    title="this session is neither an SSH recording that can be
+                           tailed nor a desktop the gateway can be joined
+                           on">watch</button>
+            {% endif %}
+            {# TAKING THE KEYBOARD is not watching, and it is gated like
+               opening a session because it ends in the same place: typing on
+               somebody's machine. The socket checks it again. #}
+            {% if a.shadowable and may_connect %}
+            <a class="abtn" href="/pam/session/{{ a.id }}/shadow?mode=control"
+               title="take the keyboard on this session — the operator keeps
+                      theirs, and everything you type is on their recording"
+               >take control</a>
+            {% elif not a.shadowable %}
+            <button class="abtn" disabled
+                    title="only a desktop session the gateway is running can be
+                           taken over">take control</button>
+            {% else %}
+            <button class="abtn" disabled
+                    title="taking control needs the Privileged Access: connect
+                           permission">take control</button>
+            {% endif %}
+            {% if may_connect %}
+            <button class="abtn danger" data-kill="{{ a.id }}"
+                    data-call="pamKill" data-arg-self>end</button>
+            {% else %}
+            <button class="abtn danger" disabled
+                    title="ending a session needs the Privileged Access: connect
+                           permission">end</button>
+            {% endif %}
+          </div></td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <script nonce="{{ csp_nonce() }}">
+  function pamKill(btn) {
+    const sid = btn.dataset.kill;
+    if (!confirm('End this live session now? The person is disconnected.')) return false;
+    btn.disabled = true;
+    fetch('/pam/session/' + encodeURIComponent(sid) + '/kill', {method:'POST'})
+      .then(r => r.json()).then(j => { location.reload(); })
+      .catch(() => { btn.disabled = false; });
+    return false;
+  }
+  </script>
+  {% else %}
+  <div class="card-b" style="color:var(--muted);font-size:13px;">
+    No live sessions right now. When someone connects to a target, they appear
+    here until they disconnect — with a button to end the session.</div>
+  {% endif %}
+  {# The window (and the terminal it needs) belong to THIS tab. Included
+     inside the branch so the Targets and Recordings tabs do not carry a
+     dialog and a JS poller they can never open. #}
+  {% include "_pam_watch_dialog.html" %}
+</div>
+{% endif %}
+{% include "_pam_commands_dialog.html" %}
+<script nonce="{{ csp_nonce() }}">
+// A CONSOLE IS A WINDOW, NOT A PAGE. Asked for directly: "when I click on a
+// console the web page should open in a pop up page where I can maximise,
+// minimise and do whatever I can do in the browser". A session lives inside
+// the portal's sidebar and breadcrumbs otherwise, which take pixels from the
+// application and offer nowhere to navigate to; and a session in a tab cannot
+// be put beside the thing it is being used to check.
+//
+// `?win=1` tells the page to drop the portal frame — carried in the URL so a
+// window that is reopened or bookmarked behaves the way it did the first time.
+//
+// NAMED PER TARGET, so clicking console twice for the same target FOCUSES the
+// window that is already open rather than starting a second seat: two pods,
+// two recordings and two audit trails for one intent.
+//
+// Opened from the click itself, because that is what a pop-up blocker allows.
+// If it is blocked anyway `open` returns null and the link is simply followed,
+// which is exactly what it did before this existed.
+document.addEventListener('click', function (ev) {
+  const a = ev.target.closest && ev.target.closest('a[data-console-window]');
+  if (!a || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.button) return;
+  const url = a.getAttribute('href')
+            + (a.getAttribute('href').indexOf('?') < 0 ? '?' : '&') + 'win=1';
+  // OPENED IN THE SCREEN'S SHAPE. The session's desktop is created once, for
+  // this window, and can never be resized -- so if the window is a different
+  // shape from the screen, going full screen later must either band it or crop
+  // it. The console corrects the shape itself once it loads, but opening close
+  // to it means that correction is a few pixels rather than a visible jump.
+  // CHROME is the window furniture plus the console's own strip and footnote:
+  // an allowance, because the exact figure is not knowable before opening, and
+  // being a little out is what the correction is for.
+  const CHROME = 130;
+  const w = Math.max(900, Math.min(screen.availWidth - 80, 1600));
+  const aspect = (screen.width > 0 && screen.height > 0)
+    ? screen.width / screen.height : 16 / 9;
+  const h = Math.max(600, Math.min(Math.round(w / aspect) + CHROME,
+                                   screen.availHeight - 40));
+  const win = window.open(
+    url, 'envmap-console-' + a.getAttribute('href'),
+    'popup=yes,width=' + w + ',height=' + h
+    + ',left=' + Math.max(0, Math.round((screen.availWidth - w) / 2))
+    + ',top=' + Math.max(0, Math.round((screen.availHeight - h) / 2))
+    + ',resizable=yes,scrollbars=yes');
+  if (!win) return;                       // blocked: let the link do its job
+  ev.preventDefault();
+  win.focus();
+});
+</script>
+
+{#- SET WHAT THE MACHINE IS, from the page where somebody is trying to tell one
+    bare IP from another. Only these two fields: an inventory host's address,
+    port, user and credential belong to its Ansible group, and changing them
+    here would move what a playbook runs against. These two change nothing
+    about how anything connects, and they are written back to the inventory row
+    so the Ansible page shows the same values. -#}
+<dialog id="dsxDlg" class="psh">
+  <div class="psh-bar">
+    <span class="psh-dots"><b title="close" data-dsxdot="close">✕</b></span>
+    <b>describe host</b>
+    <span class="psh-ns" id="dsxWho"></span>
+    <span style="flex:1"></span>
+    <button type="button" class="psh-x" id="dsxCancel">cancel</button>
+  </div>
+  <form method="post" action="/pam/target/describe" class="card-b"
+        style="border:0;padding:14px 16px;min-width:min(460px,86vw);">
+    <input type="hidden" name="tid" id="dsxTid">
+    <div class="field-row"><label>hostname</label>
+      <div><input type="text" name="hostname" id="dsxHostname"
+                  spellcheck="false" autocomplete="off"
+                  placeholder="web-1.internal">
+        <div class="sec-note">The machine's own name, which is not its
+          inventory name and not its address.</div>
+      </div></div>
+    <div class="field-row"><label>label</label>
+      <div><input type="text" name="label" id="dsxLabel"
+                  spellcheck="false" autocomplete="off"
+                  placeholder="KE preprod DNS">
+        <div class="sec-note">What people call it. Both are stored on the
+          inventory row, so Ansible shows them too.</div>
+      </div></div>
+    <div class="actions" style="margin:14px 0 0;">
+      <button type="submit" style="padding:6px 16px;font-size:12.5px;"
+              >Save</button>
+    </div>
+  </form>
+</dialog>
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  const dlg = document.getElementById('dsxDlg');
+  if (!dlg) return;
+  document.addEventListener('click', e => {
+    const b = e.target.closest && e.target.closest('[data-describe]');
+    if (b) {
+      document.getElementById('dsxTid').value = b.dataset.tid || '';
+      document.getElementById('dsxHostname').value = b.dataset.hostname || '';
+      document.getElementById('dsxLabel').value = b.dataset.label || '';
+      document.getElementById('dsxWho').textContent = b.dataset.name || '';
+      dlg.showModal();
+      document.getElementById('dsxHostname').focus();
+      return;
+    }
+    if (e.target.closest && e.target.closest('#dsxCancel, [data-dsxdot="close"]'))
+      { try { dlg.close(); } catch (x) {} }
+  });
+})();
+</script>
+{% endblock %}

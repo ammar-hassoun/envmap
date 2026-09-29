@@ -1,0 +1,180 @@
+{% extends "base.html" %}
+{% from "_set_head.html" import head %}
+{% block crumbs %}<a href="/settings">Settings</a> <span class="sep">/</span> <b>Log platforms</b>{% endblock %}
+{% block content %}
+{{ head("Log platforms",
+        "Connect Elasticsearch, OpenSearch or Grafana Loki. A connection does not have to belong to a project — leave it unassigned for a central log store.",
+        msg, err) }}
+
+<div class="card" id="log">
+  <div class="card-h">Platforms
+    <span class="hint">{{ log_conns|length }} configured · searched from
+      <a href="/logs">Logs</a></span>
+  </div>
+  <div class="card-b">
+    {% for c in log_conns %}
+    <div class="rowcard" id="{{ c.id }}">
+      <div class="kv">
+        {{ logo(c.type, c.name, 18) }}
+        <b style="font-size:14.5px;">{{ c.name }}</b>
+        <span class="badge">{{ providers[c.type].label if c.type in providers else c.type }}</span>
+        <span class="badge">{{ project_names[c.pid] if c.pid else 'central · all projects' }}</span>
+        {% if c.scope %}<span class="badge" style="font-family:var(--mono);font-size:11px;">{{ c.scope }}</span>{% endif %}
+        {% if c.tenant %}<span class="badge">tenant {{ c.tenant }}</span>{% endif %}
+        {% if c.skip_tls %}<span class="badge" style="color:var(--warn-ink);">⚠ TLS unverified</span>{% endif %}
+        <span style="flex:1"></span>
+        <form method="post" action="/settings/log/{{ c.id }}/test">
+          <input type="hidden" name="pid" value="{{ c.pid }}">
+          <button class="btn-ghost" style="padding:5px 13px;font-size:11.5px;">Test</button></form>
+        <form method="post" action="/settings/log/{{ c.id }}/delete"
+              data-del="{{ c.name }}">
+          <input type="hidden" name="pid" value="{{ c.pid }}">
+          <button class="btn-danger" style="padding:5px 13px;font-size:11.5px;">Remove</button></form>
+      </div>
+      <div class="sec-note" style="margin-top:7px;font-family:var(--mono);">{{ c.base_url }}</div>
+      {% if c.status %}
+      <div class="sec-note"
+           style="color:{{ 'var(--ok-ink)' if c.status.startswith('ok') else 'var(--danger-ink)' }};">{{ c.status }}</div>
+      {% endif %}
+
+      <details class="adv" style="margin-top:8px;"><summary>Edit</summary>
+        <form method="post" action="/settings/log/{{ c.id }}/update" style="margin-top:10px;">
+          <input type="hidden" name="pid" value="{{ c.pid }}">
+          <div class="field-row"><label>display name</label>
+            <input type="text" name="name" value="{{ c.name }}"></div>
+          <div class="field-row"><label>base url</label>
+            <input type="text" name="base_url" value="{{ c.base_url }}"></div>
+          <div class="field-row"><label>{{ log_scopes[c.type].label if c.type in log_scopes else 'scope' }}</label>
+            <input type="text" name="scope" value="{{ c.scope or '' }}"
+                   placeholder="{{ log_scopes[c.type].hint if c.type in log_scopes else '' }}"></div>
+          <div class="field-row"><label>username <span style="font-family:inherit;
+                text-transform:none;letter-spacing:0;">(blank = API key)</span></label>
+            <input type="text" name="username" value="{{ c.username or '' }}"></div>
+          <div class="field-row"><label>API key / password</label>
+            <input type="password" name="token" autocomplete="new-password"
+                   placeholder="{% if c.token %}•••••• stored — type to replace{% else %}leave blank if unauthenticated{% endif %}"></div>
+          {% if c.type == 'loki' %}
+          <div class="field-row"><label>tenant (optional)</label>
+            <input type="text" name="tenant" value="{{ c.tenant or '' }}"
+                   placeholder="X-Scope-OrgID, for multi-tenant Loki"></div>
+          {% endif %}
+          <div class="field-row"><label>results per search</label>
+            <input type="text" name="limit" value="{{ c.limit or '' }}"
+                   placeholder="100"></div>
+
+          {# Log documents have no standard shape, so these are overrides for
+             when auto-detection picks the wrong field. #}
+          <details class="adv" style="margin:6px 0 0;">
+            <summary>Field names (only if auto-detection gets it wrong)</summary>
+            <div class="sec-note" style="margin:8px 0;">Left blank, the portal reads
+              these from a real document — ECS, Fluent Bit and plain shippers all
+              differ, so nothing is assumed.</div>
+            <div class="field-row"><label>time field</label>
+              <input type="text" name="f_time" value="{{ c.f_time or '' }}"
+                     placeholder="auto — e.g. @timestamp, time, ts"></div>
+            <div class="field-row"><label>level field</label>
+              <input type="text" name="f_level" value="{{ c.f_level or '' }}"
+                     placeholder="auto — e.g. log.level, severity"></div>
+            <div class="field-row"><label>message field</label>
+              <input type="text" name="f_message" value="{{ c.f_message or '' }}"
+                     placeholder="auto — e.g. message, msg, log"></div>
+            <div class="field-row"><label>service field</label>
+              <input type="text" name="f_service" value="{{ c.f_service or '' }}"
+                     placeholder="auto — e.g. kubernetes.container_name"></div>
+          </details>
+
+          <div class="field-row"><label>skip TLS verification</label>
+            <div><input type="checkbox" name="skip_tls" style="width:auto"
+                        {% if c.skip_tls %}checked{% endif %}>
+              <span class="sec-note" style="margin:0 0 0 8px;">only for an internal
+                server with a self-signed certificate</span></div></div>
+          <div class="actions"><button type="submit"
+                  style="padding:6px 16px;font-size:12.5px;">Save &amp; test</button></div>
+        </form>
+      </details>
+    </div>
+    {% endfor %}
+
+    <details class="adv" {% if not log_conns %}open{% endif %}>
+      <summary>＋ Connect a log platform</summary>
+      <form method="post" action="/settings/log/new" style="margin-top:12px;">
+        <div class="field-row"><label>platform</label>
+          <select name="type" data-call-change="logType" required>
+            <option value="">— choose —</option>
+            {% for key, pv in providers.items() %}
+            <option value="{{ key }}">{{ pv.icon }} {{ pv.label }}</option>
+            {% endfor %}
+          </select></div>
+        <div class="field-row"><label>project <span style="font-family:inherit;
+              text-transform:none;letter-spacing:0;">(optional)</span></label>
+          <select name="pid">
+            <option value="">Not assigned — central platform, all projects</option>
+            {% for pid2, nm in project_names.items() %}
+            <option value="{{ pid2 }}">only {{ nm }}</option>
+            {% endfor %}
+          </select></div>
+        <div class="field-row"><label>display name</label>
+          <input type="text" name="name" placeholder="defaults to the platform name"></div>
+        <div class="field-row"><label>base url</label>
+          <input type="text" name="base_url" id="log-url"
+                 placeholder="https://elk.example.com:9200"></div>
+        <div class="field-row"><label id="log-scope-lbl">scope</label>
+          <input type="text" name="scope" id="log-scope"></div>
+        <div class="field-row"><label>username <span style="font-family:inherit;
+              text-transform:none;letter-spacing:0;">(blank = API key)</span></label>
+          <input type="text" name="username" placeholder="leave blank to send an API key"></div>
+        <div class="field-row"><label>API key / password</label>
+          <input type="password" name="token" autocomplete="new-password"
+                 placeholder="blank if the platform needs no auth"></div>
+        <div class="log-loki logf" style="display:none;">
+          <div class="field-row"><label>tenant (optional)</label>
+            <input type="text" name="tenant" placeholder="X-Scope-OrgID"></div>
+        </div>
+        <div class="field-row"><label>skip TLS verification</label>
+          <div><input type="checkbox" name="skip_tls" style="width:auto">
+            <span class="sec-note" style="margin:0 0 0 8px;">tick only for an internal
+              server whose certificate is self-signed</span></div></div>
+        <div class="sec-note" id="log-note"></div>
+        <div class="actions"><button type="submit">Connect &amp; test</button></div>
+      </form>
+    </details>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-h">What the portal reads</div>
+  <div class="card-b">
+    <p class="sub" style="margin:0 0 10px;">Searches and metadata reads only. The
+      portal never writes, deletes or manages indices, so a read-only key with
+      access to your log indices is enough.</p>
+    {% for key, pv in providers.items() %}
+    <div class="kv" style="border-top:1px solid var(--line);padding-top:10px;margin-top:10px;">
+      {{ plogo(pv, 20) }}
+      <div style="min-width:0;">
+        <b style="font-size:13.5px;">{{ pv.label }}</b>
+        <div class="sec-note" style="margin:2px 0 0;">{{ pv.note }}</div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<script nonce="{{ csp_nonce() }}">
+const LOG_NOTES  = {{ log_notes|tojson }};
+const LOG_SCOPES = {{ log_scopes|tojson }};
+const LOG_HINTS  = {{ providers|tojson }};
+function logType(t) {
+  document.querySelectorAll('.logf').forEach(el => {
+    el.style.display = t && el.classList.contains('log-' + t) ? '' : 'none';
+  });
+  document.getElementById('log-note').textContent = LOG_NOTES[t] || '';
+  const sc = LOG_SCOPES[t] || {};
+  document.getElementById('log-scope-lbl').textContent = sc.label || 'scope';
+  document.getElementById('log-scope').placeholder = sc.hint || '';
+  document.getElementById('log-url').placeholder = (LOG_HINTS[t] || {}).url_hint || '';
+}
+</script>
+
+<p class="sub" style="margin-top:4px;">
+  Search them from <a href="/logs">Logs</a>.</p>
+{% endblock %}

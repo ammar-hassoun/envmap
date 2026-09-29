@@ -1,0 +1,305 @@
+{% extends "base.html" %}
+{% block crumbs %}<a href="/pam">Privileged Access</a> <span class="sep">/</span>
+  <b>{{ t.name if t else 'New target' }}</b>{% endblock %}
+{% block content %}
+{#- One target: what to reach, how, and the credential to reach it with. The
+    credential is write-only from here — a saved secret is never sent back to the
+    page, so the field is blank on edit and blank means "leave it". -#}
+<style>
+  .tgt-form { display:grid; grid-template-columns:repeat(2, minmax(0,1fr));
+    gap:14px 20px; }
+  .tgt-field { display:flex; flex-direction:column; gap:5px; min-width:0; }
+  .tgt-field.wide { grid-column:1 / -1; }
+  .tgt-field > label { font-size:12px; color:var(--muted); font-weight:600;
+    letter-spacing:.02em; }
+  .tgt-field input, .tgt-field select, .tgt-field textarea { width:100%;
+    box-sizing:border-box; }
+  .tgt-field .note { font-size:11.5px; color:var(--muted); line-height:1.45; }
+  .tgt-addr { display:flex; gap:8px; }
+  .tgt-addr input:first-child { flex:1; }
+  .tgt-addr input:last-child { width:96px; flex:0 0 auto; }
+  @media (max-width:720px) { .tgt-form { grid-template-columns:minmax(0,1fr); }
+    .tgt-field.wide { grid-column:auto; } }
+</style>
+
+<div class="page-head"><div>
+  <h1>{{ 'Edit target' if t else 'New target' }}</h1>
+  <p class="sub">The credential is sealed and brokered — held encrypted, handed
+    to the transport at connect time, and never shown on this page again.</p>
+</div></div>
+
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+{% if msg %}<div class="flash ok">✓ {{ msg }}</div>{% endif %}
+
+<form method="post" action="/pam/target/save" class="card">
+  <input type="hidden" name="tid" value="{{ tid }}">
+  <div class="card-b">
+    <div class="tgt-form">
+
+      <div class="tgt-field">
+        <label>name</label>
+        <input type="text" name="name" required value="{{ t.name if t else '' }}"
+               placeholder="KE WAF 01" autocomplete="off">
+      </div>
+
+      <div class="tgt-field">
+        <label>protocol</label>
+        <select name="protocol" id="proto">
+          {% for k, v in proto_meta.items() %}
+          <option value="{{ k }}" data-port="{{ v.port }}"
+            {% if (t and t.protocol == k) or (not t and k == 'ssh') %}selected{% endif %}>{{ v.label }}</option>
+          {% endfor %}
+        </select>
+        <span class="note">SSH, RDP and VNC are the live, recorded protocols —
+          they open a session you can watch and keep a recording of.
+          <b>Web and database targets are catalogued and opened, not
+          proxied</b>: your browser goes straight to the application, so there
+          is no live session and no recording, and a credential stored here is
+          held but not injected into the request. The open is audited. A
+          recorded web proxy and a query console are a later phase.</span>
+      </div>
+
+      <div class="tgt-field">
+        <label>address &amp; port</label>
+        <div class="tgt-addr">
+          <input type="text" name="address" required value="{{ t.address if t else '' }}"
+                 placeholder="10.0.10.11" autocomplete="off">
+          <input type="number" name="port" id="port" min="1" max="65535"
+                 value="{{ t.port if t else '' }}" placeholder="port">
+        </div>
+      </div>
+
+      {#- The address is often an IP, and an IP says nothing about which
+          machine this is. These two are what make the catalogue readable:
+          `hostname` is the machine's own name (held to the same shape as an
+          address, because something may be asked to resolve it) and `label`
+          is prose — what people call it. Both are searchable in the
+          catalogue. -#}
+      <div class="tgt-field">
+        <label>host name</label>
+        <input type="text" name="hostname" value="{{ t.hostname if t else '' }}"
+               placeholder="ke-preprod-waf01" spellcheck="false" autocomplete="off">
+        <span class="note">The machine's own name, when the address is an IP.
+          Shown and searchable in the catalogue.</span>
+      </div>
+
+      <div class="tgt-field">
+        <label>label</label>
+        <input type="text" name="label" value="{{ t.label if t else '' }}"
+               placeholder="KE preprod WAF, rack 4" autocomplete="off">
+        <span class="note">Free text — whatever makes this row recognisable at
+          a glance.</span>
+      </div>
+
+      <div class="tgt-field">
+        <label>username</label>
+        <input type="text" name="username" value="{{ t.username if t else '' }}"
+               placeholder="root" autocomplete="off">
+      </div>
+
+      <div class="tgt-field wide">
+        <label>credential</label>
+        <select name="auth_kind" id="authkind" style="max-width:320px;">
+          <option value="password" {% if t and t.auth_kind == 'password' %}selected{% endif %}>password</option>
+          <option value="key" {% if t and t.auth_kind == 'key' %}selected{% endif %}>SSH private key</option>
+          <option value="none" {% if not t or t.auth_kind in ('','none') %}selected{% endif %}>none — the portal brokers no secret</option>
+        </select>
+        <div id="pw-wrap" style="margin-top:2px;"><input type="password" name="secret" id="pw" style="max-width:420px;"
+             autocomplete="new-password" placeholder="{{ '•••••• (leave blank to keep the stored one)' if t and t.has_secret else 'the password' }}"></div>
+        {#- NOT KEPT when a save is refused -- see base.html. A pasted key is
+            the one field here worth retyping rather than storing. -#}
+        <textarea id="key" name="secret_key" rows="5" spellcheck="false"
+                  data-nosave
+          style="width:100%;box-sizing:border-box;font-family:var(--mono);font-size:12px;display:none;"
+          placeholder="{{ '••• a key is stored — paste a new one to replace it •••' if t and t.auth_kind == 'key' else '-----BEGIN OPENSSH PRIVATE KEY-----' }}"></textarea>
+        {#- CHOOSE THE FILE, rather than paste its contents. Asked for
+            directly, and it removes a whole class of failure rather than a
+            nuisance: a `<textarea>` posts CRLF by specification, and a key
+            selected out of `~/.ssh` arrives exactly as it is on disk. The file
+            is read in the BROWSER and dropped into the field above, so the
+            form still posts one value and the server keeps one code path —
+            nothing new reaches the wire, and no upload endpoint exists to
+            secure. -#}
+        <div id="key-pick" style="display:none;margin-top:6px;align-items:center;gap:8px;">
+          <input type="file" id="keyFile" hidden>
+          <button type="button" class="abtn" id="keyBrowse">choose a key file…</button>
+          <span class="note" id="keyPicked">or paste it above — a file is read
+            here in your browser and never uploaded separately</span>
+        </div>
+        <span class="note">Stored sealed and never shown again; on edit, blank
+          keeps whatever is already stored. <b>none</b> means the target
+          authenticates by something the portal does not hold — an SSH agent the
+          portal process already has, or host-based trust. There is no separate
+          agent to install; for a normal host, pick a key or a password.</span>
+      </div>
+
+      {# protocol-specific — shown by the script below #}
+      <div class="tgt-field wide prot-rdp" style="display:none;">
+        <label>RDP options</label>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+          <input type="text" name="domain" placeholder="domain (optional)"
+                 value="{{ t.extra_d.domain if t else '' }}" style="flex:1;min-width:160px;max-width:320px;">
+          <select name="security" style="width:150px;">
+            {% for s in ['any','nla','tls','rdp','vmconnect'] %}
+            <option value="{{ s }}" {% if t and t.extra_d.security == s %}selected{% endif %}>{{ s }}</option>
+            {% endfor %}
+          </select>
+          <label style="font-weight:400;font-size:12.5px;white-space:nowrap;color:var(--text2);">
+            <input type="checkbox" name="ignore_cert" value="1" style="width:auto;vertical-align:-2px;"
+                   {% if t and t.extra_d.ignore_cert %}checked{% endif %}> ignore cert</label>
+        </div>
+      </div>
+      <div class="tgt-field wide prot-web" style="display:none;">
+        <label>URL</label>
+        <input type="text" name="url" value="{{ t.extra_d.url if t else '' }}"
+               placeholder="https://app.internal/login">
+      </div>
+      <div class="tgt-field wide prot-web" style="display:none;">
+        <label>other hosts this page uses</label>
+        <textarea name="also" rows="2" spellcheck="false"
+                  style="width:100%;font-family:var(--mono);font-size:12.5px;"
+                  placeholder="api.app.internal&#10;assets.app.internal"
+                  >{{ (t.extra_d.also | join('\n')) if t and t.extra_d.also else '' }}</textarea>
+        <div class="hint">One name per line. A page is rarely one host — its API
+          or images often live elsewhere, and a browser confined to the address
+          above cannot fetch them, so the page opens half-loaded or sign-in
+          fails. Named here, they may be resolved and reached; nothing else can
+          be. Leave empty if the page only uses the address above.</div>
+      </div>
+      <div class="tgt-field prot-db" style="display:none;">
+        <label>database</label>
+        <input type="text" name="database" value="{{ t.extra_d.database if t else '' }}"
+               placeholder="postgres">
+      </div>
+
+      <div class="tgt-field">
+        <label>project</label>
+        <select name="pid" id="pPid">
+          <option value="">— none —</option>
+          {% for po in place_options %}
+          <option value="{{ po.id }}" {% if t and t.pid == po.id %}selected{% endif %}>{{ po.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="tgt-field">
+        <label>region</label>
+        <select name="rgid" id="pRgid">
+          <option value="">— region —</option>
+          {% for po in place_options %}{% for r in po.regions %}
+          <option value="{{ r.id }}" data-proj="{{ po.id }}"
+                  {% if t and t.rgid == r.id %}selected{% endif %}>{{ r.name }}</option>
+          {% endfor %}{% endfor %}
+        </select>
+        <div class="sec-note" id="pRgidNote" style="margin-top:3px;"></div>
+      </div>
+
+      <div class="tgt-field">
+        <label>environment</label>
+        <input type="text" name="env" list="envs" value="{{ t.env if t else '' }}"
+               placeholder="production, staging, dev…" autocomplete="off"
+               spellcheck="false">
+        <datalist id="envs">
+          {% for e in env_suggest %}<option value="{{ e }}">{% endfor %}
+        </datalist>
+        <div class="sec-note" style="margin-top:3px;">Shown as a colour-coded
+          badge and filterable. A production environment turns on the typed-name
+          confirm by itself.</div>
+      </div>
+      <div class="tgt-field">
+        <label>tags</label>
+        <input type="text" name="tags" value="{{ t.tags if t else '' }}"
+               placeholder="waf, edge" autocomplete="off">
+      </div>
+      <div class="tgt-field">
+        <label>production</label>
+        <label style="font-weight:400;font-size:13px;color:var(--text2);padding-top:6px;">
+          <input type="checkbox" name="is_prod" value="1" style="width:auto;vertical-align:-2px;margin-right:6px;"
+                 {% if t and t.is_prod %}checked{% endif %}>
+          require the target's name to be typed before a session opens</label>
+      </div>
+
+      <div class="tgt-field wide">
+        <label>notes</label>
+        <textarea name="notes" rows="2">{{ t.notes if t else '' }}</textarea>
+      </div>
+    </div>
+
+    <div class="actions" style="margin-top:16px;">
+      <button type="submit" style="padding:6px 18px;font-size:12.5px;">Save target</button>
+      <a class="btn btn-ghost" href="/pam" style="padding:6px 18px;font-size:12.5px;">Cancel</a>
+    </div>
+  </div>
+</form>
+
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  const proto = document.getElementById('proto'), port = document.getElementById('port'),
+        authk = document.getElementById('authkind'),
+        pw = document.getElementById('pw'), key = document.getElementById('key'),
+        pPid = document.getElementById('pPid'), pRgid = document.getElementById('pRgid');
+  function showFor(cls) {
+    document.querySelectorAll('.prot-rdp,.prot-web,.prot-db').forEach(e => e.style.display = 'none');
+    if (cls) document.querySelectorAll('.prot-' + cls).forEach(e => e.style.display = '');
+  }
+  function syncProto() {
+    const p = proto.value;
+    showFor(p === 'rdp' ? 'rdp' : (p === 'http' || p === 'https') ? 'web'
+            : (p === 'postgres' || p === 'mysql') ? 'db' : '');
+    if (!port.value) port.placeholder = proto.selectedOptions[0].dataset.port || 'port';
+  }
+  function syncAuth() {
+    const k = authk.value;
+    document.getElementById('pw-wrap').style.display = k === 'password' ? '' : 'none';
+    key.style.display = k === 'key' ? '' : 'none';
+    // `flex`, not '': the picker is a row of a button and a note.
+    document.getElementById('key-pick').style.display = k === 'key' ? 'flex' : 'none';
+  }
+  // READ IN THE BROWSER, dropped into the field the form already posts. No
+  // upload endpoint exists for this and none is wanted: a private key is the
+  // one thing worth keeping off any path that does not already carry it.
+  const kf = document.getElementById('keyFile'),
+        kpicked = document.getElementById('keyPicked');
+  document.getElementById('keyBrowse').addEventListener('click', () => kf.click());
+  kf.addEventListener('change', () => {
+    const f = kf.files && kf.files[0];
+    if (!f) return;
+    // A private key is a few kB. Anything of this size is not one, and reading
+    // a large file into a textarea would hang the tab rather than fail.
+    if (f.size > 64 * 1024) {
+      kpicked.textContent = f.name + ' is ' + Math.round(f.size / 1024)
+                          + ' kB — that is not a private key';
+      return;
+    }
+    const r = new FileReader();
+    r.onerror = () => { kpicked.textContent = 'that file could not be read'; };
+    r.onload = () => {
+      const text = String(r.result || '');
+      if (text.indexOf('PRIVATE KEY') < 0) {
+        // Say which mistake it is. Picking the .pub half is the common one and
+        // its failure is otherwise a parse error at save time.
+        kpicked.textContent = text.slice(0, 4) === 'ssh-'
+          ? f.name + ' is the PUBLIC half — pick the file without .pub'
+          : f.name + ' does not look like a private key';
+        return;
+      }
+      key.value = text;
+      kpicked.textContent = 'read ' + f.name + ' — save to store it';
+    };
+    r.readAsText(f);
+  });
+  // The region select follows the project through the SHARED behaviour in
+  // base.html — it used to have its own copy here, which set `hidden` on the
+  // options and never called ddRefresh, so choosing a project left the region
+  // control dead. See CLAUDE.md → "a dependent select".
+  window.placeSync(pPid, pRgid, document.getElementById('pRgidNote'));
+  proto.addEventListener('change', syncProto);
+  authk.addEventListener('change', syncAuth);
+  {#- NOTHING IS COPIED INTO THE PASSWORD BOX. It used to be, on submit, and
+      that quietly destroyed every SSH key this form ever took: an `<input>`
+      strips CR and LF as part of its value sanitisation, so the key arrived
+      as one unbroken line. The textarea posts under its own name and the
+      server reads that name for key auth. -#}
+  syncProto(); syncAuth();
+})();
+</script>
+{% endblock %}

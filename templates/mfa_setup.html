@@ -1,0 +1,44 @@
+{% extends "_auth_shell.html" %}
+{% block body %}
+<h1>Set up Google Authenticator</h1>
+<p class="sub">Required for <b>{{ me.email }}</b> before you can use the portal.</p>
+{% if err %}<div class="err">⚠ {{ err }}</div>{% endif %}
+<ol class="steps">
+  <li>Open <b>Google Authenticator</b> on your phone.</li>
+  <li>Tap <b>＋</b> → <b>Scan a QR code</b>.</li>
+  <li>Scan the code below, then enter the 6 digits it shows.</li>
+</ol>
+<div class="qr"><img src="{{ qr_src }}" alt="QR code"
+     width="{{ qr_px }}" height="{{ qr_px }}"></div>
+<details style="margin-bottom:16px;" {% if err %}open{% endif %}>
+  <summary style="color:var(--accent-ink);font-size:12.5px;cursor:pointer;">
+    Can’t scan? Enter this key manually instead</summary>
+  <div style="margin-top:12px;">
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px;">
+      In Google Authenticator choose <b>＋ → Enter a setup key</b>, then:</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:4px;">Account</div>
+    <div class="secret" style="color:var(--text);margin-bottom:10px;">{{ me.email }}</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:4px;">Key</div>
+    <div class="secret">{{ secret }}</div>
+    <div style="font-size:11.5px;color:var(--muted);margin-top:8px;">
+      Leave the type as <b>Time based</b>.</div>
+  </div>
+</details>
+<form method="post" action="/mfa/setup">
+  <label class="f" for="code">Code from the app</label>
+  <input class="code" type="text" id="code" name="code" required autofocus
+         inputmode="numeric" pattern="[0-9]*" maxlength="6"
+         autocomplete="one-time-code" placeholder="000000">
+  <button type="submit">Confirm &amp; finish</button>
+</form>
+{% endblock %}
+{% block after %}
+<div class="note">Keep the key safe — losing it means an admin must reset your MFA.</div>
+<script nonce="{{ csp_nonce() }}">
+const c = document.getElementById('code');
+c.addEventListener('input', () => {
+  c.value = c.value.replace(/\D/g, '').slice(0, 6);
+  if (c.value.length === 6) c.form.submit();
+});
+</script>
+{% endblock %}

@@ -1,0 +1,8 @@
+# The suite drives the app through Starlette's TestClient, which needs an HTTP
+# client. `httpx` itself is now a RUNTIME dependency too — provision.py's
+# Proxmox client imports it — so it lives in requirements.txt and is not
+# repeated here; this file is only what the tests need ON TOP of the app.
+#
+# starlette 1.x moved its TestClient from httpx to httpx2, so both shapes are
+# covered: whichever starlette is installed, one of them is the one it looks for.
+httpx2>=0.1

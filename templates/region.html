@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block crumbs %}
+  <a href="/">Projects</a> <span class="sep">/</span>
+  <a href="/p/{{ pid }}">{{ pname }}</a> <span class="sep">/</span>
+  <b>{{ rname }}</b>
+{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>{{ region.flag or flag_for(region.name) }} {{ pname }} · {{ rname }}</h1>
+    <p class="sub">{{ region.label or '' }}{% if region.label %} — {% endif %}select an environment.</p>
+  </div>
+  <a class="btn btn-ghost" href="/settings#{{ rgid }}">⚙︎ Region settings</a>
+</div>
+
+{% if not envs %}
+<div class="empty">
+  <div class="big">{{ glyph("package", 40) }}</div>
+  <h2>No environments found</h2>
+  <p>Check this region's repository connection and values path.</p>
+  <a class="btn" href="/settings#{{ rgid }}">Open region settings</a>
+</div>
+{% endif %}
+
+<div class="hub-grid">
+  {% for e, files in envs.items() %}
+  <a class="hub-card" href="/p/{{ pid }}/{{ rgid }}/{{ e }}">
+    <div class="flag">{{ env_glyph(e, 26) }}</div>
+    <div>
+      <div class="htitle">{{ env_label(e) }}</div>
+      <div class="hmeta">{{ files|length }} service{{ 's' if files|length != 1 }}
+        · cluster: {{ clusters.get(e) or '— not assigned —' }}</div>
+    </div>
+    <div class="arrow">→</div>
+  </a>
+  {% endfor %}
+</div>
+{% endblock %}

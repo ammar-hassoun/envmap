@@ -1,0 +1,112 @@
+# What must hold on every push: the chart renders, the app imports, and no
+# secret or personal path got committed.
+name: check
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: helm lint deploy/helm/config-portal
+      - name: render the combinations people actually use
+        run: |
+          helm template t deploy/helm/config-portal > /dev/null
+          helm template t deploy/helm/config-portal --set persistence.enabled=false > /dev/null
+          helm template t deploy/helm/config-portal \
+            --set ingress.enabled=true \
+            --set 'ingress.hosts[0].host=portal.example.com' \
+            --set 'ingress.hosts[0].paths[0].path=/' \
+            --set 'ingress.hosts[0].paths[0].pathType=Prefix' \
+            --set rbac.createReadOnly=true \
+            --set portal.cookieSecure=true > /dev/null
+
+  app:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13" }
+      - run: pip install -r requirements.txt
+      - name: every module must import
+        run: python -c "import app.main; print('ok', app.main.env.VERSION)"
+      - name: compile cleanly, as the image does
+        run: python -m compileall -q app
+      - name: the assistant must still understand its questions
+        # a router is only as good as the sentences it answers; each case in
+        # here is one that once got a wrong answer
+        run: python tests/test_routing.py
+      - name: the edge layer must read, and change nothing unconfirmed
+        run: PORTAL_DATA_DIR=$(mktemp -d) python tests/test_edge.py
+      - name: AWS must read, act and bill like Alibaba does
+        run: PORTAL_DATA_DIR=$(mktemp -d) python tests/test_aws.py
+      - name: no cloud change without a confirmation, and all of them audited
+        run: PORTAL_DATA_DIR=$(mktemp -d) python tests/test_cloudops.py
+      - name: a cloud region must be resolved before it is called
+        run: PORTAL_DATA_DIR=$(mktemp -d) python tests/test_cloud.py
+      - name: one CI connection must cover many repositories
+        run: PORTAL_DATA_DIR=$(mktemp -d) python tests/test_pipelines.py
+      - name: every value in a values file must be editable, and diffs minimal
+        run: PORTAL_DATA_DIR=$(mktemp -d) python tests/test_values.py
+      - name: a pasted key must be repaired or refused, never stored broken
+        run: PORTAL_DATA_DIR=$(mktemp -d) python tests/test_keys.py
+      - name: IT spend must add up, and never invent an exchange rate
+        # a quarterly bill and a yearly one cannot simply be added, a one-off in
+        # a run rate overstates it forever, and two currencies with no rate
+        # between them must be reported apart rather than summed
+        run: PORTAL_DATA_DIR=$(mktemp -d) python tests/test_spend.py
+      - run: pip install httpx
+      - name: the admin dialogs must render usably, and post every field
+        # a two-column dialog was cutting a tenant GUID in half, and a native
+        # checkbox was drawn light on the dark theme; both render fine in a
+        # unit test and only look wrong in a browser
+        run: PORTAL_DATA_DIR=$(mktemp -d) python tests/test_admin_ui.py
+      - name: every shell script must parse
+        # a quoting mistake in dev.sh broke it after it had already been
+        # reported as fine; bash -n is instant and would have caught it
+        run: for f in scripts/*.sh; do bash -n "$f" || exit 1; done
+      - name: nothing that looks like state or a secret
+        run: |
+          bad=$(git ls-files | grep -E '(^data/|\.db$|\.sqlite3?$|kubeconfig|\.pem$|\.key$|/Users/)' || true)
+          if [ -n "$bad" ]; then echo "::error::committed: $bad"; exit 1; fi
+      - name: no absolute home paths in the source
+        run: |
+          bad=$(grep -rIn --exclude-dir=.git -E '/Users/[a-z]+|/home/[a-z]+/' \
+                  app templates deploy scripts 2>/dev/null || true)
+          if [ -n "$bad" ]; then echo "::error::$bad"; exit 1; fi
+
+  image:
+    # Build from the clean checkout on every push. A developer's working tree can
+    # contain files git never recorded — an empty directory, an untracked asset —
+    # and a Dockerfile that COPYs one builds locally and fails only here. Cheaper
+    # to learn that in two minutes than at release time.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: config-portal:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: it must start, report its version and carry no source
+        run: |
+          docker run --rm --entrypoint sh config-portal:ci -c '
+            [ "$(find /app -name "*.py" | wc -l)" -eq 0 ] || { echo "source shipped"; exit 1; }
+            [ "$(id -u)" = "10001" ] || { echo "not running as portal"; exit 1; }
+            kubectl version --client=true >/dev/null && git --version >/dev/null'
+          docker run -d --name ci --read-only --tmpfs /tmp --tmpfs /home/portal \
+            -e PORTAL_ALLOW_NETWORK=1 -p 8471:8471 config-portal:ci
+          for i in $(seq 20); do
+            if curl -fs localhost:8471/healthz; then echo; docker rm -f ci; exit 0; fi
+            sleep 2
+          done
+          echo "::error::/healthz never answered"; docker logs ci; exit 1

@@ -1,0 +1,54 @@
+{# Workflow engines: what is running, and what failed recently. Only meaningful
+   when one is connected. #}
+{% set w = d.wf %}
+{% if w and w.conns %}
+<div class="card" style="margin:0;">
+  <div class="card-h">⏱ <a href="/workflows" style="color:var(--text);">Workflows</a>
+    <span class="hint">{{ w.conns }} engine{{ 's' if w.conns != 1 }}</span>
+    <span style="flex:1"></span>
+    <a class="badge" href="/workflows"><b>{{ w.running }}</b> running</a>
+    {% if w.failed %}
+    <a class="badge" style="color:var(--danger-ink);" href="/workflows"><b
+       style="color:var(--danger-ink);">{{ w.failed }}</b> failed</a>
+    {% endif %}
+  </div>
+  <div class="card-b">
+    {% for e in w.engines %}
+    <div style="{{ 'border-top:1px solid var(--line);padding-top:9px;margin-top:9px;'
+         if not loop.first }}">
+      <div class="kv" style="gap:8px;flex-wrap:wrap;">
+        <b style="font-size:13px;">{{ e.name }}</b>
+        <span class="hint">{{ e.type }}</span>
+        <span style="flex:1"></span>
+        {% if e.error %}
+        <span class="hint" style="color:var(--warn-ink);">{{ e.error }}</span>
+        {% else %}
+        <span class="badge">{{ e.running }} running</span>
+        {% if e.failed %}<span class="badge" style="color:var(--danger-ink);">{{
+          e.failed }} failed</span>{% endif %}
+        {% endif %}
+      </div>
+      {# One row per namespace, because "something failed" is only useful once
+         you know which namespace it failed in. #}
+      {% if e.groups %}
+      <div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:7px;">
+        {% for g in e.groups %}
+        <span class="badge" style="font-size:11px;{{
+          'color:var(--danger-ink);' if g.failed }}">{{ g.name }}
+          {% if g.running %}· {{ g.running }} running{% endif %}
+          {% if g.failed %}· {{ g.failed }} failed{% endif %}
+          {% if not g.running and not g.failed %}· quiet{% endif %}</span>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% else %}
+<div class="card" style="margin:0;"><div class="card-b">
+  <p class="sub" style="margin:0;">No workflow engine connected.
+    <a href="/settings/conns/wf">Connect Temporal or Airflow</a> and this panel
+    shows what is running and what failed recently.</p>
+</div></div>
+{% endif %}

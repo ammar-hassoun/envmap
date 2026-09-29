@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% import "_bits.html" as bits %}
+{% block crumbs %}<b>Hypervisors</b>{% endblock %}
+{% block content %}
+{{ bits.collecting(pending, "The hypervisors below are the ones that have answered so far.") }}
+
+{% if not conns %}
+<div class="empty">
+  <div class="big">{{ glyph("layers", 40) }}</div>
+  <h2>No hypervisor connected</h2>
+  <p>Connect Proxmox VE, vCenter or a standalone ESXi host and this page shows the
+     hosts and virtual machines underneath your clusters — the layer where “the
+     node went away” is usually explained.</p>
+  <a class="btn" href="/settings/conns/virt">＋ Connect a hypervisor</a>
+</div>
+
+{% else %}
+<div class="page-head">
+  <div><h1>Hypervisors</h1>
+    <p class="sub">{{ conns|length }} connection{{ 's' if conns|length != 1 }} ·
+      {{ hosts }} host{{ 's' if hosts != 1 }} · {{ guests }} guest{{ 's' if guests != 1 }} ·
+      {{ running }} running{% if stopped %} ·
+      <span style="color:var(--warn-ink);">{{ stopped }} not running</span>{% endif %}</p></div>
+  <div style="display:flex;gap:10px;">
+    <a class="btn btn-ghost" href="/virt?refresh=1{{ '&q=' ~ q|urlencode if q }}">↻ Refresh</a>
+    <a class="btn btn-ghost" href="/settings/conns/virt">⚙ Manage</a>
+  </div>
+</div>
+
+<form method="get" action="/virt" class="card" style="margin-bottom:14px;">
+  <div class="card-b" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+    <input type="search" name="q" value="{{ q }}" style="flex:1;min-width:200px;"
+           placeholder="filter guests by name, host or id…">
+    <label class="chk"><input type="checkbox" name="stopped_only" value="1"
+      {% if stopped_only %}checked{% endif %} data-submit> not running only</label>
+    <button class="btn-ghost tbtn" type="submit">Apply</button>
+  </div>
+</form>
+
+{% for e in engines %}
+{% if e.error %}
+<div class="flash err">⚠ {{ e.conn.name }}: {{ e.error }}
+  — <a href="/settings/conns/virt#{{ e.conn.id }}">check the connection</a></div>
+{% else %}
+
+<div class="card">
+  <div class="card-h">
+    {{ plogo(e.provider, 18) if e.provider else glyph('layers', 18) }}
+    <b>{{ e.conn.name }}</b>
+    <span class="badge">{{ e.provider.label if e.provider else e.conn.type }}</span>
+    <span class="hint">{{ e.data.hosts|length }} host{{ 's' if e.data.hosts|length != 1 }} ·
+      {{ e.data.guests|length }} guest{{ 's' if e.data.guests|length != 1 }}</span>
+    <span style="flex:1"></span>
+    <a class="btn btn-ghost tbtn" href="{{ e.conn.base_url }}" target="_blank" rel="noopener">Open →</a>
+  </div>
+  <div class="card-b">
+    {% if e.data.hosts %}
+    <div style="overflow-x:auto;margin-bottom:12px;">
+      <table class="jenkins">
+        <thead><tr>
+          <th style="min-width:170px;">Host</th><th style="width:100px;">State</th>
+          <th style="width:150px;">CPU</th><th style="width:170px;">Memory</th>
+          <th style="width:110px;">Uptime</th>
+        </tr></thead>
+        <tbody>
+        {% for h in e.data.hosts %}
+        <tr>
+          <td class="jname"><b>{{ h.name }}</b></td>
+          <td><span class="sv {{ 'sv-ok' if h.state|lower in ('online','connected') else 'sv-medium' }}"
+                style="{{ 'color:var(--ok-ink);' if h.state|lower in ('online','connected') }}">{{ h.state }}</span></td>
+          <td>{% if h.cpu_pct is not none %}{{ h.cpu_pct }}%{% if h.cores %} of {{ h.cores }} cores{% endif %}
+              {% elif h.cores %}{{ h.cores }} cores{% else %}—{% endif %}</td>
+          <td>{% if h.mem_pct is not none %}{{ h.mem_pct }}% of {{ h.mem_gib }} GiB
+              {% elif h.mem_gib %}{{ h.mem_gib }} GiB{% else %}—{% endif %}</td>
+          <td class="hint">{{ h.uptime or '—' }}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
+    {% set shown = e.guests %}
+    {% if shown %}
+    <div style="overflow-x:auto;">
+      <table class="jenkins">
+        <thead><tr>
+          <th style="min-width:190px;">Guest</th><th style="width:95px;">Kind</th>
+          <th style="width:100px;">State</th><th style="min-width:130px;">Host</th>
+          <th style="width:130px;">CPU</th><th style="width:150px;">Memory</th>
+          <th style="width:100px;">Disk</th><th style="width:100px;">Uptime</th>
+          <th style="width:80px;"></th>
+        </tr></thead>
+        <tbody>
+        {% for g in shown %}
+        <tr>
+          <td class="jname"><b>{{ g.name }}</b>
+            {% if g.id %}<span class="hint" style="font-family:var(--mono);font-size:11px;"> {{ g.id }}</span>{% endif %}</td>
+          <td class="hint">{{ g.kind }}</td>
+          <td><span class="sv {{ 'sv-ok' if g.state|lower in ('running','on','poweredon') else 'sv-medium' }}"
+                style="{{ 'color:var(--ok-ink);' if g.state|lower in ('running','on','poweredon') }}">{{ g.state }}</span></td>
+          <td class="hint">{{ g.host or '—' }}</td>
+          <td>{% if g.cpu_pct is not none and g.cores %}{{ g.cpu_pct }}% of {{ g.cores }}
+              {% elif g.cores %}{{ g.cores }} vCPU{% else %}—{% endif %}</td>
+          <td>{% if g.mem_pct is not none %}{{ g.mem_pct }}% of {{ g.mem_gib }} GiB
+              {% elif g.mem_gib %}{{ g.mem_gib }} GiB{% else %}—{% endif %}</td>
+          <td>{% if g.disk_gib %}{{ g.disk_gib }} GiB{% else %}—{% endif %}</td>
+          <td class="hint">{{ g.uptime or '—' }}</td>
+          <td>{% if g.url %}<a class="btn btn-ghost" style="padding:4px 10px;font-size:11px;"
+                href="{{ g.url }}" target="_blank" rel="noopener">Open →</a>{% endif %}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="sec-note">{% if q or stopped_only %}No guest here matches the
+      filter.{% else %}This connection reported no guests.{% endif %}</div>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+{% endfor %}
+
+<div class="card"><div class="card-b">
+  <div class="sec-note" style="margin:0;">Read-only: no start, stop, migrate or
+    snapshot. Those belong in the hypervisor's own console, which has the
+    permissions and the audit trail for them.</div>
+</div></div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,35 @@
+{# What is firing across the monitoring systems. #}
+{% set a = d.alerts %}
+{% if not a or not a.conns %}
+<div class="card" style="margin:0;"><div class="card-b">
+  <div class="sec-note">No monitoring system connected — add Prometheus,
+    Alertmanager, Grafana or Zabbix in
+    <a href="/settings/monitoring">Settings → Monitoring</a>.</div>
+</div></div>
+{% else %}
+<div class="card" style="margin:0;">
+  <div class="card-h">📣 <a href="/monitoring" style="color:var(--text);">Firing now</a>
+    <span class="hint">{{ a.conns }} system{{ 's' if a.conns != 1 }}</span>
+    <span style="flex:1"></span>
+    {% if a.broken %}<span class="badge" style="color:var(--warn-ink);">
+      {{ a.broken|length }} unreachable</span>{% endif %}
+  </div>
+  <div class="card-b">
+    <div style="display:flex;gap:9px;flex-wrap:wrap;margin-bottom:10px;">
+      {% for s in severities_mon %}
+      <span class="sv sv-{{ 'critical' if s == 'critical' else ('medium' if s == 'warning' else 'info') }}">
+        {{ a.counts.get(s, 0) }}<i>{{ s }}</i></span>
+      {% endfor %}
+      {% if not a.total %}<span class="sv sv-clean">nothing firing</span>{% endif %}
+    </div>
+    {% for al in a.alerts %}
+    <div class="mrow" style="margin-bottom:5px;">
+      <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+        <span class="sv sv-{{ 'critical' if al.severity == 'critical' else ('medium' if al.severity == 'warning' else 'info') }}">{{ al.severity }}</span>
+        {{ al.name }}</span>
+      <span class="hint">{{ al.cluster or al.conn }}</span>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}

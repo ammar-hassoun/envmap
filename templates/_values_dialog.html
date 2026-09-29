@@ -1,0 +1,589 @@
+{# One values file, as text, in a window over the list it was opened from.
+
+   WHY A WINDOW AND NOT A PAGE
+       There WAS a page — a two-column comparison of what git declares against
+       what the cluster is running, with a structured editor per key. It was
+       retired on request, and the reason it lost is the same reason the log and
+       describe windows exist: you are looking at one file out of seventeen, and
+       a navigation costs you the list, the environment you were in and your
+       place in it. Every reason anybody actually opened that page was one of
+       three things — read the file, change a value, push it — and all three fit
+       in a window.
+
+   WHY TEXT AND NOT A KEY-BY-KEY FORM
+       The form was the clever half and the wrong shape. A values file is edited
+       by somebody who knows YAML, and the things they want to do — move a block,
+       add a list item, fix indentation, read a comment that explains why a value
+       is pinned — are not "set key to value". The text is the artefact under
+       version control, so the text is what gets edited, and the diff at the
+       bottom is the same diff git will commit.
+
+   THE THREE BUTTONS, IN THE ORDER THEY ARE SAFE
+       `save` writes the WORKING COPY only. Nothing has left the machine, the
+       row shows `edited`, and it can still be thrown away — that is why discard
+       exists and why saving is not frightening.
+       `seal` encrypts one value against this cluster's controller and writes
+       the blob into the file. Also working-copy only.
+       `commit & push` is the irreversible one, so it is last, it demands a
+       message, and it reports the sha it verified on the remote.
+
+   SEALING, AND WHY IT IS A KEY AND A VALUE RATHER THAN A SELECTION
+       Sealing the highlighted text would be the obvious gesture and it would be
+       a trap: a sealed blob is scoped `strict` to one namespace AND one secret
+       name, so it only ever decrypts inside the block it was scoped for.
+       Encrypting a selection wherever the caret happened to be would produce
+       something that looks right, commits cleanly, and fails to decrypt in the
+       cluster — the worst possible failure for a secret. So the panel names the
+       scope it is sealing into, reads it off the file itself, and puts the blob
+       where that scope is valid. Rotating an existing key is the same gesture
+       with an existing name, which the panel offers as chips.
+
+       The plaintext goes to the server and to kubeseal. It is never echoed
+       back, never stored, and the audit line records the key's NAME only.
+#}
+<dialog id="vfDlg" class="psh vfwin">
+  <div class="psh-bar">
+    <span class="psh-dots"><b title="close" data-vfdot="close">✕</b><b
+      title="minimise" data-vfdot="mini">–</b><b title="maximise" data-vfdot="maxi">+</b></span>
+    <b id="vfService">values</b>
+    <span class="psh-ns" id="vfWhere"></span>
+    <span style="flex:1"></span>
+    <span class="psh-state" id="vfState"></span>
+    <button type="button" class="psh-x" id="vfClose">close</button>
+  </div>
+
+  <div class="lgbar">
+    {# Opens as a VIEWER. Reading the file is the common reason to open it, and a
+       textarea live from the first keystroke means a stray character in a
+       production values file is one click from being committed. #}
+    <button type="button" class="psh-x" id="vfEdit"
+            title="unlock the file so it can be changed">✎ edit</button>
+    <button type="button" class="psh-x" id="vfSave" hidden
+            title="write it to the working copy — nothing is pushed yet">save</button>
+    <button type="button" class="psh-x" id="vfSeal"
+            title="encrypt a value into this file with kubeseal">
+      {{ glyph('lock', 12) }} seal a value</button>
+    <button type="button" class="psh-x" id="vfCommit"
+            title="commit this file and push it">commit &amp; push</button>
+    <button type="button" class="psh-x" id="vfDiffBtn" hidden
+            title="what git would commit">diff</button>
+    <button type="button" class="psh-x" id="vfRevert"
+            title="read it again from disk">↻ re-read</button>
+    <button type="button" class="psh-x" id="vfCopy">copy</button>
+    <span style="flex:1"></span>
+    <span class="psh-state" id="vfDirty"></span>
+  </div>
+
+  {# ── seal panel ──
+     Deliberately inside the window rather than a second dialog: it is an edit to
+     the file that is open, and a modal over a modal is where people lose track
+     of what they are typing into. #}
+  <div class="vfpanel" id="vfSealPanel" hidden>
+    <div class="vfp-h">
+      {{ glyph('lock', 13) }} <b>Seal a value into this file</b>
+      <span class="vfp-scope" id="vfScope"></span>
+      <span style="flex:1"></span>
+      <button type="button" class="psh-x" data-vfpanel-close="vfSealPanel">✕</button>
+    </div>
+    <div class="vfp-b">
+      <div class="vfp-row">
+        <label>key
+          <input type="text" id="vfSealKey" class="psh-find" spellcheck="false"
+                 autocomplete="off" placeholder="DATABASE_PASSWORD"></label>
+        <label class="vfp-grow">value
+          {# type=password so it is not readable over a shoulder or in a
+             screenshot, with a reveal — a sealing form is exactly where somebody
+             pastes a credential and needs to check they pasted the right one. #}
+          <span class="vfp-secret">
+            <input type="password" id="vfSealVal" class="psh-find"
+                   spellcheck="false" autocomplete="off"
+                   placeholder="the plaintext — it is never stored">
+            <button type="button" class="psh-x" id="vfSealEye"
+                    title="show what was typed">show</button>
+          </span></label>
+        <button type="button" class="psh-x go" id="vfSealGo">seal it in</button>
+      </div>
+      <div class="vfp-known" id="vfSealKnown" hidden></div>
+      <div class="vfp-note" id="vfSealNote"></div>
+    </div>
+  </div>
+
+  {# ── commit panel ── #}
+  <div class="vfpanel" id="vfCommitPanel" hidden>
+    <div class="vfp-h">
+      {{ glyph('git-branch', 13) }} <b>Commit &amp; push</b>
+      <span class="vfp-scope" id="vfBranchNote"></span>
+      <span style="flex:1"></span>
+      <button type="button" class="psh-x" data-vfpanel-close="vfCommitPanel">✕</button>
+    </div>
+    <div class="vfp-b">
+      <div class="vfp-row">
+        <label class="vfp-grow">message
+          <input type="text" id="vfMsg" class="psh-find" spellcheck="false"
+                 autocomplete="off" placeholder="what changed, and why"></label>
+        <label>new branch <span class="vfp-opt">optional</span>
+          <input type="text" id="vfBranch" class="psh-find" spellcheck="false"
+                 autocomplete="off" placeholder="leave empty to push here"></label>
+        <button type="button" class="psh-x go" id="vfCommitGo">push</button>
+      </div>
+      <div class="vfp-note" id="vfCommitNote"></div>
+    </div>
+  </div>
+
+  <div class="vfv" id="vfWrap">
+    <textarea id="vfText" spellcheck="false" autocomplete="off"
+              autocapitalize="off" wrap="off"></textarea>
+  </div>
+  <div class="vfout" id="vfOut" hidden></div>
+</dialog>
+
+<style>
+  /* Wider than the yaml window: values files are long and their indentation is
+     information, so wrapping or a narrow column costs readability. */
+  dialog.vfwin { width:min(1080px,96vw); height:min(760px,90vh); }
+  dialog.psh.vfwin[open] { display:flex; flex-direction:column; }
+  .vfwin .vfv { flex:1 1 auto; min-height:0; display:flex; }
+  .vfv textarea { flex:1; width:100%; border:0; outline:none; resize:none;
+    background:#0b0f16; color:#cfe0f5; font-family:var(--mono); font-size:12px;
+    line-height:1.55; padding:11px 14px; tab-size:2; white-space:pre;
+    overflow:auto; }
+  /* Locked, it is a document being read — the caret would claim otherwise. */
+  .vfv textarea.locked { cursor:default; caret-color:transparent;
+    background:#0a0d14; }
+  .vfout { flex:none; max-height:30%; overflow:auto; padding:9px 14px;
+    border-top:1px solid #202839; font-family:var(--mono); font-size:11.5px;
+    white-space:pre-wrap; color:#9fb4cf; }
+  .vfout[hidden] { display:none; }
+  .vfout.ok { color:var(--ok-ink); }
+  .vfout.bad { color:var(--danger-ink); }
+  .vfout.warn { color:var(--warn-ink); }
+  /* A diff reads as a diff or it is just text with symbols in front of it. */
+  .vfout .d-add { color:var(--ok-ink); }
+  .vfout .d-del { color:var(--danger-ink); }
+  .vfout .d-hd  { color:#7f93ad; }
+  .psh-x.go { color:var(--accent); border-color:var(--accent); }
+  .psh-x.danger { color:var(--danger-ink); border-color:var(--danger-line); }
+
+  .vfpanel { flex:none; border-top:1px solid #202839; background:#0d121b; }
+  .vfpanel[hidden] { display:none; }
+  .vfp-h { display:flex; align-items:center; gap:9px; padding:8px 13px;
+    font-size:12px; color:#cfe0f5; border-bottom:1px solid #1a2130; }
+  .vfp-scope { font-family:var(--mono); font-size:11px; color:#8fa6c2; }
+  .vfp-b { padding:11px 13px; }
+  .vfp-row { display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; }
+  .vfp-row label { display:flex; flex-direction:column; gap:4px;
+    font-size:10.5px; text-transform:uppercase; letter-spacing:.4px;
+    color:#7f93ad; }
+  .vfp-row label.vfp-grow { flex:1; min-width:220px; }
+  .vfp-opt { text-transform:none; letter-spacing:0; color:#6d819b; }
+  .vfp-secret { display:flex; gap:6px; }
+  .vfp-secret input { flex:1; }
+  .vfp-row input { min-width:0; }
+  .vfp-note { margin-top:9px; font-size:11.5px; color:#8fa6c2;
+    white-space:pre-wrap; }
+  .vfp-note.bad { color:var(--danger-ink); }
+  .vfp-note.ok { color:var(--ok-ink); }
+  .vfp-known { margin-top:10px; display:flex; gap:6px; flex-wrap:wrap;
+    align-items:center; font-size:11px; color:#7f93ad; }
+  .vfp-known button { font-family:var(--mono); font-size:11px;
+    background:#141b27; color:#a9c0dc; border:1px solid #222c3d;
+    border-radius:6px; padding:2px 8px; cursor:pointer; }
+  .vfp-known button:hover { border-color:var(--accent); color:#d7e6f7; }
+</style>
+
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  const dlg = document.getElementById('vfDlg');
+  const box = document.getElementById('vfText');
+  const svc = document.getElementById('vfService');
+  const where = document.getElementById('vfWhere');
+  const state = document.getElementById('vfState');
+  const dirty = document.getElementById('vfDirty');
+  const out = document.getElementById('vfOut');
+  const editBtn = document.getElementById('vfEdit');
+  const saveBtn = document.getElementById('vfSave');
+  const sealBtn = document.getElementById('vfSeal');
+  const commitBtn = document.getElementById('vfCommit');
+  const diffBtn = document.getElementById('vfDiffBtn');
+  const revertBtn = document.getElementById('vfRevert');
+  const sealPanel = document.getElementById('vfSealPanel');
+  const commitPanel = document.getElementById('vfCommitPanel');
+
+  // `at` is the file; `doc` is what the server last told us about it. `editing`
+  // is what the reader has asked for. The text is only writable when both the
+  // reader asked and the file was read successfully.
+  let at = null, doc = {}, original = '', editing = false, lastDiff = '';
+
+  function base() {
+    return '/p/' + encodeURIComponent(at.pid) + '/' + encodeURIComponent(at.rgid)
+      + '/' + encodeURIComponent(at.env) + '/s/' + encodeURIComponent(at.fname);
+  }
+
+  function say(text, tone) {
+    out.hidden = !text;
+    out.className = 'vfout' + (tone ? ' ' + tone : '');
+    out.textContent = text || '';
+  }
+
+  function showDiff(text) {
+    if (!text || !text.trim()) { say('Nothing is uncommitted — the file on disk '
+      + 'matches the last commit.', ''); return; }
+    out.hidden = false;
+    out.className = 'vfout';
+    out.innerHTML = '';
+    text.split('\n').forEach(function (line) {
+      const span = document.createElement('span');
+      span.textContent = line + '\n';
+      if (line.startsWith('+') && !line.startsWith('+++')) span.className = 'd-add';
+      else if (line.startsWith('-') && !line.startsWith('---')) span.className = 'd-del';
+      else if (line.startsWith('@@') || line.startsWith('diff ')
+               || line.startsWith('index ')) span.className = 'd-hd';
+      out.appendChild(span);
+    });
+  }
+
+  function marked() {
+    const changed = box.value !== original;
+    dirty.textContent = !editing ? 'read-only — press edit'
+                      : changed ? 'unsaved changes' : 'editing';
+    saveBtn.disabled = editing && !changed;
+    return changed;
+  }
+
+  function setEditing(on) {
+    editing = !!on && !doc.error;
+    box.readOnly = !editing;
+    box.classList.toggle('locked', !editing);
+    // Nothing that writes exists while the file is locked: a disabled button
+    // invites the click, an absent one says what state this is.
+    editBtn.hidden = editing;
+    saveBtn.hidden = !editing;
+    revertBtn.textContent = editing ? 'revert' : '↻ re-read';
+    revertBtn.title = editing ? 'throw away what you typed and read it again'
+                              : 'read it again from disk';
+    marked();
+  }
+
+  function panel(el, on) {
+    // One panel at a time — they are two different things to be doing, and both
+    // open at once eats the editor they are about.
+    [sealPanel, commitPanel].forEach(function (p) {
+      p.hidden = (p !== el) || !on;
+    });
+  }
+
+  function knownKeys() {
+    const wrap = document.getElementById('vfSealKnown');
+    const keys = doc.sealed_keys || [];
+    wrap.innerHTML = '';
+    if (!keys.length) { wrap.hidden = true; return; }
+    wrap.hidden = false;
+    wrap.appendChild(document.createTextNode('already sealed here — click to rotate:'));
+    keys.forEach(function (k) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = k;
+      b.addEventListener('click', function () {
+        document.getElementById('vfSealKey').value = k;
+        document.getElementById('vfSealVal').focus();
+      });
+      wrap.appendChild(b);
+    });
+  }
+
+  function load(quiet) {
+    if (!quiet) { state.textContent = 'reading…'; box.value = ''; say(''); }
+    return fetch(base() + '/raw.json').then(function (r) { return r.json(); })
+      .then(function (d) {
+        doc = d || {};
+        if (doc.error) {
+          state.textContent = '';
+          setEditing(false);
+          say(doc.error, 'bad');
+          return;
+        }
+        original = doc.text || '';
+        box.value = original;
+        svc.textContent = doc.service || at.fname;
+        where.textContent = doc.rel + (doc.branch ? '  ·  ' + doc.branch : '')
+          + (doc.is_prod ? '  ·  production' : '');
+        state.textContent = doc.modified ? 'uncommitted changes on disk'
+                                         : 'clean';
+        lastDiff = doc.diff || '';
+        diffBtn.hidden = !doc.modified;
+        // Always locked after a read, including after a save: a second edit is
+        // a second deliberate act rather than a left-open box.
+        setEditing(false);
+        knownKeys();
+        document.getElementById('vfScope').textContent = doc.may_seal
+          ? 'into ' + doc.namespace + '/' + doc.secret_name
+            + (doc.cluster ? '  ·  cert from ' + doc.cluster : '')
+          : '';
+        document.getElementById('vfSealNote').textContent = doc.seal_why || '';
+        document.getElementById('vfSealNote').className =
+          'vfp-note' + (doc.seal_why ? ' bad' : '');
+        document.getElementById('vfSealGo').disabled = !doc.may_seal;
+        document.getElementById('vfBranchNote').textContent =
+          doc.branch ? 'on ' + doc.branch : '';
+        const notes = [];
+        if (doc.load_error) {
+          notes.push('This file cannot be modelled — ' + doc.load_error
+            + '\nThe text below is still exactly what is on disk, so it can be '
+            + 'read and fixed here. Sealing needs a readable file.');
+        }
+        (doc.warnings || []).forEach(function (w) { notes.push(w); });
+        say(notes.join('\n\n'), notes.length ? 'warn' : '');
+      })
+      .catch(function (e) { state.textContent = ''; say(String(e), 'bad'); });
+  }
+
+  editBtn.addEventListener('click', function () {
+    if (doc.error) return;
+    setEditing(true);
+    say(doc.is_prod
+      ? 'This is a production environment. `save` writes the working copy only '
+        + '— nothing reaches the cluster until you commit and push.'
+      : '`save` writes the working copy only. Nothing is pushed until you press '
+        + 'commit & push.', '');
+    box.focus();
+  });
+
+  function save() {
+    if (!marked()) { say('Nothing has been changed yet.', ''); return; }
+    saveBtn.disabled = true;
+    say('saving…');
+    fetch(base() + '/raw/save',
+          {method: 'POST', body: new URLSearchParams({text: box.value})})
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        saveBtn.disabled = false;
+        if (!d.ok) { say(d.error || 'it was not saved', 'bad'); return; }
+        original = box.value;
+        doc.modified = d.modified;
+        diffBtn.hidden = !d.modified;
+        state.textContent = d.modified ? 'uncommitted changes on disk' : 'clean';
+        setEditing(false);
+        const w = d.warnings || [];
+        say('Saved to the working copy. Nothing has been pushed yet — press '
+          + 'commit & push when you want it in git.'
+          + (w.length ? '\n\n' + w.join('\n') : ''), w.length ? 'warn' : 'ok');
+        // The row behind the window says `edited`; it is now out of date.
+        if (window.vfRowTouched) window.vfRowTouched(at);
+      })
+      .catch(function (e) { saveBtn.disabled = false; say(String(e), 'bad'); });
+  }
+  saveBtn.addEventListener('click', save);
+  // ⌘S / Ctrl-S, because this is an editor and everybody tries it.
+  box.addEventListener('keydown', function (e) {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
+      e.preventDefault();
+      if (editing) save();
+    }
+  });
+  box.addEventListener('input', marked);
+
+  // ── seal ──
+  sealBtn.addEventListener('click', function () {
+    panel(sealPanel, sealPanel.hidden);
+    if (!sealPanel.hidden) document.getElementById('vfSealKey').focus();
+  });
+  document.getElementById('vfSealEye').addEventListener('click', function (e) {
+    const inp = document.getElementById('vfSealVal');
+    const showing = inp.type === 'text';
+    inp.type = showing ? 'password' : 'text';
+    e.currentTarget.textContent = showing ? 'show' : 'hide';
+  });
+  document.getElementById('vfSealGo').addEventListener('click', function () {
+    const keyIn = document.getElementById('vfSealKey');
+    const valIn = document.getElementById('vfSealVal');
+    const note = document.getElementById('vfSealNote');
+    const go = document.getElementById('vfSealGo');
+    const key = keyIn.value.trim();
+    if (!key) { note.textContent = 'name the key to seal'; note.className = 'vfp-note bad'; return; }
+    if (!valIn.value) { note.textContent = 'there is nothing to seal yet'; note.className = 'vfp-note bad'; return; }
+    const rotating = (doc.sealed_keys || []).indexOf(key) !== -1;
+    if (rotating && !confirm('Replace the sealed value for ' + key + '?')) return;
+    // Unsaved text edits and a seal both write the same file, and the seal is
+    // written SERVER-side from what is on disk — so typed-but-unsaved changes
+    // would be overwritten by the seal's rewrite. Say so instead of losing them.
+    if (editing && marked()) {
+      note.textContent = 'save or revert your text edits first — sealing '
+        + 'rewrites the file on disk and would discard them';
+      note.className = 'vfp-note bad';
+      return;
+    }
+    go.disabled = true;
+    note.textContent = 'sealing with kubeseal…';
+    note.className = 'vfp-note';
+    fetch(base() + '/raw/seal', {method: 'POST',
+      body: new URLSearchParams({key: key, value: valIn.value})})
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        go.disabled = false;
+        if (!d.ok) { note.textContent = d.error || 'sealing failed'; note.className = 'vfp-note bad'; return; }
+        // The plaintext leaves the browser the moment it has been used.
+        valIn.value = '';
+        valIn.type = 'password';
+        document.getElementById('vfSealEye').textContent = 'show';
+        keyIn.value = '';
+        doc.sealed_keys = d.sealed_keys || doc.sealed_keys;
+        knownKeys();
+        original = d.text || original;
+        box.value = original;
+        note.textContent = (d.rotated ? 'Rotated ' : 'Sealed ') + d.key
+          + ' into ' + d.scope + '. It is in the working copy — commit & push '
+          + 'to put it in git.';
+        note.className = 'vfp-note ok';
+        doc.modified = true;
+        diffBtn.hidden = false;
+        state.textContent = 'uncommitted changes on disk';
+        return load(true);
+      })
+      .catch(function (e) { go.disabled = false; note.textContent = String(e); note.className = 'vfp-note bad'; });
+  });
+
+  // ── commit ──
+  commitBtn.addEventListener('click', function () {
+    panel(commitPanel, commitPanel.hidden);
+    if (!commitPanel.hidden) {
+      const note = document.getElementById('vfCommitNote');
+      if (editing && marked()) {
+        note.textContent = 'You have unsaved changes — press save first, or they '
+          + 'will not be in the commit.';
+        note.className = 'vfp-note bad';
+      } else if (!doc.modified) {
+        note.textContent = 'There is nothing uncommitted in this file.';
+        note.className = 'vfp-note';
+      } else {
+        note.textContent = '';
+        note.className = 'vfp-note';
+      }
+      document.getElementById('vfMsg').focus();
+    }
+  });
+  document.getElementById('vfCommitGo').addEventListener('click', function () {
+    const msgIn = document.getElementById('vfMsg');
+    const brIn = document.getElementById('vfBranch');
+    const note = document.getElementById('vfCommitNote');
+    const go = document.getElementById('vfCommitGo');
+    if (!msgIn.value.trim()) { note.textContent = 'write a commit message'; note.className = 'vfp-note bad'; return; }
+    const target = brIn.value.trim() || doc.branch;
+    if (!confirm('Push ' + doc.rel + ' to ' + target + '?')) return;
+    go.disabled = true;
+    note.textContent = 'committing and pushing…';
+    note.className = 'vfp-note';
+    fetch(base() + '/raw/commit', {method: 'POST', body: new URLSearchParams(
+      {message: msgIn.value, new_branch: brIn.value})})
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        go.disabled = false;
+        if (!d.ok) { note.textContent = d.error || 'the push failed'; note.className = 'vfp-note bad'; return; }
+        note.textContent = (d.noop ? 'Already pushed — ' : 'Pushed ') + d.sha
+          + ' to ' + d.branch + ' — verified on the remote.';
+        note.className = 'vfp-note ok';
+        msgIn.value = '';
+        brIn.value = '';
+        doc.modified = d.modified;
+        state.textContent = d.modified ? 'uncommitted changes on disk' : 'clean';
+        diffBtn.hidden = !d.modified;
+        if (window.vfRowTouched) window.vfRowTouched(at);
+        return load(true);
+      })
+      .catch(function (e) { go.disabled = false; note.textContent = String(e); note.className = 'vfp-note bad'; });
+  });
+
+  diffBtn.addEventListener('click', function () { showDiff(lastDiff || doc.diff); });
+
+  revertBtn.addEventListener('click', function () {
+    if (editing && marked()
+        && !confirm('Throw away what you typed and read it again?')) return;
+    load();
+  });
+  document.getElementById('vfCopy').addEventListener('click', function (e) {
+    navigator.clipboard.writeText(box.value).then(function () {
+      const b = e.currentTarget, was = b.textContent;
+      b.textContent = 'copied';
+      setTimeout(function () { b.textContent = was; }, 1200);
+    }).catch(function () {});
+  });
+  dlg.querySelectorAll('[data-vfpanel-close]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      document.getElementById(b.dataset.vfpanelClose).hidden = true;
+    });
+  });
+
+  function shut() {
+    if (editing && marked()
+        && !confirm('Close without saving? What you typed is lost.')) return;
+    // The secret must not survive the window being reopened.
+    document.getElementById('vfSealVal').value = '';
+    document.getElementById('vfSealVal').type = 'password';
+    document.getElementById('vfSealEye').textContent = 'show';
+    dlg.close();
+  }
+  document.getElementById('vfClose').addEventListener('click', shut);
+  dlg.querySelector('[data-vfdot="close"]').addEventListener('click', shut);
+  dlg.querySelector('[data-vfdot="mini"]').addEventListener('click', shut);
+  dlg.querySelector('[data-vfdot="maxi"]').addEventListener('click',
+    function () { dlg.classList.toggle('maxi'); });
+  dlg.addEventListener('cancel', function (e) { e.preventDefault(); shut(); });
+
+  // Delegated, so a row on any page opens this by carrying data- attributes and
+  // nothing else — the same contract the log, describe and yaml windows use.
+  document.addEventListener('click', function (e) {
+    const a = e.target.closest && e.target.closest('[data-valuesfile]');
+    if (!a || e.metaKey || e.ctrlKey || e.shiftKey || e.button) return;
+    e.preventDefault();
+    window.openValues({pid: a.dataset.vfpid, rgid: a.dataset.vfrgid,
+                       env: a.dataset.vfenv, fname: a.dataset.vffile});
+  });
+
+  // A deep link opens the window on arrival. The retired service page's URL
+  // still exists as a redirect (search hits, Compare's columns, the assistant's
+  // answers, GitOps' "Edit in git", a freshly created service all point at it),
+  // and it lands here carrying the four identifiers. Without this the reader
+  // would arrive at the right list with the file they asked for unopened.
+  function fromUrl() {
+    const q = new URLSearchParams(location.search);
+    const file = q.get('vfile');
+    if (!file) return;
+    const pid = q.get('vpid'), rgid = q.get('vrgid'), env = q.get('venv');
+    if (!pid || !rgid || !env) return;
+    window.openValues({pid: pid, rgid: rgid, env: env, fname: file});
+    // Taken out of the address bar so a reload, or the back button, does not
+    // reopen a window the reader has deliberately closed.
+    q.delete('vfile'); q.delete('vpid'); q.delete('vrgid'); q.delete('venv');
+    const rest = q.toString();
+    history.replaceState(null, '', location.pathname + (rest ? '?' + rest : ''));
+  }
+  window.openValues = function (opts) {
+    at = {pid: opts.pid, rgid: opts.rgid, env: opts.env, fname: opts.fname};
+    doc = {};
+    original = '';
+    lastDiff = '';
+    svc.textContent = opts.fname || 'values';
+    where.textContent = '';
+    panel(null, false);
+    document.getElementById('vfSealKey').value = '';
+    document.getElementById('vfSealVal').value = '';
+    document.getElementById('vfMsg').value = '';
+    document.getElementById('vfBranch').value = '';
+    document.getElementById('vfCommitNote').textContent = '';
+    // Locked before the read as well as after it: the window is briefly empty
+    // while the file is fetched, and an unlocked empty box that then fills with
+    // another file's contents is the wrong thing to hand a reader.
+    setEditing(false);
+    if (!dlg.open) dlg.showModal();
+    load();
+  };
+
+  // Last, because fromUrl calls openValues — and on a page that has already
+  // finished parsing (this partial is included at the end of the body) the
+  // immediate branch would run before the assignment above.
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', fromUrl);
+  } else {
+    fromUrl();
+  }
+})();
+</script>

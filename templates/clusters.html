@@ -1,0 +1,2672 @@
+{% extends "base.html" %}
+{% from "_back.html" import back %}
+{% import "_bits.html" as bits %}
+
+{% block crumbs %}
+{% if stage == 'hub' %}<b>Clusters</b>
+{% else %}<a href="/clusters">Clusters</a> <span class="sep">/</span>
+  {% if stage == 'project' %}<b>{{ proj.name }}</b>
+  {% else %}<a href="/clusters?project={{ pid }}">{{ proj.name }}</a>
+    <span class="sep">/</span> <b>{{ sel.name }}</b>{% endif %}
+{% endif %}
+{% endblock %}
+
+{% block content %}
+{# app.css is version-cached; mirror the one-line action-row rule here so it shows
+   before the next release (the canonical .actrow.oneline lives in app.css). #}
+<style>
+  .actrow.oneline { flex-wrap:nowrap; }
+  /* per-project chart cards on the clusters Overview — labelled BAR meters
+     (nodes ready, pods healthy/bad) so the three projects compare at a glance.
+     Bars, not rings — the page dropped rings because they were hard to compare
+     (see test_clusterpage "the meters are bars, not rings"). Inline here
+     (app.css is version-cached); status colours carry text labels, not alone. */
+  .pcard { display:flex; flex-direction:column; align-items:stretch; }
+  .pcard-head { display:flex; align-items:flex-start; gap:12px; width:100%; }
+  .pcard-head .pcard-t { flex:1; min-width:0; }
+  .pcard-head .arrow { color:var(--muted); font-size:15px; }
+  .pmeters { margin-top:15px; display:flex; flex-direction:column; gap:11px; }
+  .pmeter { display:grid; grid-template-columns:46px 1fr auto; align-items:center; gap:11px; }
+  .pmeter-l { font-size:10px; text-transform:uppercase; letter-spacing:.5px; color:var(--muted); }
+  .pmeter-bar { display:flex; height:8px; border-radius:99px; overflow:hidden;
+    background:var(--line); gap:2px; }
+  .pmeter-bar i { display:block; height:100%; border-radius:99px; }
+  .pmeter-v { font-size:13.5px; font-variant-numeric:tabular-nums; color:var(--text); white-space:nowrap; }
+  .pmeter-v small { color:var(--muted); font-size:11px; font-variant-numeric:tabular-nums; }
+  .pcard-list { margin-top:13px; }
+  .pcard-empty { margin-top:15px; font-size:12.5px; color:var(--faint); }
+  .pc-ok { color:var(--ok-ink); } .pc-bad { color:var(--danger-ink); }
+</style>
+{% set qbase = '/clusters?project=' ~ pid ~ ('&cluster=' ~ cid if sel else '') %}
+{# Where the kubectl console goes when it closes: the tab it was opened from if
+   the link said so, Overview otherwise — and the namespace either way. #}
+{% set ksh_back = qbase ~ '&tab=' ~ (from_tab or 'overview')
+                  ~ ('&ns=' ~ ns if ns else '') %}
+
+{% macro pct_bar(pct, label) %}
+{% if pct is not none %}
+<div class="metric">
+  <div class="mrow"><span>{{ label }}</span><b>{{ pct }}%</b></div>
+  <div class="track"><span style="width:{{ [pct, 100]|min }}%;
+       background:{{ 'var(--danger)' if pct >= 90 else 'var(--warn)' if pct >= 75 else 'var(--ok)' }};"></span></div>
+</div>
+{% else %}
+<div class="metric"><div class="mrow"><span>{{ label }}</span>
+  <b class="na">no live usage</b></div></div>
+{% endif %}
+{% endmacro %}
+
+{% macro health_chips(h) %}
+{% if h.get('reachable') %}
+  <span class="sv {{ 'sv-clean' if h.nodes.ready == h.nodes.total else 'sv-critical' }}">
+    {{ h.nodes.ready }}/{{ h.nodes.total }}<i>nodes</i></span>
+  {% if h.pods.bad %}<span class="sv sv-high">{{ h.pods.bad }}<i>bad pods</i></span>
+  {% else %}<span class="sv sv-clean">{{ h.pods.total }}<i>pods</i></span>{% endif %}
+  {% if h.cpu %}<span class="badge">cpu {{ h.cpu.pct|round|int }}%</span>{% endif %}
+  {% if h.mem %}<span class="badge">mem {{ h.mem.pct|round|int }}%</span>{% endif %}
+{% elif h %}
+  <span class="sv sv-critical">unreachable</span>
+  {% if h.error %}<span class="hint">{{ h.error }}</span>{% endif %}
+{% else %}
+  <span class="sv sv-info">not collected yet</span>
+{% endif %}
+{% endmacro %}
+
+{# the flat every-cluster table for the hub's All / Attention tabs. `only` keeps
+   just the clusters needing a look (unreachable, or with bad pods). #}
+{% macro clustertable(rows, only='') %}
+{% set shown = rows if not only else (rows | selectattr('attention') | list) %}
+{% if shown %}
+<div class="card"><div class="card-b" style="overflow-x:auto;">
+  <table class="jenkins"><thead><tr>
+    <th style="min-width:170px;">Cluster</th><th>Project</th><th>Where</th>
+    <th style="width:150px;">Nodes</th><th style="width:120px;">Pods</th>
+    <th style="width:120px;">Status</th><th style="width:70px;"></th>
+  </tr></thead><tbody>
+  {% for c in shown %}{% set h = c.health %}
+  <tr>
+    <td class="jname"><a href="{{ c.href }}"><b>{{ c.name }}</b></a>
+      {% if c.prod %}<span class="qtag prod">prod</span>{% endif %}</td>
+    <td>{{ c.project }}</td>
+    <td class="hint">{{ c.where }}</td>
+    <td>{% if h.get('reachable') %}<span class="sv {{ 'sv-clean' if h.nodes.ready == h.nodes.total else 'sv-critical' }}">{{ h.nodes.ready }}/{{ h.nodes.total }}<i>nodes</i></span>{% else %}<span class="na">—</span>{% endif %}</td>
+    <td>{% if h.get('reachable') %}{% if h.pods.bad %}<span class="sv sv-high">{{ h.pods.bad }}<i>bad</i></span>{% else %}<span class="sv sv-clean">{{ h.pods.total }}<i>pods</i></span>{% endif %}{% else %}<span class="na">—</span>{% endif %}</td>
+    <td>{% if h.get('reachable') %}<span class="sv sv-clean">reachable</span>{% else %}<span class="sv sv-critical">unreachable</span>{% endif %}</td>
+    <td><a class="abtn" href="{{ c.href }}">Open →</a></td>
+  </tr>
+  {% endfor %}
+  </tbody></table>
+</div></div>
+{% else %}
+<div class="empty"><div class="big">{{ glyph('circle-check', 34) }}</div>
+  <p>{{ 'Nothing needs attention — every cluster is reachable and healthy.' if only else 'No clusters yet.' }}</p></div>
+{% endif %}
+{% endmacro %}
+
+{# ══ a box per project ══ #}
+{% if stage == 'hub' %}
+{%- set cur = sec if sec in ('overview','all','attention') else 'overview' -%}
+<div class="page-head">
+  <div>
+    <h1>Clusters</h1>
+    <p class="sub">{{ ctot.clusters }} cluster{{ 's' if ctot.clusters != 1 }}
+      across {{ cards|length }} project{{ 's' if cards|length != 1 }} ·
+      {{ ctot.ready }}/{{ ctot.nodes }} nodes ready · read live, read-only</p>
+  </div>
+  <div style="display:flex;gap:9px;">
+    <a class="btn btn-ghost" href="/settings/clusters">Add or edit clusters</a>
+    <a class="btn btn-ghost" href="/clusters?sec={{ cur }}&refresh=1">↻ Refresh</a>
+  </div>
+</div>
+
+{% if msg %}<div class="flash">✓ {{ msg }}</div>{% endif %}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+
+{% if not cards %}
+<div class="empty">
+  <div class="big">{{ glyph("hexagon", 40) }}</div>
+  <h2>No projects yet</h2>
+  <p>Create a project, then paste a kubeconfig for each of its clusters.
+     Everything on these pages is read from the cluster itself.</p>
+  <a class="btn" href="/settings/projects">Add a project</a>
+</div>
+{% else %}
+{{ bits.subtabs('/clusters?', 'sec', cur, [
+     {'key':'overview','label':'Overview','count':none,'icon':'chart-line'},
+     {'key':'all','label':'All clusters','count':ctot.clusters,'icon':'hexagon'},
+     {'key':'attention','label':'Attention','count':ctot.attention,'icon':'triangle-alert'}], wide=true) }}
+
+{% if cur == 'overview' %}
+<div class="ex-tiles">
+  <a class="ex-tile {{ 'quiet' if not ctot.clusters }}" href="/clusters?sec=all">
+    <span class="ico">{{ glyph('hexagon', 17) }}</span>
+    <span><span class="big">{{ ctot.clusters }}</span>
+      <span class="cap">cluster{{ 's' if ctot.clusters != 1 }}</span>
+      <span class="sub">across every project</span></span></a>
+  <a class="ex-tile {{ 'ok' if ctot.ready == ctot.nodes else 'warn' }} {{ 'quiet' if not ctot.nodes }}" href="/clusters?sec=all">
+    <span class="ico">{{ glyph('cpu', 17) }}</span>
+    <span><span class="big">{{ ctot.ready }}/{{ ctot.nodes }}</span>
+      <span class="cap">nodes ready</span>
+      <span class="sub">across the fleet</span></span></a>
+  <a class="ex-tile bad {{ 'quiet' if not ctot.attention }}" href="/clusters?sec=attention">
+    <span class="ico">{{ glyph('triangle-alert', 17) }}</span>
+    <span><span class="big">{{ ctot.attention }}</span>
+      <span class="cap">need attention</span>
+      <span class="sub">unreachable or bad pods</span></span></a>
+  <a class="ex-tile {{ 'quiet' if not cards }}" href="/clusters?sec=overview">
+    <span class="ico">{{ glyph('folder-git-2', 17) }}</span>
+    <span><span class="big">{{ cards|length }}</span>
+      <span class="cap">project{{ 's' if cards|length != 1 }}</span>
+      <span class="sub">grouping the clusters</span></span></a>
+</div>
+
+{# shared chart overview — fleet node readiness + pods by project #}
+{% set podrows = [] %}
+{% for c in cards if c.clusters %}{{ podrows.append({'label': c.project.name, 'n': c.pods or 0, 'href': c.href, 'note': (c.bad ~ ' bad') if c.bad else ''}) or '' }}{% endfor %}
+<div class="apanels">
+  {{ bits.donut_panel('Fleet node health',
+       [{'label':'ready','value':ctot.ready,'color':'var(--ok)','href':'/clusters?sec=all'},
+        {'label':'not ready','value':ctot.nodes - ctot.ready,'color':'var(--danger)','href':'/clusters?sec=attention'}],
+       centre=(ctot.ready ~ '/' ~ ctot.nodes), sub='nodes ready', icon='cpu',
+       hint='across every cluster') }}
+  {{ bits.bars_panel('Pods by project', podrows | sort(attribute='n', reverse=true),
+       hint='most first', icon='boxes', empty='No pods reported yet.') }}
+</div>
+
+<div class="hub-grid" style="grid-template-columns:repeat(auto-fit,minmax(340px,1fr));">
+  {% for c in cards %}
+  {% set allready = c.nodes and c.ready == c.nodes %}
+  {% set notready = (c.nodes or 0) - (c.ready or 0) %}
+  {% set healthy = (c.pods or 0) - (c.bad or 0) %}
+  <a class="hub-card pcard" href="{{ c.href }}">
+    <div class="pcard-head">
+      <div class="flag">{{ project_icon(c.project.icon, 30) }}</div>
+      <div class="pcard-t">
+        <div class="htitle">{{ c.project.name }}</div>
+        <div class="hmeta">{{ c.clusters|length }} cluster{{ 's' if c.clusters|length != 1 }} ·
+          {{ c.regions }} region{{ 's' if c.regions != 1 }} ·
+          {{ c.envs }} env{{ 's' if c.envs != 1 }}</div>
+      </div>
+      <div class="arrow">→</div>
+    </div>
+    {% if c.clusters %}
+    <div class="pmeters">
+      {# nodes ready — green = ready, red = not-ready #}
+      <div class="pmeter" title="{{ c.ready }} of {{ c.nodes }} nodes ready">
+        <span class="pmeter-l">nodes</span>
+        <span class="pmeter-bar">
+          {%- if c.nodes %}<i style="flex:{{ c.ready }};background:var(--ok);"></i>{% if notready %}<i style="flex:{{ notready }};background:var(--danger);"></i>{% endif %}{% endif -%}
+        </span>
+        <span class="pmeter-v {{ 'pc-ok' if allready else 'pc-bad' }}">{{ c.ready }}<small>/{{ c.nodes }}</small></span>
+      </div>
+      {# pods — green = healthy, red = bad #}
+      <div class="pmeter" title="{{ healthy }} healthy · {{ c.bad or 0 }} bad pods">
+        <span class="pmeter-l">pods</span>
+        <span class="pmeter-bar">
+          {%- if c.pods %}<i style="flex:{{ healthy if healthy > 0 else 0 }};background:var(--ok);"></i>{% if c.bad %}<i style="flex:{{ c.bad }};background:var(--danger);"></i>{% endif %}{% else %}<i style="flex:1;background:var(--line);"></i>{% endif -%}
+        </span>
+        <span class="pmeter-v">{{ c.pods or 0 }}{% if c.bad %} <small class="pc-bad">· {{ c.bad }} bad</small>{% endif %}</span>
+      </div>
+    </div>
+    <div class="hmeta pcard-list">{{ c.clusters|map(attribute='name')|join(', ')|truncate(52) }}{% if c.down %} · <span class="pc-bad">{{ c.down }} unreachable</span>{% endif %}</div>
+    {% else %}
+    <div class="pcard-empty">No clusters mapped yet</div>
+    {% endif %}
+  </a>
+  {% endfor %}
+</div>
+
+{% elif cur == 'all' %}
+{{ clustertable(clist) }}
+{% elif cur == 'attention' %}
+{{ clustertable(clist, 'attention') }}
+{% endif %}
+{% endif %}
+
+{# ══ a box per environment ══ #}
+{% elif stage == 'project' %}
+<div class="page-head">
+  <div>
+    {{ back('/clusters', 'All projects') }}
+    <h1 class="withico">{{ project_icon(proj.icon, 30) }} {{ proj.name }}</h1>
+    <p class="sub">{{ cards|length }} cluster{{ 's' if cards|length != 1 }} ·
+      pick an environment to see everything running in it</p>
+  </div>
+  <div style="display:flex;gap:9px;">
+    <a class="btn btn-ghost" href="/settings/clusters">Add or edit clusters</a>
+    <a class="btn btn-ghost" href="/clusters?project={{ pid }}&refresh=1">↻ Refresh</a>
+  </div>
+</div>
+
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+
+{% if not cards %}
+<div class="empty">
+  <div class="big">{{ glyph("hexagon", 40) }}</div>
+  <h2>{{ proj.name }} has no clusters</h2>
+  <p>Paste a kubeconfig on the settings page, then map it to an environment.</p>
+  <a class="btn" href="/settings/clusters">Add a cluster</a>
+</div>
+{% else %}
+<div class="hub-grid" style="grid-template-columns:repeat(auto-fit,minmax(330px,1fr));">
+  {% for c in cards %}
+  <a class="hub-card" href="{{ c.href }}" style="align-items:flex-start;">
+    <div class="flag">{{ env_glyph(c.env, 26) if c.env else logo('kubernetes', 'Kubernetes', 26) }}</div>
+    <div style="min-width:0;flex:1;">
+      <div class="htitle">
+        {% if c.kind == 'env' %}{{ c.region.flag }} {{ c.region.name }} /
+          {{ env_label(c.env) }}
+        {% else %}{{ c.cluster.name }}{% endif %}</div>
+      <div class="hmeta">
+        {% if c.kind == 'env' %}cluster {{ c.cluster.name }}
+        {% else %}<span style="color:var(--warn-ink);">not mapped to an environment</span>{% endif %}</div>
+      <div class="hmeta" style="font-family:var(--mono);font-size:11px;">{{ c.cluster.context }}</div>
+      <div style="margin-top:10px;">{{ health_chips(c.health) }}</div>
+      {% if c.health.get('problems') %}
+      <div class="hmeta" style="color:var(--warn-ink);margin-top:4px;">
+        ⚠ {{ c.health.problems[0]|truncate(52) }}</div>
+      {% endif %}
+    </div>
+    <div class="arrow">→</div>
+  </a>
+  {% endfor %}
+</div>
+{% endif %}
+
+{# ══ the cluster itself ══ #}
+{% else %}
+{% set s = data.get('summary') or {} %}
+<div class="page-head">
+  <div>
+    {{ back('/clusters?project=' ~ pid, proj.name) }}
+    <h1>☸ {{ sel.name }}
+      {% if s.get('nodes_total') %}
+      <span class="sv {{ 'sv-clean' if s.get('healthy') else 'sv-critical' }}"
+            style="vertical-align:middle;font-size:11px;">
+        {{ 'healthy' if s.get('healthy') else 'needs attention' }}</span>{% endif %}
+    </h1>
+    <p class="sub" style="font-family:var(--mono);font-size:11.5px;margin-bottom:4px;">
+      {{ sel.context }}{% if s.get('version') %} · {{ s.version }}{% endif %}</p>
+    <p class="sub">
+      {# the config, the service diagram and the logs for the environment this
+         cluster serves: the three places you go next from here #}
+      {% for u in used_by %}
+      <a class="badge" href="{{ u.url }}">{{ u.label }} · config →</a>
+      <a class="badge" href="{{ u.url }}?tab=diagram">{{ u.label }} · diagram →</a>
+      {% endfor %}
+      <a class="badge" href="/logs">logs →</a>
+      {% if not used_by %}<span style="color:var(--warn-ink);">no environment mapped
+        to this cluster — <a href="/settings/clusters">map one</a></span>{% endif %}</p>
+  </div>
+  <div style="display:flex;gap:9px;">
+    <a class="btn btn-ghost" href="{{ qbase }}&tab={{ tab }}&refresh=1">↻ Refresh</a>
+  </div>
+</div>
+
+{% if msg %}<div class="flash">✓ {{ msg }}</div>{% endif %}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+
+{# The banner, the two macros and the production lock all live in one partial:
+   the related-resources page carries the same buttons, and a second copy of the
+   lock is a second place for it to be forgotten. #}
+{% import "_cluster_actions.html" as acts with context %}
+{{ acts.act_banner() }}
+{{ acts.act_script() }}
+
+
+{# ── namespace, chosen once and kept ─────────────────────────────
+   It used to be a bare <select> buried inside the Pods tab, so narrowing to a
+   namespace meant finding the right tab first and lost the choice on the way
+   to any other. Here it is above everything, searchable, and it survives the
+   tab you move to. #}
+{% if nslist %}
+<div class="nsbar">
+  {# Switching cluster used to mean going back to the hub and down again, twice
+     a minute for anybody comparing two of them. The tab comes with you — being
+     on Pods for one cluster and landing on Overview for the next is a click
+     nobody asked for. #}
+  <span class="nsbar-l">cluster</span>
+  <div id="clPicker" class="nsbar-pick nsbar-pick-cl"></div>
+  <span class="nsbar-l">namespace</span>
+  <div id="nsPicker" class="nsbar-pick"></div>
+  {# The pod most containers cannot give you: distroless images have no dig,
+     no curl and no nc, so the tools have to arrive in a pod of their own.
+     It starts, you land in it, and it deletes itself.
+
+     Shown on a read-only cluster too, disabled and saying why. Every other
+     control that changes a cluster does that — act_button renders itself
+     disabled with the reason in its title — and this one simply was not there,
+     which reads as a button that broke rather than one that is not allowed. #}
+  <button class="btn btn-ghost nsbar-tool" type="button" id="tsBtn"
+          {% if not writable %}disabled
+          title="this cluster is read-only in the portal — starting a pod needs
+                 management, which is enabled per cluster in Settings → Clusters"
+          {% else %}
+          title="start a pod with dig, curl, nc, ss and traceroute in {{ ns or 'default' }}, and open a shell on it"
+          {% endif %}>
+    {# A line icon, not an emoji: every desktop draws an emoji in its own font at
+       its own weight, which is why the tab strip stopped using them, and this
+       button was the one left behind. The glyph was picked by rendering the
+       candidates at 15px and looking — `life-buoy` is a mushy ring at that size
+       and `wrench` already belongs to Ansible in the sidebar. #}
+    {{ glyph('flask-conical', 15) }} Troubleshoot</button>
+  {% if writable %}
+  {# Starting one takes seconds, and the first time on a node it takes thirty
+     while the image pulls. A form post spends that with a blank tab and no
+     explanation, so the window opens first and says what it is doing. #}
+  <dialog id="tsDlg" class="psh">
+    <div class="psh-bar">
+      <span class="psh-dots"><b title="close" data-dot="close">✕</b><b title="minimise" data-dot="mini">–</b><b title="maximise" data-dot="maxi">+</b></span>
+      <b>troubleshooting pod</b><span class="psh-ns">{{ ns or 'default' }}</span>
+      <span style="flex:1"></span>
+      <a class="psh-x" href="{{ qbase }}&tab={{ tab }}">cancel</a>
+    </div>
+    <div class="psh-body" id="tsBody"></div>
+  </dialog>
+  <script nonce="{{ csp_nonce() }}">
+  (function () {
+    const btn = document.getElementById('tsBtn');
+    const dlg = document.getElementById('tsDlg');
+    const body = document.getElementById('tsBody');
+    if (!btn || !dlg) return;   // read-only: the button is there, disabled
+    const say = (t, cls) => { const d = document.createElement('div');
+      if (cls) d.className = cls; d.textContent = t; body.appendChild(d);
+      body.scrollTop = body.scrollHeight; return d; };
+    btn.addEventListener('click', async () => {
+      dlg.showModal();
+      say('$ starting a troubleshooting pod in {{ ns or "default" }}', 'psh-cmd');
+      const steps = [
+        [400,  'creating the pod — netshoot, no privilege, no host network'],
+        [2500, 'waiting for the image… the first pull on a node takes ~30s'],
+        [9000, 'still pulling — this only happens once per node'],
+        [20000,'nearly there'],
+      ];
+      const timers = steps.map(([ms, t]) => setTimeout(() => say(t, 'psh-dim'), ms));
+      const d = new FormData();
+      d.append('project', {{ pid|tojson }});
+      d.append('cluster', {{ cid|tojson }});
+      d.append('namespace', {{ (ns or 'default')|tojson }});
+      try {
+        const r = await fetch('/clusters/netshoot.json', {method:'POST', body:d});
+        const j = await r.json();
+        timers.forEach(clearTimeout);
+        if (!j.ok) {
+          say(j.error || ('created but not ready: ' + (j.why || '')), 'psh-err');
+          say('press cancel to go back.', 'psh-dim');
+          return;
+        }
+        say(j.name + ' is ready — it deletes itself in ' + Math.round(j.ttl/60) + ' minutes', 'psh-out');
+        say('opening a shell…', 'psh-dim');
+        window.location.href = {{ (qbase ~ '&tab=pods')|tojson }}
+          + '&inspect=shell&target=' + encodeURIComponent(j.namespace + '/' + j.name);
+      } catch (err) {
+        timers.forEach(clearTimeout);
+        say('could not reach the portal: ' + err, 'psh-err');
+      }
+    });
+    // Arriving from the shortcut in the top bar. It presses this button rather
+    // than starting a pod of its own, so the narration, the timings and every
+    // failure message are the ones this dialog already gets right — and there
+    // is one place to fix when they change. Cancel drops the flag, because it
+    // navigates back to a URL that does not carry it.
+    // One-shot. The flag is dropped from the URL BEFORE the click, because the
+    // page can reload underneath it — a slow collection used to reload every few
+    // seconds — and a flag that survives a reload starts a new troubleshooting
+    // pod on every one of them. replaceState rather than a redirect: no second
+    // request, and the back button still goes where it did.
+    if (new URLSearchParams(location.search).get('troubleshoot')) {
+      const u = new URL(location.href);
+      u.searchParams.delete('troubleshoot');
+      history.replaceState(null, '', u);
+      btn.click();
+    }
+  })();
+  </script>
+  {% endif %}
+  {% for n in netshoots %}
+  {# Deleting a pod is a round trip to the cluster followed by a page render.
+     The chip says so as soon as it is clicked — a ✕ that does nothing visible
+     for a second is a ✕ people click twice. #}
+  {# The name is read off the form's own hidden field rather than interpolated
+     into this attribute: `tojson` emits double quotes, which would end the
+     attribute early — test_nohardcoding.py checks for exactly that. #}
+  <form method="post" action="/clusters/netshoot/stop" style="display:inline;"
+        data-call-submit="nsDeleting">
+    <input type="hidden" name="project" value="{{ pid }}">
+    <input type="hidden" name="cluster" value="{{ cid }}">
+    <input type="hidden" name="namespace" value="{{ n.namespace }}">
+    <input type="hidden" name="name" value="{{ n.name }}">
+    <input type="hidden" name="back" value="{{ qbase }}&tab={{ tab }}">
+    {# A pod past its half hour is Failed, not gone, and a chip that still
+       looks live sends you into a shell that answers "completed pod". #}
+    <span class="nsbar-live{{ ' spent' if n.phase not in ('Running', 'Pending') }}">
+      {% if n.phase in ('Running', 'Pending') %}
+      <a href="{{ qbase }}&tab=pods&inspect=shell&target={{ (n.namespace ~ '/' ~ n.name)|urlencode }}">{{ n.name }}</a>
+      {% else %}<span title="{{ n.phase }} — its half hour is up">{{ n.name }}</span>{% endif %}
+      <button type="submit" title="delete it now">✕</button></span>
+  </form>
+  {% endfor %}
+<script nonce="{{ csp_nonce() }}">
+// Turns the clicked chip into "deleting <pod>…" and stops the rest of the bar
+// being clicked while the page is on its way back.
+function nsDeleting(form) {
+  const name = form.querySelector('input[name="name"]').value;
+  const chip = form.querySelector('.nsbar-live');
+  chip.classList.add('going');
+  chip.replaceChildren();
+  const spin = document.createElement('span'); spin.className = 'opspin';
+  const said = document.createElement('span');
+  said.textContent = 'deleting ' + name + '…';   // textContent: the name is data
+  chip.append(spin, said);
+  form.closest('.nsbar').querySelectorAll('button, a, select')
+      .forEach(el => { el.style.pointerEvents = 'none'; el.style.opacity = '.55'; });
+  chip.style.opacity = '1';
+  return true;
+}
+</script>
+  {% if ns %}
+  <a class="nsbar-clear" href="{{ qbase }}&tab={{ tab }}">clear</a>
+  <span class="nsbar-note">showing <b>{{ ns }}</b> only</span>
+  {% else %}
+  <span class="nsbar-note">{{ nslist|length }} namespaces · showing all</span>
+  {% endif %}
+</div>
+<script nonce="{{ csp_nonce() }}">{% include "_combo_js.html" %}
+  (function () {
+    const cl = makeCombo('clPicker', 'switch cluster');
+    if (cl) {
+      cl.setItems({{ all_clusters|tojson }}.map(c => ({
+        value: c.cid + '|' + c.pid,
+        label: c.name + (c.prod ? ' · prod' : '') + (c.manage ? '' : ' · read-only'),
+        sub: c.project})), false);
+      cl.set({{ cid|tojson }} + '|' + {{ pid|tojson }});
+      cl.onPick = v => {
+        const [cid, pid] = v.split('|');
+        // The tab travels with you; the namespace does not — it belongs to the
+        // cluster you were looking at and may not exist in the next one.
+        window.location.href = '/clusters?project=' + encodeURIComponent(pid)
+          + '&cluster=' + encodeURIComponent(cid) + '&tab={{ tab }}';
+      };
+    }
+    const pick = makeCombo('nsPicker', 'all namespaces');
+    if (!pick) return;
+    pick.setItems([{value: '', label: 'all namespaces'}].concat(
+      {{ nslist|tojson }}.map(n => ({
+        value: n.name, label: n.name,
+        sub: n.pods + ' pod' + (n.pods === 1 ? '' : 's')}))), false);
+    pick.set({{ (ns or '')|tojson }});
+    // Navigating rather than submitting: the choice belongs in the URL, so it
+    // survives a tab change, a refresh and a bookmark.
+    pick.onPick = v => {
+      const base = {{ qbase|tojson }} + '&tab={{ tab }}';
+      window.location.href = v ? base + '&ns=' + encodeURIComponent(v) : base;
+    };
+  })();
+</script>
+{% endif %}
+
+{# ── the nodes, always, above whichever tab is open ──────────────
+   The machines are the one thing that is context for every other tab: a pod
+   that will not schedule, a volume that will not bind and a workload that will
+   not roll are all read differently once you can see that a node is gone or
+   full. It used to be one tab among eleven, so you had to leave whatever you
+   were looking at to find out. #}
+{% if nodestrip and nodestrip.nodes %}
+<div class="nodestrip">
+  <div class="ns-head">
+    <div class="ns-roll">
+      <b>{{ nodestrip.ready }}/{{ nodestrip.total }}</b> nodes ready
+      {%- if nodestrip.unschedulable %} · <span class="warn-t">{{ nodestrip.unschedulable }} cordoned</span>{% endif -%}
+      {%- if nodestrip.pressured %} · <span class="bad-t">{{ nodestrip.pressured }} under pressure</span>{% endif %}
+    </div>
+    <div class="ns-tot">
+      {{ nodestrip.cpu_cores }} cores · {{ nodestrip.mem_gib }} GiB
+      {%- if nodestrip.disk_gib %} · {{ nodestrip.disk_gib }} GiB disk{% endif %}
+      {#- The install button itself lives on the Nodes tab, once. Three copies of
+          a form that changes a cluster is three places for the production lock to
+          be forgotten, so the other two mentions are links to it. -#}
+      {%- if not nodestrip.metrics %} · <a class="hint" href="{{ qbase }}&tab=nodes"
+        style="text-decoration:underline;">install metrics-server for live usage</a>{% endif %}
+    </div>
+  </div>
+  <div class="ns-list">
+    {% for n in nodestrip.nodes %}
+    {# The row goes to the pods ON that machine, which is what somebody clicking a
+       node in a strip of five is asking. It went to the Nodes tab — the same
+       table for every node, with nothing about the one that was clicked. #}
+    <a class="ns-row {{ 'down' if not n.ready }}"
+       href="{{ qbase }}&tab=pods&node={{ n.name|urlencode }}"
+       title="the pods running on {{ n.name }}">
+      <span class="ns-name">
+        <span class="ns-dot {{ 'ok' if n.ready else 'bad' }}"></span>
+        <b>{{ n.name }}</b>
+      </span>
+      <span class="ns-role">{{ n.roles|join(', ') }}</span>
+      {% for m in n.meters %}
+      {# Label, track, number — the same three columns on every row, so the
+         readings line up down the strip and two nodes can be compared by
+         running an eye down rather than hunting for the number in a card.
+         The number stays: the colour ramp's own note explains why it cannot
+         be dropped for anyone with a colour vision deficiency. #}
+      <span class="ns-ring {{ m.tone }} {{ '' if m.measured else 'none' }}"
+            title="{{ m.label }} — {{ m.text }}">
+        <span class="ns-rl">{{ m.label[:3] }}</span>
+        <span class="ns-bar"><i style="width:{{ m.pct if m.measured else 0 }}%"></i></span>
+        <span class="ns-pct">{{ m.pct ~ '%' if m.measured else '—' }}</span>
+      </span>
+      {% endfor %}
+      <span class="ns-foot">
+        {%- if not n.schedulable %}<span class="ns-tag warn">cordoned</span>{% endif -%}
+        {%- for p in n.pressure %}<span class="ns-tag bad">{{ p }}</span>{% endfor -%}
+        <span class="ns-ver">{{ n.version }}</span>
+      </span>
+    </a>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<div class="viewtabs">
+  {# The namespace travels with the tab. The bar above says the choice "survives
+     the tab you move to" and it did not: every tab link dropped `ns`, so picking
+     preprod and moving from Workloads to Pods silently widened the page back to
+     the whole cluster — with the picker still showing preprod, which is worse
+     than losing it visibly. #}
+  {% for key, label, icon in tabs %}
+  {# The console is a page rather than a window over one, so closing it has to
+     navigate somewhere — and "somewhere" was Overview. The tab it was opened
+     from travels with the link, so closing comes back here. #}
+  <a href="{{ qbase }}&tab={{ key }}{{ '&ns=' ~ ns if ns else '' }}{{
+       '&from_tab=' ~ tab if key == 'shell' and tab != 'shell' else '' }}"
+     class="vtab {% if tab == key %}on{% endif %}">
+    {{ glyph(icon, 15) }} {{ label }}</a>
+  {% endfor %}
+</div>
+
+{# A part that has not arrived yet must not read as a part that is empty:
+   "0 pods · nothing matches" is what this page showed for a second after a pod
+   was deleted, which is a lie about a cluster rather than a slow page. #}
+{{ bits.collecting(collecting, "The counts below leave out whatever is still
+   being read.") }}
+
+{# ── Overview ── #}
+{% if tab == 'overview' %}
+{% if data.nodes.get('error') %}
+<div class="flash err">⚠ this cluster did not answer: {{ data.nodes.error }}.
+  Check its kubeconfig on <a href="/settings/clusters">the settings page</a>.</div>
+{% else %}
+{# Every count below answers for the namespace that is selected. A tile
+   reading 91 pods while the page says "showing preprod-deployment only" is
+   two different answers on one screen, and the reader believes whichever they
+   looked at first. Nodes are the exception and stay cluster-wide: a machine
+   does not belong to a namespace. #}
+{% set nsp = (data.pods.pods or [])|selectattr('namespace','equalto',ns)|list if ns else (data.pods.pods or []) %}
+{% set nse = (data.events.events or [])|selectattr('namespace','equalto',ns)|list if ns else (data.events.events or []) %}
+{% set nsc = (data.storage.claims or [])|selectattr('namespace','equalto',ns)|list if ns else (data.storage.claims or []) %}
+{% set nsa = (data.argocd.apps or [])|selectattr('dest','equalto',ns)|list if ns else (data.argocd.apps or []) %}
+{% set nsx = (data.certs.certs or [])|selectattr('namespace','equalto',ns)|list if ns else (data.certs.certs or []) %}
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(155px,1fr));margin-bottom:18px;">
+  <a class="sevtile t-all" href="{{ qbase }}&tab=nodes">
+    <div class="n">{{ s.nodes_ready }}/{{ s.nodes_total }}</div>
+    <div class="l">nodes ready{% if ns %} · whole cluster{% endif %}</div></a>
+  {% set bad = nsp|rejectattr('problem','equalto','')|list|length %}
+  <a class="sevtile {{ 't-critical' if bad else 't-low' }}" href="{{ qbase }}&tab=pods{% if ns %}&ns={{ ns }}{% endif %}">
+    <div class="n">{{ nsp|length }}</div>
+    <div class="l">pods{{ ' · ' ~ bad ~ ' bad' if bad }}</div></a>
+  {% set warn = nse|selectattr('type','equalto','Warning')|list|length %}
+  <a class="sevtile {{ 't-medium' if warn else 't-low' }}"
+     href="{{ qbase }}&tab=events{% if ns %}&ns={{ ns }}{% endif %}">
+    <div class="n">{{ warn }}</div>
+    <div class="l">warning events</div></a>
+  <a class="sevtile t-info" href="{{ qbase }}&tab=storage{% if ns %}&ns={{ ns }}{% endif %}">
+    <div class="n">{{ (nsc|sum(attribute='gib'))|round|int }}</div>
+    <div class="l">GiB claimed</div></a>
+  {% if data.argocd.get('present') %}
+  <a class="sevtile {{ 't-medium' if (data.argocd.drifted or data.argocd.unhealthy) and not ns else 't-low' }}"
+     href="{{ qbase }}&tab=workloads{% if ns %}&ns={{ ns }}{% endif %}">
+    <div class="n">{{ nsa|length }}</div>
+    <div class="l">argocd apps</div></a>
+  {% endif %}
+  {% if data.certs.get('present') %}
+  <a class="sevtile {{ 't-critical' if data.certs.failing and not ns else ('t-medium' if data.certs.expiring and not ns else 't-low') }}"
+     href="{{ qbase }}&tab=network{% if ns %}&ns={{ ns }}{% endif %}">
+    <div class="n">{{ nsx|length }}</div>
+    <div class="l">certificates</div></a>
+  {% endif %}
+</div>
+
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(330px,1fr));">
+  <div class="card" style="margin:0;">
+    <div class="card-h">Needs attention
+      <span class="hint">worst first · each one opens the detail</span></div>
+    <div class="card-b">
+      {% if s.get('attention') %}
+      <div class="facets"><div class="facet">
+      {% for a in s.attention %}
+      <a class="fval" href="{{ qbase }}&tab={{ a.tab }}">
+        <span class="t"><span class="v">
+          <span class="sv {{ 'sv-critical' if a.level == 'critical' else ('sv-medium' if a.level == 'warn' else 'sv-info') }}">{{ a.level }}</span>
+          {{ a.text }}</span><span class="n">→</span></span></a>
+      {% endfor %}
+      </div></div>
+      {% else %}
+      <div style="color:var(--ok-ink);font-size:13px;">
+        ✓ Nothing to report — every node Ready, every pod running cleanly, no
+        warning events, every volume bound.</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="card" style="margin:0;">
+    <div class="card-h">Capacity
+      {% if data.nodes.get('metrics') %}<span class="hint">live, from metrics-server</span>
+      {% else %}<a class="hint" href="{{ qbase }}&tab=nodes"
+         style="text-decoration:underline;">metrics-server not installed</a>{% endif %}</div>
+    <div class="card-b">
+      {{ pct_bar(s.get('cpu_pct'), 'cpu — ' ~ ((s.get('cpu_use') or 0)/1000)|round(1) ~ ' of ' ~ ((s.get('cpu_cap') or 0)/1000)|round|int ~ ' cores') }}
+      {{ pct_bar(s.get('mem_pct'), 'memory — ' ~ ((s.get('mem_use') or 0)/1024)|round(1) ~ ' of ' ~ ((s.get('mem_cap') or 0)/1024)|round|int ~ ' GiB') }}
+      <div class="sec-note" style="margin-top:10px;">
+        {{ (s.get('namespaces') or [])|length }} namespaces ·
+        {{ s.get('claims') }} volume claims ·
+        {% for phase, n in (s.get('phases') or {}).items() %}{{ n }} {{ phase }}{{ ', ' if not loop.last }}{% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin:0;">
+    <div class="card-h">Busiest namespaces <span class="hint">click to filter pods</span></div>
+    <div class="card-b">
+      <div class="facets"><div class="facet">
+        {% for name, n in (s.get('namespaces') or [])[:8] %}
+        <a class="fval" href="{{ qbase }}&tab=pods&ns={{ name|urlencode }}">
+          <span class="bar" style="width:{{ (n / s.pods_total * 100)|round if s.pods_total else 0 }}%"></span>
+          <span class="t"><span class="v">{{ name }}</span><span class="n">{{ n }}</span></span></a>
+        {% endfor %}
+      </div></div>
+    </div>
+  </div>
+
+  {% if s.get('restarting') %}
+  <div class="card" style="margin:0;">
+    <div class="card-h">Restarting most
+      <span class="hint">a climbing restart count is the earliest signal</span></div>
+    <div class="card-b">
+      {% for p in s.restarting %}
+      <div class="mrow" style="margin-bottom:5px;">
+        <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+          <span class="hint">{{ p.namespace }}/</span>{{ p.name }}</span>
+        <b>{{ p.restarts }}</b></div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+
+{# ── GitOps repo: the values files behind what is running here ──
+   Every empty state on this tab is somebody one click from the fix, so each
+   one links to THIS cluster's own row in settings (`#ed-<cid>` opens its edit
+   panel) rather than to the settings page in general. Landing on a list of
+   twenty-four clusters and having to find yours again is the difference
+   between a dead end and a next step. #}
+{% elif tab == 'config' %}
+{% set cfgfix = "/settings/clusters#ed-" ~ cid %}
+{% if not config_envs %}
+<div class="empty">
+  <div class="big">{{ glyph("git-branch", 40) }}</div>
+  <h2>No environment mapped to this cluster</h2>
+  <p>Values come from the GitOps repo an environment is declared at — its
+     repository, its branch, its path. Point this cluster at an environment and
+     they appear here.</p>
+  <a class="btn" href="{{ cfgfix }}">Set it up on this cluster →</a>
+</div>
+{% elif not config_envs|selectattr('repo_url')|list %}
+{# mapped, but nothing declares a repository — the case that used to render an
+   empty file list with no hint that a repo was the missing piece #}
+<div class="empty">
+  <div class="big">{{ glyph("git-branch", 40) }}</div>
+  <h2>No GitOps repo for
+    {{ config_envs|map(attribute='label')|join(', ') }}</h2>
+  <p>This cluster serves
+    {{ 'that environment' if config_envs|length == 1 else 'those environments' }},
+     but nothing says where the values live. Add the repository, branch and
+     path and they appear here.</p>
+  <a class="btn" href="{{ cfgfix }}">Add the GitOps repo →</a>
+</div>
+{% endif %}
+
+{# One aligned row per service.
+
+   It was a tile with a hashed rainbow gradient behind two initials, and a 🔒
+   emoji for the sealed count. The gradient carried no information — it is a
+   hash of the filename — so thirteen services meant thirteen saturated squares
+   competing with the only thing on the card that means anything, and the emoji
+   was drawn by whichever font the reader's machine has, which is the exact
+   thing the vendor marks replaced everywhere else.
+
+   The filename now shows on every row rather than only when two services
+   collide. It is the thing that tells the two bo-frontends apart, and a column
+   that appears on some rows and not others is a column that cannot be read
+   down.
+
+   The row OPENS THE FILE IN A WINDOW rather than navigating to a page. It used
+   to lead to a two-column page comparing git against the cluster, which was a
+   navigation away from the list you were reading — and the three things people
+   went there to do (read the file, change a value, push it) all fit in
+   `_values_dialog.html`. The href is kept and correct, so ⌘-click still opens
+   it in a tab and the row remains a real link; the dialog's delegated handler
+   takes the plain click and lets the modified ones through. #}
+{% macro svc_row(e, sv) %}
+<a class="svcrow" href="{{ sv.url }}"
+   data-valuesfile data-vfpid="{{ pid }}" data-vfrgid="{{ e.rgid }}"
+   data-vfenv="{{ e.env }}" data-vffile="{{ sv.fname }}">
+  <span class="svc-n">{{ sv.name }}</span>
+  <span class="svc-f">{{ sv.fname }}</span>
+  <span class="svc-c">
+    {%- if sv.error %}<span class="svc-bad">cannot be read</span>
+    {%- else %}{{ sv.key_count }} config{% if sv.secrets %} ·
+      <span class="svc-sealed">{{ glyph('lock', 11) }}{{ sv.secrets }} sealed</span>
+    {%- endif %}{% endif %}</span>
+  <span class="svc-t">
+    {%- if sv.modified %}<span class="svc-tag warn">edited</span>{% endif -%}
+    {%- if sv.warnings %}<span class="svc-tag warn">{{ sv.warnings|length }}
+      warning{{ 's' if sv.warnings|length != 1 }}</span>{% endif -%}
+  </span>
+</a>
+{% endmacro %}
+
+{% for e in config_envs %}
+<div class="card">
+  <div class="card-h" style="flex-wrap:wrap;">
+    <b style="font-size:14.5px;">{{ e.label }}</b>
+    {% if e.is_prod %}<span class="sv sv-critical">production</span>{% endif %}
+    <span class="badge">branch {{ e.branch }}</span>
+    {# The GitOps repo, named. Every environment on this page can come from a
+       different one now, so "which repository is this" stopped being a
+       property of the portal and became a property of the row. #}
+    {% if e.repo_url %}<a class="badge" href="{{ e.repo_url }}"
+       target="_blank" rel="noreferrer noopener"
+       title="{{ e.path or 'the repository root' }}"
+       >{{ glyph('git-branch', 11) }} GitOps repo</a>
+    {% endif %}
+    {% if e.pending %}<span class="sv sv-medium">{{ e.pending }} uncommitted</span>
+    {% else %}<span class="sv sv-clean">clean</span>{% endif %}
+    {% if e.stale %}<span class="sv sv-info">remote has newer commits</span>{% endif %}
+    <span style="flex:1"></span>
+    <span class="hint">{{ e.services|length }} service{{ 's' if e.services|length != 1 }}</span>
+    <a class="btn btn-ghost" style="padding:4px 13px;font-size:11.5px;"
+       href="{{ qbase }}&tab=diagram&env={{ e.env|urlencode }}">Diagram →</a>
+    <a class="btn btn-ghost" style="padding:4px 13px;font-size:11.5px;"
+       href="{{ e.url }}/new">＋ Add service</a>
+  </div>
+  <div class="card-b">
+    {# One list. The split into "providers & focused" and "platform & shared"
+       was a distinction the reader has to already know to use, and it broke a
+       thirteen-service environment into two ragged grids. Sorted by name, so
+       finding one is scanning rather than deciding which half it is in. #}
+    {% if e.services %}
+    <div class="svclist">
+      {% for sv in e.services|sort(attribute='name') %}{{ svc_row(e, sv) }}{% endfor %}
+    </div>
+    {% else %}
+    {# a repository IS declared and the path is empty — almost always the path,
+       so say which one was looked at and offer the form that changes it #}
+    <div class="sec-note" style="display:flex;gap:10px;align-items:center;
+         flex-wrap:wrap;">
+      <span>Nothing at
+        <b>{{ e.path or 'the repository root' }}</b> on
+        <b>{{ e.branch or 'the default branch' }}</b>.</span>
+      <a class="abtn" href="{{ cfgfix }}">check the path →</a>
+    </div>
+    {% endif %}
+  </div>
+  <div class="card-b" style="border-top:1px solid var(--line);">
+    <div class="sec-note">HEAD: {{ e.head|truncate(90) }}
+      {% if e.pending %} · {{ e.pending }} file(s) changed and not pushed — open a
+      service to review its diff and commit{% endif %}</div>
+  </div>
+</div>
+{% endfor %}
+
+{% if config_envs %}
+<p class="sub">
+  Editing a value writes it to the git working copy and nothing else — the commit
+  and push are separate, deliberate steps on the service page, and ArgoCD is what
+  applies it to this cluster.</p>
+{% endif %}
+
+{# ── Diagram: the environment drawn from its config plus live state ── #}
+{% elif tab == 'diagram' %}
+{% if not used_by %}
+<div class="empty">
+  <div class="big">{{ glyph("workflow", 40) }}</div>
+  <h2>No environment mapped to this cluster</h2>
+  <p>The drawing is built from an environment's values files and the live state of
+     its namespaces, so this cluster needs to be mapped to one.</p>
+  <a class="btn" href="/settings/clusters">Map an environment</a>
+</div>
+{% else %}
+{% if used_by|length > 1 %}
+<div class="viewtabs" style="margin-bottom:14px;">
+  {% for u in used_by %}
+  <a href="{{ qbase }}&tab=diagram&env={{ u.env|urlencode }}"
+     class="vtab {% if diagram_env and diagram_env.env == u.env %}on{% endif %}">{{ u.label }}</a>
+  {% endfor %}
+</div>
+{% endif %}
+{% if topo and topo.error %}<div class="flash err">⚠ {{ topo.error }}</div>{% endif %}
+{% if svg %}
+<div class="card">
+  <div class="card-h" style="flex-wrap:wrap;">
+    <b style="font-size:14.5px;">{{ diagram_env.label }}</b>
+    <span class="hint">drawn from the values files and the live state of
+      {{ topo.namespaces|join(', ') if topo.namespaces else 'this environment' }}</span>
+    <span style="flex:1"></span>
+    <a class="btn btn-ghost" style="padding:4px 13px;font-size:11.5px;"
+       href="{{ qbase }}&tab=diagram&env={{ diagram_env.env|urlencode }}&refresh=1">↻ Refresh</a>
+    <a class="btn btn-ghost" style="padding:4px 13px;font-size:11.5px;"
+       href="{{ diagram_env.url }}?tab=diagram&stay=1">Environment page ↗</a>
+  </div>
+  <div class="card-b" style="overflow:auto;">{{ svg|safe }}</div>
+</div>
+{% elif not topo or not topo.error %}
+<div class="card"><div class="card-b">
+  <div class="sec-note">nothing to draw yet</div></div></div>
+{% endif %}
+{% endif %}
+
+{# ── Nodes ── #}
+{% elif tab == 'nodes' %}
+{% set pods = data.pods.get('pods') or [] %}
+{% if data.nodes.get('nodes') and not data.nodes.get('metrics') %}
+{# The CPU and Memory columns below can only show what each machine HAS until
+   this exists — the usage figures come from an aggregated API that most
+   distributions do not ship. So the page offers to install it rather than
+   printing a shortcoming and leaving somebody to search for the manifest. #}
+<div class="card" style="border-color:var(--warn-line);margin-bottom:12px;">
+  <div class="card-b" style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;">
+    <span style="color:var(--warn-ink);display:flex;">{{ glyph("chart-line", 20) }}</span>
+    <div style="flex:1;min-width:250px;">
+      <b>No usage figures — metrics-server is not installed here</b>
+      <div class="hint" style="font-size:11.5px;">
+        The columns below show what each machine has, not what it is doing, and
+        <code>kubectl top</code> answers nothing. Installing it applies the
+        upstream manifest into <code>kube-system</code> and adds the two kubelet
+        flags a Talos node needs — including
+        <code>--kubelet-insecure-tls</code>, which stops metrics-server verifying
+        the kubelet's certificate. Usage appears about a minute later. It lands
+        outside git, so a cluster whose add-ons are managed by ArgoCD should
+        carry it there instead.</div>
+    </div>
+    <form method="post" action="/clusters/action">
+      {{ acts.act_fields(qbase ~ '&tab=nodes') }}
+      {{ acts.act_button('install-metrics', 'Install metrics-server', 'btn',
+                    'applies the upstream manifest into kube-system and patches '
+                    ~ 'the deployment for Talos') }}
+    </form>
+  </div>
+</div>
+{% endif %}
+<div class="card">
+  <div class="card-h">Nodes
+    <span class="hint">{{ (data.nodes.get('nodes') or [])|length }} ·
+      {{ 'live usage from metrics-server' if data.nodes.get('metrics') else 'metrics-server not installed, so only capacity is known' }}</span></div>
+  {% if data.nodes.get('nodes') %}
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr>
+        <th style="min-width:210px;">Node</th><th style="width:120px;">Role</th>
+        <th style="width:120px;">Address</th><th style="width:155px;">CPU</th>
+        <th style="width:155px;">Memory</th><th style="width:75px;">Pods</th>
+        <th style="width:115px;">Version</th><th style="width:55px;">Age</th>
+        {# Pinned to the right edge, the same as the Pods table: nine columns is
+           wider than a laptop window, and an action you have to scroll sideways
+           to reach is an action nobody uses. #}
+        <th class="actcol" style="width:278px;">Manage</th>
+      </tr></thead>
+      <tbody>
+      {% for n in data.nodes.nodes %}
+      <tr>
+        <td class="jname">
+          <a class="wname" href="{{ qbase }}&tab=pods&node={{ n.name|urlencode }}"
+             title="the pods running on {{ n.name }}"><b>{{ n.name }}</b></a>
+          {% if not n.ready %}<span class="sv sv-critical">NotReady</span>{% endif %}
+          {% if not n.schedulable %}<span class="sv sv-medium">cordoned</span>{% endif %}
+          {% for p in n.pressure %}<span class="sv sv-high">{{ p }}</span>{% endfor %}
+          <div class="sec-note" style="margin:2px 0 0;">{{ n.os }} · {{ n.runtime }}</div>
+          {# One line with the whole thing in the tooltip. Wrapped, a control
+             plane's `node-role.kubernetes.io/control-plane=:NoSchedule` took
+             four lines and made every master row three times the height of a
+             worker's. #}
+          {% if n.taints %}<div class="sec-note nowrap-e"
+            title="{{ n.taints|join(', ') }}">taints: {{ n.taints|join(', ') }}</div>{% endif %}
+        </td>
+        <td>{% for r in n.roles %}<span class="badge">{{ r }}</span>{% endfor %}</td>
+        <td style="font-family:var(--mono);font-size:11.5px;">{{ n.ip or '—' }}</td>
+        <td>{{ pct_bar(n.cpu_pct, (n.cpu_cap/1000)|round|int ~ ' cores') }}</td>
+        <td>{{ pct_bar(n.mem_pct, (n.mem_cap/1024)|round|int ~ ' GiB') }}</td>
+        <td><a class="wname" href="{{ qbase }}&tab=pods&node={{ n.name|urlencode }}"
+            >{{ pods|selectattr('node', 'equalto', n.name)|list|length }}</a>
+            {%- if n.pods_cap %}<span class="hint">/{{ n.pods_cap }}</span>{% endif %}</td>
+        <td style="font-family:var(--mono);font-size:11px;">{{ n.version }}</td>
+        <td>{{ n.age }}</td>
+        <td class="mid actcol">
+          <div class="actrow oneline">
+            {# A node is cluster-scoped, so it has no namespace — the window and
+               the route both take an empty one. #}
+            <button type="button" class="abtn"
+                    {{ bits.yaml_attrs(pid, cid, '', n.name, 'node') }}
+                    >yaml</button>
+            <button type="button" class="abtn"
+                    {{ bits.describe_attrs(pid, cid, '', n.name, 'node') }}
+                    >desc</button>
+            <form method="post" action="/clusters/action" style="display:contents;">
+              {{ acts.act_fields(qbase ~ '&tab=nodes') }}
+              <input type="hidden" name="node" value="{{ n.name }}">
+              {% if n.schedulable %}
+                {{ acts.act_button('cordon', 'Cordon') }}
+              {% else %}
+                {{ acts.act_button('uncordon', 'Uncordon') }}
+              {% endif %}
+              {{ acts.act_button('drain', 'Drain', 'btn-danger',
+                            'every pod moves off ' ~ n.name) }}
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-b" style="color:var(--muted);font-size:13px;">
+    {{ data.nodes.get('error') or 'no nodes returned' }}</div>
+  {% endif %}
+</div>
+{% if (data.nodes.get('versions') or [])|length > 1 %}
+<div class="flash err">⚠ Nodes are not all on the same kubelet version:
+  {{ data.nodes.versions|join(', ') }} — an upgrade looks unfinished.</div>
+{% endif %}
+
+{# ── Workloads ── #}
+{% elif tab == 'workloads' %}
+{# The rows and the strip come from the route: the counts on the tabs are of the
+   rows below them, and only the route knows which namespace is in view. #}
+{% set rows = wrows %}
+{{ bits.subtabs(qbase ~ '&tab=workloads' ~ ('&ns=' ~ ns if ns else ''),
+                'wkind', wkind, wtabs) }}
+{# The ArgoCD applications table used to sit here. It is not a workload — it is
+   what git says SHOULD be running — and the Workloads tab is about what IS. The
+   GitOps page owns that view, and the cluster's own Overview tab links to it, so
+   the same table in a third place was a second thing to keep in step. #}
+<div class="card">
+  <div class="card-h">{{ (wkind ~ 's') if wkind else 'Workloads' }}
+    <span class="hint">{{ rows|length }} · {{ rows|rejectattr('ok')|list|length }}
+      not fully available · those first</span></div>
+  {% if rows %}
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr>
+        {# with one kind on screen the column repeats the tab, 110px per row #}
+        {% if not wkind %}<th style="width:110px;">Kind</th>{% endif %}
+        <th style="min-width:230px;">Name</th>
+        <th style="width:160px;">Namespace</th><th style="width:95px;">Ready</th>
+        <th style="min-width:150px;">Image tag</th><th style="width:55px;">Age</th>
+        <th class="actcol" style="width:230px;">Manage</th>
+      </tr></thead>
+      <tbody>
+      {% for w in rows %}
+      <tr>
+        {% if not wkind %}<td><span class="badge">{{ w.kind }}</span></td>{% endif %}
+        {# The name is a link to this workload's pods — its OWN pods, matched by
+           ownerReference rather than by name, which is the difference between
+           bo-frontend and bo-frontend-v02. #}
+        <td class="jname"><a class="wname"
+            href="{{ qbase }}&tab=pods&ns={{ w.namespace|urlencode }}&workload={{ w.name|urlencode }}"
+            title="show the pods belonging to {{ w.name }}"><b>{{ w.name }}</b></a>
+          {% if w.suspended %}<span class="sv sv-info">suspended</span>{% endif %}
+          {% if w.get('schedule') %}<span class="jbranch">{{ w.schedule }}</span>{% endif %}
+          {% if w.images %}<div class="sec-note" style="margin:2px 0 0;">
+            {{ w.images[0]|truncate(62) }}</div>{% endif %}</td>
+        <td>{{ w.namespace }}</td>
+        <td>{% if w.kind == 'CronJob' %}<span class="hint">last {{ w.get('last') or 'never' }}</span>
+            {% elif w.empty %}<span class="sv sv-info">0</span>
+            {% else %}<span class="sv {{ 'sv-clean' if w.ok else 'sv-high' }}">{{ w.have }}/{{ w.want }}</span>{% endif %}</td>
+        <td>{% for t in w.tags %}<span class="badge">{{ t }}</span>{% endfor %}</td>
+        <td>{{ w.age }}</td>
+        <td class="mid actcol">
+          {# Logs where the replica box and Scale used to be. Scaling by hand on a
+             cluster ArgoCD owns is undone at the next sync, so the control that
+             sat here all but invited a change that would not last — and the thing
+             anybody actually wants from a workload row is what it is saying.
+             `deployment/name` is what a person would type: kubectl resolves it to
+             one of the pods and names which on stderr. #}
+          <button type="button" class="abtn"
+                  {{ bits.cluster_podlog_attrs(pid, cid, w.namespace,
+                       w.kind|lower ~ '/' ~ w.name) }}>logs</button>
+          {# Every kind, not only the three with fixed actions: a CronJob or a
+             Job has YAML to read even when there is nothing to restart. #}
+          <button type="button" class="abtn"
+                  {{ bits.yaml_attrs(pid, cid, w.namespace, w.name, w.kind|lower) }}
+                  >yaml</button>
+          <button type="button" class="abtn"
+                  {{ bits.describe_attrs(pid, cid, w.namespace, w.name, w.kind|lower) }}
+                  >desc</button>
+          {# Everything this workload is made of — its Services, ConfigMaps,
+             Secrets and Ingresses — on a page of its own, each with the same
+             actions. A page rather than a window: it is a list in its own right,
+             not one object to glance at. #}
+          <a class="abtn" href="/clusters/related?project={{ pid }}&cluster={{ cid }}&namespace={{ w.namespace|urlencode }}&name={{ w.name|urlencode }}&kind={{ w.kind|lower|urlencode }}"
+             title="every ConfigMap, Secret, Service and Ingress that belongs to {{ w.name }}"
+             >related</a>
+          {% if w.kind in ('Deployment', 'StatefulSet', 'DaemonSet') %}
+          <form method="post" action="/clusters/action" style="display:inline;">
+            {# back to the sub-tab and namespace it was pressed in: a restart
+               that returns you to "All kinds" in every namespace has moved the
+               row you were watching somewhere off the screen #}
+            {{ acts.act_fields(qbase ~ '&tab=workloads' ~ ('&ns=' ~ ns if ns else '')
+                          ~ ('&wkind=' ~ wkind if wkind else '')) }}
+            <input type="hidden" name="kind" value="{{ w.kind|lower }}">
+            <input type="hidden" name="namespace" value="{{ w.namespace }}">
+            <input type="hidden" name="name" value="{{ w.name }}">
+            {{ acts.act_button('restart', '↻ Restart') }}
+            {{ acts.act_button('undo', 'Roll back', 'btn-danger',
+                          'this returns ' ~ w.name ~ ' to its previous revision') }}
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-b" style="color:var(--muted);font-size:13px;">
+    {{ data.workloads.get('error') or 'nothing deployed here' }}</div>
+  {% endif %}
+</div>
+
+{# ── Pods ── #}
+{% elif tab == 'pods' %}
+{% set all_pods = data.pods.get('pods') or [] %}
+{# The filters are applied here rather than in the route so the namespace
+   dropdown can still count every pod in the cluster.
+
+   `workload` and `node` are how the other two pages hand off to this one: a
+   deployment's name and a node in the strip are both links to "the pods that
+   belong to this". `workload` matches on ownerReference, not on the name, which
+   is what tells bo-frontend from bo-frontend-v02. #}
+{% set by_ns = all_pods|selectattr('namespace', 'equalto', ns)|list if ns else all_pods %}
+{% set by_node = by_ns|selectattr('node', 'equalto', node)|list if node else by_ns %}
+{% set by_wl = by_node|selectattr('workload', 'equalto', workload)|list
+               if workload else by_node %}
+{% set shown = [] %}
+{% if q %}{% for p in by_wl %}{% if q|lower in p.name|lower %}{% set _ = shown.append(p) %}{% endif %}{% endfor %}
+{% else %}{% set shown = by_wl %}{% endif %}
+{# What is being filtered on, said out loud with a way out of each one. A filter
+   that arrived from a click on another tab is otherwise invisible: the list is
+   short and there is nothing on the page to say why. #}
+{% if workload or node %}
+<div class="podfilters">
+  {% if workload %}
+  <span class="pf">{{ glyph('layers', 14) }} pods of <b>{{ workload }}</b>
+    <a href="{{ qbase }}&tab=pods{{ '&ns=' ~ ns if ns }}{{ '&node=' ~ node|urlencode if node }}"
+       title="show every workload's pods again">✕</a></span>
+  {% endif %}
+  {% if node %}
+  <span class="pf">{{ glyph('server', 14) }} on <b>{{ node }}</b>
+    <a href="{{ qbase }}&tab=pods{{ '&ns=' ~ ns if ns }}{{ '&workload=' ~ workload|urlencode if workload }}"
+       title="show pods on every node again">✕</a></span>
+  {% endif %}
+  <span class="hint">{{ shown|length }} of {{ by_ns|length }}
+    {{- ' in ' ~ ns if ns else ' in the cluster' }}</span>
+</div>
+{% endif %}
+<form method="get" action="/clusters" class="pipefilters">
+  <input type="hidden" name="project" value="{{ pid }}">
+  <input type="hidden" name="cluster" value="{{ cid }}">
+  <input type="hidden" name="tab" value="pods">
+  {# the namespace is chosen once, at the top of the page — a second selector
+     here was a second source of truth for the same filter #}
+  {% if ns %}<input type="hidden" name="ns" value="{{ ns }}">{% endif %}
+  {# ...and a text search must not throw away the filter that got you here #}
+  {% if node %}<input type="hidden" name="node" value="{{ node }}">{% endif %}
+  {% if workload %}<input type="hidden" name="workload" value="{{ workload }}">{% endif %}
+  <input type="search" name="q" value="{{ q }}" placeholder="pod name contains…"
+         style="width:220px;">
+  <button type="submit" class="btn-ghost" style="padding:8px 16px;">Apply</button>
+  {% if ns or q or node or workload %}<a class="btn btn-ghost"
+     style="padding:8px 14px;font-size:12.5px;"
+     href="{{ qbase }}&tab=pods">Clear</a>{% endif %}
+</form>
+
+{% if look and look.kind == 'shell' %}
+{# A real terminal, not a command box.
+
+   The thing it replaced ran one command per submit and printed the answer,
+   which cannot express any program that takes the keyboard for itself:
+   `nslookup` has its own `>` prompt, `telnet` is a conversation, `top`
+   repaints, `vi` owns the screen, and a password prompt turns echo off. So
+   this is a plain pty at both ends — keystrokes go down a socket to the
+   shell in the container, and what the shell prints comes back. The shell
+   does its own echoing, line editing, history and TAB completion, because
+   the shell is what has always done them. #}
+<link rel="stylesheet" href="/static/xterm.css">
+<script nonce="{{ csp_nonce() }}" src="/static/xterm.js"></script>
+<script nonce="{{ csp_nonce() }}" src="/static/addon-fit.js"></script>
+<dialog id="pshDlg" class="psh">
+  <div class="psh-bar">
+    <span class="psh-dots"><b title="close" data-dot="close">✕</b><b title="minimise" data-dot="mini">–</b><b title="maximise" data-dot="maxi">+</b></span>
+    <b>{{ look.pod }}</b>
+    <span class="psh-ns">{{ look.namespace }}</span>
+    {% if look.netshoot %}<span class="psh-tag">troubleshooting</span>{% endif %}
+    <span class="psh-state" id="pshState">connecting…</span>
+    <span style="flex:1"></span>
+    {% if look.netshoot %}
+    <form method="post" action="/clusters/netshoot/stop" style="display:inline;"
+          data-call-submit="pshLeaving" data-arg="deleting {{ look.pod }}…">
+      <input type="hidden" name="project" value="{{ pid }}">
+      <input type="hidden" name="cluster" value="{{ cid }}">
+      <input type="hidden" name="namespace" value="{{ look.namespace }}">
+      <input type="hidden" name="name" value="{{ look.pod }}">
+      <input type="hidden" name="back" value="{{ qbase }}&tab=pods">
+      <button class="psh-x danger" type="submit" title="delete this pod">finish</button>
+    </form>
+    {% endif %}
+    <a class="psh-x" href="{{ qbase }}&tab=pods{{ '&ns=' ~ ns if ns }}"
+       data-call="pshLeaving" data-arg="closing…">close</a>
+  </div>
+  <div class="psh-term" id="pshTerm"></div>
+  {# Shown the instant anything is clicked that leaves. Waiting with no sign
+     that a click registered is what reads as a hang, even when the wait is
+     under a second. #}
+  <div class="psh-veil" id="pshVeil" hidden><span class="opspin"></span>
+    <b id="pshVeilText">closing…</b></div>
+</dialog>
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  const dlg = document.getElementById('pshDlg');
+  const host = document.getElementById('pshTerm');
+  const state = document.getElementById('pshState');
+  if (!dlg || !window.Terminal) return;
+  dlg.showModal();
+
+  let leaving = false;
+  window.pshLeaving = (text) => {
+    leaving = true;
+    const veil = document.getElementById('pshVeil');
+    document.getElementById('pshVeilText').textContent = text;
+    veil.hidden = false;
+  };
+
+  // Colours taken from the page's own palette so the terminal belongs to the
+  // portal rather than looking like something embedded in it.
+  const term = new Terminal({
+    fontFamily: getComputedStyle(document.body).getPropertyValue('--mono')
+                || 'ui-monospace, monospace',
+    fontSize: 13, lineHeight: 1.25, cursorBlink: true, scrollback: 10000,
+    macOptionIsMeta: true, allowProposedApi: false,
+    theme: {background: '#0b0f16', foreground: '#d7e2f0', cursor: '#6ee7a8',
+            selectionBackground: '#2b3a52', black: '#1c2436', red: '#ff8f8f',
+            green: '#6ee7a8', yellow: '#febc2e', blue: '#7cb0ff',
+            magenta: '#c9a2ff', cyan: '#67d8e0', white: '#c6d3e4',
+            brightBlack: '#5d6b80', brightRed: '#ff9b9b',
+            brightGreen: '#8ff0bf', brightYellow: '#ffd166',
+            brightBlue: '#9cc6ff', brightMagenta: '#dabcff',
+            brightCyan: '#8ce6ec', brightWhite: '#e8eef7'},
+  });
+  const fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open(host);
+  fit.fit();
+  term.focus();
+
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const q = new URLSearchParams({
+    project: {{ pid|tojson }}, cluster: {{ cid|tojson }},
+    namespace: {{ look.namespace|tojson }}, pod: {{ look.pod|tojson }},
+    rows: term.rows, cols: term.cols});
+  const ws = new WebSocket(proto + '//' + location.host + '/clusters/pty.ws?' + q);
+  let open = false;
+
+  // The socket takes a moment to open — a kubectl exec over a VPN is not
+  // instant — and the first thing a person does with a terminal is type into
+  // it. Anything typed before it is ready waits here rather than vanishing.
+  const early = [];
+  ws.onopen = () => {
+    open = true; state.textContent = '';
+    early.splice(0).forEach(d => ws.send(JSON.stringify({i: d})));
+    term.focus();
+  };
+  ws.onmessage = e => term.write(e.data);
+  // `exit`, or Ctrl+D, ends the shell, and a window left showing a dead
+  // terminal is one the user has to close by hand — so leaving is what they
+  // asked for by typing it.
+  //
+  // But ONLY if they typed. A shell that never starts — no permission to exec,
+  // no shell in the image, an unreachable cluster — prints its reason and the
+  // socket closes, and for a while that was treated as "they exited": the
+  // message showed for a fraction of a second and the page navigated away.
+  // Nobody could read why it failed, and it only ever happened on somebody
+  // else's cluster, which is the worst place for a message to disappear.
+  //
+  // Two signals, either of which means it never became a terminal: the server
+  // closing with 4001, and the person never having pressed a key.
+  const back = {{ (qbase ~ '&tab=pods' ~ ('&ns=' ~ ns if ns else ''))|tojson }};
+  ws.onclose = e => {
+    open = false;
+    const neverUsed = !typedAnything || e.code === 4001;
+    if (leaving) return;
+    if (neverUsed) {
+      state.textContent = 'could not start';
+      term.write('\r\n\x1b[90m— the terminal closed'
+        + (e.reason ? ': \x1b[0m\x1b[31m' + e.reason + '\x1b[0m' : ' before it started.\x1b[0m')
+        + '\r\n\x1b[90mThe reason is above. Close this window when you have '
+        + 'read it.\x1b[0m\r\n');
+      return;                       // stay open — the message is the point
+    }
+    state.textContent = 'closed';
+    pshLeaving('closing…');
+    window.location.href = back;
+  };
+  ws.onerror = () => {
+    if (!open) term.write('\r\n\x1b[31mCould not open a terminal.\x1b[0m If '
+      + 'the portal is behind a proxy, it has to be configured to pass '
+      + 'WebSocket upgrades through.\r\n');
+  };
+
+  // Every keystroke, including Ctrl+C, Ctrl+Z, Ctrl+D and TAB: they are the
+  // container's business, not this page's.
+  let typedAnything = false;
+  term.onData(d => {
+    typedAnything = true;
+    if (open) ws.send(JSON.stringify({i: d}));
+    else if (early.length < 200) early.push(d);
+  });
+
+  // A shell that thinks it has 80 columns when it has 200 wraps its own
+  // output in the wrong place, so the size follows the window.
+  let sizing;
+  const resize = () => {
+    clearTimeout(sizing);
+    sizing = setTimeout(() => {
+      fit.fit();
+      if (open) ws.send(JSON.stringify({r: [term.rows, term.cols]}));
+    }, 80);
+  };
+  new ResizeObserver(resize).observe(host);
+  window.addEventListener('resize', resize);
+
+  // Esc belongs to whatever is running in the terminal — vi, less, a menu —
+  // so it must not close the window out from under it.
+  dlg.addEventListener('cancel', e => e.preventDefault());
+  dlg.addEventListener('click', e => { if (e.target === dlg) term.focus(); });
+  window.addEventListener('pagehide', () => ws.close());
+})();
+</script>
+
+{% elif look %}
+<div class="card">
+  <div class="card-h" style="flex-wrap:wrap;">
+    <b style="font-size:14.5px;">{{ 'Last 400 log lines' if look.kind == 'logs' else 'Description' }}</b>
+    <span class="badge" style="font-family:var(--mono);">{{ look.target }}</span>
+    <span style="flex:1"></span>
+    {% set pod_ns, pod_name = look.target.split('/', 1) %}
+    <a class="btn btn-ghost" style="padding:4px 12px;font-size:11.5px;"
+       href="{{ qbase }}&tab=pods{{ '&ns=' ~ ns if ns }}&target={{ look.target|urlencode }}&inspect={{ 'describe' if look.kind == 'logs' else 'logs' }}">
+      {{ 'see description' if look.kind == 'logs' else 'see logs' }}</a>
+    {% if used_by %}
+    <a class="btn btn-ghost" style="padding:4px 12px;font-size:11.5px;"
+       href="{{ used_by[0].url }}/logs/{{ pod_ns }}/{{ pod_name }}">stream live ↗</a>
+    {% endif %}
+    <a class="btn btn-ghost" style="padding:4px 12px;font-size:11.5px;"
+       href="{{ qbase }}&tab=pods{{ '&ns=' ~ ns if ns }}">✕ close</a>
+  </div>
+  <div class="card-b">
+    {% if look.error %}<div class="flash err">⚠ {{ look.error }}</div>{% endif %}
+    {% if look.text %}<pre class="cmdout" style="max-height:440px;">{{ look.text }}</pre>
+    {% elif not look.error %}<div class="sec-note">nothing to show — the pod may
+      not have logged anything yet</div>{% endif %}
+  </div>
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="card-h">Pods
+    {% if data.pods.get('collecting') %}
+    <span class="hint">reading them now…</span>
+    {% else %}
+    <span class="hint">{{ shown|length }} shown ·
+      {{ shown|rejectattr('healthy')|list|length }} not clean · problems first</span>
+    {% endif %}</div>
+  {% if shown %}
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr>
+        <th style="min-width:250px;">Pod</th><th style="width:150px;">Namespace</th>
+        <th style="width:120px;">State</th><th style="width:65px;">Ready</th>
+        <th style="width:80px;">Restarts</th><th style="width:115px;">CPU / mem</th>
+        <th style="min-width:130px;">Node</th><th style="width:48px;">Age</th>
+        <th class="actcol" style="width:300px;">Actions</th>
+      </tr></thead>
+      <tbody>
+      {% for p in shown[:400] %}
+      <tr>
+        <td class="jname"><b>{{ p.name }}</b>
+          {% if p.owner %}<span class="jbranch">{{ p.owner }}</span>{% endif %}
+          {% if p.images %}<div class="sec-note" style="margin:2px 0 0;">
+            {{ p.images|join(', ')|truncate(58) }}</div>{% endif %}</td>
+        <td>{{ p.namespace }}</td>
+        <td>{% if p.healthy %}<span class="sv sv-clean">{{ p.phase }}</span>
+            {% else %}<span class="sv sv-critical">{{ p.problem }}</span>{% endif %}</td>
+        <td>{{ p.ready }}</td>
+        <td>{% if p.restarts %}<span class="sv {{ 'sv-high' if p.restarts > 20 else 'sv-medium' }}">{{ p.restarts }}</span>
+            {% else %}0{% endif %}</td>
+        <td style="font-family:var(--mono);font-size:11px;">
+          {% if p.cpu is not none %}{{ p.cpu|round|int }}m / {{ (p.mem or 0)|round|int }}Mi
+          {% else %}<span class="na">—</span>{% endif %}</td>
+        <td style="font-family:var(--mono);font-size:11px;">{{ p.node or '—' }}</td>
+        <td>{{ p.age }}</td>
+        {# Pinned to the right edge. The table is wider than the window on any
+           laptop, and actions that need a horizontal scroll to reach are
+           actions nobody uses. #}
+        <td class="mid actcol">
+          {% set look_q = qbase ~ '&tab=pods' ~ ('&ns=' ~ ns if ns else '')
+                          ~ ('&q=' ~ q|urlencode if q else '')
+                          ~ '&target=' ~ (p.namespace ~ '/' ~ p.name)|urlencode %}
+          <div class="actrow oneline">
+            {# Opens the live window. The href is the server-rendered snapshot,
+               kept so the action still works without JavaScript and so the row
+               can be opened in a new tab. #}
+            <a class="abtn" href="{{ look_q }}&inspect=logs"
+               title="stream this pod's log"
+               {{ bits.cluster_podlog_attrs(pid, cid, p.namespace, p.name) }}>logs</a>
+            <a class="abtn" href="{{ look_q }}&inspect=describe"
+               title="kubectl describe"
+               {{ bits.describe_attrs(pid, cid, p.namespace, p.name) }}>desc</a>
+            <button type="button" class="abtn"
+                    {{ bits.yaml_attrs(pid, cid, p.namespace, p.name, 'pod') }}
+                    >yaml</button>
+            {% if writable %}
+            <a class="abtn go" href="{{ look_q }}&inspect=shell"
+               title="run a command inside this pod">shell</a>
+            {% endif %}
+            {# display:contents so the Delete button is a direct flex item of the
+               .actrow and aligns on the same baseline as the others (one line). #}
+            <form method="post" action="/clusters/action" style="display:contents;">
+              {{ acts.act_fields(qbase ~ '&tab=pods' ~ ('&ns=' ~ ns if ns else '')) }}
+              <input type="hidden" name="namespace" value="{{ p.namespace }}">
+              <input type="hidden" name="name" value="{{ p.name }}">
+              {# A line icon, not an emoji, and this one WAS the whole label —
+                 so on a machine whose font draws 🗑 oddly the button had no
+                 legible name at all. The title says what it does. #}
+              {{ acts.act_button('delete-pod', 'Delete', 'btn-danger',
+                            'the controller recreates ' ~ p.name,
+                            icon='trash-2') }}
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if shown|length > 400 %}
+  <div class="card-b"><span class="hint">first 400 of {{ shown|length }} —
+    narrow it with the namespace filter</span></div>{% endif %}
+  {% else %}
+  <div class="card-b" style="color:var(--muted);font-size:13px;">
+    {# "nothing matches" about a list that has not been read yet is a statement
+       about the cluster, and it is false. Say which it is. #}
+    {{ data.pods.get('error') or ('still reading the pods…'
+       if data.pods.get('collecting') else 'nothing matches') }}</div>
+  {% endif %}
+</div>
+
+{# ── Events ── #}
+{% elif tab == 'events' %}
+{# Both lists narrow to the namespace the page is filtered to. Now that the
+   namespace survives a tab change, a tab that ignored it would show the whole
+   cluster under a picker reading "showing preprod only". #}
+{% set egroups = (data.events.get('groups') or [])
+                 |selectattr('namespace', 'equalto', ns)|list if ns
+                 else (data.events.get('groups') or []) %}
+{% set eall = (data.events.get('events') or [])
+              |selectattr('namespace', 'equalto', ns)|list if ns
+              else (data.events.get('events') or []) %}
+{% set cur = sec if sec in ('grouped', 'recent') else 'grouped' %}
+{{ bits.subtabs(qbase ~ '&tab=events' ~ ('&ns=' ~ ns if ns else ''),
+     'sec', cur, [
+     {'key': 'grouped', 'label': 'Warnings, grouped', 'count': egroups|length,
+      'icon': 'triangle-alert'},
+     {'key': 'recent', 'label': 'Recent events', 'count': eall|length,
+      'icon': 'history'}]) }}
+{% if cur == 'grouped' %}
+<div class="card">
+  <div class="card-h">Warnings, grouped
+    <span class="hint">the same reason across many objects is one problem, not many</span></div>
+  {% if egroups %}
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr><th style="width:180px;">Reason</th><th style="width:150px;">Namespace</th>
+        <th style="width:75px;">Count</th>
+        <th style="min-width:340px;">Objects, and one message</th></tr></thead>
+      <tbody>
+      {% for g in egroups[:14] %}
+      <tr>
+        <td class="jname"><span class="sv sv-medium">{{ g.reason }}</span></td>
+        <td>{{ g.namespace or '—' }}</td>
+        <td><b>{{ g.count }}</b></td>
+        <td><div style="white-space:normal;">{{ g.objects|join(', ')|truncate(90) }}</div>
+          <div class="sec-note" style="margin:2px 0 0;white-space:normal;">{{ g.sample|truncate(150) }}</div></td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-b" style="color:var(--muted);font-size:13px;">
+    {# an empty grouping is good news and has to say so: the tab is offered even
+       when it holds nothing, so silence here would read as a failed read #}
+    {{ data.events.get('error') or 'no warnings in the retention window' }}</div>
+  {% endif %}
+</div>
+
+{% elif cur == 'recent' %}
+<div class="card">
+  <div class="card-h">Recent events
+    <span class="hint">{{ eall|length }} in the cluster's
+      retention window · warnings first</span></div>
+  {% if eall %}
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr><th style="width:85px;">Type</th><th style="width:150px;">Reason</th>
+        <th style="min-width:200px;">Object</th><th style="min-width:280px;">Message</th>
+        <th style="width:60px;">Count</th><th style="width:55px;">Age</th>
+        <th class="actcol" style="width:120px;">The object</th></tr></thead>
+      <tbody>
+      {% for e in eall[:200] %}
+      <tr>
+        <td><span class="sv {{ 'sv-medium' if e.type == 'Warning' else 'sv-info' }}">{{ e.type }}</span></td>
+        <td class="jname">{{ e.reason }}</td>
+        <td><span class="hint">{{ e.namespace }}/</span>{{ e.object }}</td>
+        <td><div style="white-space:normal;">{{ e.message|truncate(170) }}</div></td>
+        <td>{{ e.count }}</td>
+        <td>{{ e.age }}</td>
+        <td class="mid actcol">
+          {# The Event object itself is a record that expires; what a reader wants
+             from a warning is the thing it is about. #}
+          {% if e.obj_kind and e.obj_name %}
+          <button type="button" class="abtn"
+                  {{ bits.yaml_attrs(pid, cid, e.namespace, e.obj_name, e.obj_kind) }}
+                  >yaml</button>
+          <button type="button" class="abtn"
+                  {{ bits.describe_attrs(pid, cid, e.namespace, e.obj_name, e.obj_kind) }}
+                  >desc</button>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-b" style="color:var(--muted);font-size:13px;">
+    {{ data.events.get('error') or 'no events — the window is usually about an hour' }}</div>
+  {% endif %}
+</div>
+{% endif %}
+
+{# ── Storage ── #}
+{% elif tab == 'storage' %}
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(155px,1fr));margin-bottom:18px;">
+  <div class="sevtile"><div class="n">{{ (data.storage.get('claims') or [])|length }}</div>
+    <div class="l">claims{{ ' · cluster' if ns }}</div></div>
+  <div class="sevtile"><div class="n">{{ data.storage.get('total_gib', 0)|round|int }}</div>
+    <div class="l">GiB claimed</div></div>
+  <div class="sevtile"><div class="n">{{ data.storage.get('volumes', 0) }}</div>
+    <div class="l">volumes</div></div>
+  <div class="sevtile {{ 't-medium' if data.storage.get('released') else '' }}">
+    <div class="n">{{ (data.storage.get('released') or [])|length }}</div>
+    <div class="l">released</div></div>
+</div>
+
+{# The tiles stay above the strip: they are the whole tab's totals, not one
+   section's, and they are the reason somebody opens this tab at all. #}
+{% set claims = (data.storage.get('claims') or [])
+                |selectattr('namespace', 'equalto', ns)|list if ns
+                else (data.storage.get('claims') or []) %}
+{# Volumes and storage classes are both cluster-scoped: there is nothing to
+   narrow them by, so they stay whole and the header says so rather than looking
+   unfiltered. #}
+{% set classes = data.storage.get('classes') or [] %}
+{% set pvs = data.storage.get('pvs') or [] %}
+{% set stuck = pvs|selectattr('stuck')|list %}
+{% set cur = sec if sec in ('claims', 'volumes', 'classes') else 'claims' %}
+{{ bits.subtabs(qbase ~ '&tab=storage' ~ ('&ns=' ~ ns if ns else ''),
+     'sec', cur, [
+     {'key': 'claims', 'label': 'Volume claims', 'count': claims|length,
+      'icon': 'hard-drive'},
+     {'key': 'volumes', 'label': 'Volumes', 'count': pvs|length,
+      'icon': 'database'},
+     {'key': 'classes', 'label': 'Storage classes', 'count': classes|length,
+      'icon': 'layout-grid'}]) }}
+
+{% if cur == 'volumes' %}
+<div class="card">
+  <div class="card-h">Volumes
+    <span class="hint">{% if stuck %}{{ stuck|length }} Released or Failed and
+      still holding space · those first{% else %}every PersistentVolume in the
+      cluster{% endif %}</span></div>
+  {% if pvs %}
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr><th style="min-width:230px;">Volume</th>
+        <th style="width:110px;">Status</th><th style="width:75px;">Size</th>
+        <th style="min-width:180px;">Bound to</th><th style="width:130px;">Class</th>
+        <th style="width:100px;">Reclaim</th><th style="width:55px;">Age</th>
+        <th class="actcol" style="width:120px;">Manage</th></tr></thead>
+      <tbody>
+      {% for v in pvs %}
+      <tr>
+        <td class="jname"><b>{{ v.name }}</b>
+          {# The reason a volume is stuck is the whole point of showing it: a
+             Released one is waiting for somebody to decide, and the message says
+             what it is waiting for. #}
+          {% if v.reason %}<div class="sec-note" style="margin:2px 0 0;white-space:normal;">
+            {{ v.reason }}</div>{% endif %}</td>
+        <td><span class="sv {{ 'sv-clean' if v.bound
+                              else ('sv-high' if v.stuck else 'sv-info') }}"
+            >{{ v.status }}</span></td>
+        <td>{{ v.size }}</td>
+        <td>{% if v.claim %}{{ v.claim }}
+            {% else %}<span class="na">nothing</span>{% endif %}</td>
+        <td>{{ v.sc or '—' }}</td>
+        <td>{{ v.reclaim or '—' }}</td>
+        <td>{{ v.age }}</td>
+        <td class="mid actcol">
+          <button type="button" class="abtn"
+                  {{ bits.yaml_attrs(pid, cid, '', v.name, 'pv') }}>yaml</button>
+          <button type="button" class="abtn"
+                  {{ bits.describe_attrs(pid, cid, '', v.name, 'pv') }}>desc</button>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-b" style="color:var(--muted);font-size:13px;">
+    {{ data.storage.get('error') or 'no persistent volumes' }}</div>
+  {% endif %}
+</div>
+
+{% elif cur == 'classes' %}
+<div class="card">
+  <div class="card-h">Storage classes
+    <span class="hint">what a claim gets when it does not name one{{
+      ' · cluster-wide, so the namespace filter does not apply' if ns }}</span></div>
+  {% if classes %}
+  {# A row per class rather than a line of badges: a class is an object like any
+     other here, and reading its provisioner parameters means opening it. #}
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr><th style="min-width:200px;">Class</th>
+        <th style="min-width:230px;">Provisioner</th>
+        <th style="width:120px;">Reclaim</th><th style="width:100px;">Default</th>
+        <th class="actcol" style="width:120px;">Manage</th></tr></thead>
+      <tbody>
+      {% for sc in classes %}
+      <tr>
+        <td class="jname"><b>{{ sc.name }}</b></td>
+        <td style="font-family:var(--mono);font-size:11.5px;">{{ sc.provisioner }}</td>
+        <td>{{ sc.reclaim }}</td>
+        <td>{% if sc.default %}<span class="sv sv-info">default</span>
+            {% else %}<span class="na">—</span>{% endif %}</td>
+        <td class="mid actcol">
+          {# cluster-scoped, so the namespace is empty — the window and the route
+             both take that #}
+          <button type="button" class="abtn"
+                  {{ bits.yaml_attrs(pid, cid, '', sc.name, 'storageclass') }}
+                  >yaml</button>
+          <button type="button" class="abtn"
+                  {{ bits.describe_attrs(pid, cid, '', sc.name, 'storageclass') }}
+                  >desc</button>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-b" style="color:var(--muted);font-size:13px;">
+    {{ data.storage.get('error') or 'no storage classes — volumes here are
+    provisioned by hand' }}</div>
+  {% endif %}
+</div>
+
+{% else %}
+<div class="card">
+  <div class="card-h">Volume claims <span class="hint">unbound first, then largest</span></div>
+  {% if claims %}
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr><th style="min-width:220px;">Claim</th><th style="width:150px;">Namespace</th>
+        <th style="width:90px;">Status</th><th style="width:80px;">Size</th>
+        <th style="width:140px;">Class</th><th style="width:120px;">Access</th>
+        <th style="width:55px;">Age</th>
+        <th class="actcol" style="width:120px;">Manage</th></tr></thead>
+      <tbody>
+      {% for c in claims %}
+      <tr>
+        <td class="jname"><b>{{ c.name }}</b>
+          {% if c.volume %}<div class="sec-note" style="margin:2px 0 0;">{{ c.volume }}</div>{% endif %}</td>
+        <td>{{ c.namespace }}</td>
+        <td><span class="sv {{ 'sv-clean' if c.bound else 'sv-high' }}">{{ c.status }}</span></td>
+        <td>{{ c.size }}</td>
+        <td>{{ c.sc or '—' }}</td>
+        <td>{{ c.modes|join(', ') }}</td>
+        <td>{{ c.age }}</td>
+        <td class="mid actcol">
+          <button type="button" class="abtn"
+                  {{ bits.yaml_attrs(pid, cid, c.namespace, c.name, 'pvc') }}
+                  >yaml</button>
+          <button type="button" class="abtn"
+                  {{ bits.describe_attrs(pid, cid, c.namespace, c.name, 'pvc') }}
+                  >desc</button>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-b" style="color:var(--muted);font-size:13px;">
+    {{ data.storage.get('error') or 'no persistent volume claims' }}</div>
+  {% endif %}
+</div>
+{% endif %}
+{# A pointer to the row, not a list of names. This was a strip of bare names
+   under the claims table — the one object on the tab you could not open,
+   describe, or read the class of. It is a row in Volumes now, sorted first, with
+   its status and the reason it is stuck. #}
+{% if stuck and cur != 'volumes' %}
+<div class="flash err">⚠ {{ stuck|length }} volume{{ 's' if stuck|length != 1 }}
+  Released or Failed, still holding
+  {{ stuck|sum(attribute='gib')|round|int }} GiB —
+  <a href="{{ qbase }}&tab=storage&sec=volumes{{ '&ns=' ~ ns if ns }}">see them in
+  Volumes</a></div>
+{% endif %}
+
+{# ── Network ── #}
+{% elif tab == 'network' %}
+{# The namespace chosen at the top of the page narrows these three lists too. It
+   did not, and a page filtered to one namespace showing every service in the
+   cluster is a filter that lies. #}
+{% set nsvcs = (data.network.get('services') or [])
+               |selectattr('namespace', 'equalto', ns)|list if ns
+               else (data.network.get('services') or []) %}
+{% set nroutes = (data.network.get('routes') or [])
+                 |selectattr('namespace', 'equalto', ns)|list if ns
+                 else (data.network.get('routes') or []) %}
+{% set ncerts = (data.certs.get('certs') or [])
+                |selectattr('namespace', 'equalto', ns)|list if ns
+                else (data.certs.get('certs') or []) %}
+{% set cur = sec if sec in ('services', 'routes', 'certs') else 'services' %}
+{{ bits.subtabs(qbase ~ '&tab=network' ~ ('&ns=' ~ ns if ns else ''),
+     'sec', cur, [
+     {'key': 'services', 'label': 'Services', 'count': nsvcs|length,
+      'icon': 'hexagon'},
+     {'key': 'routes', 'label': 'Ingresses', 'count': nroutes|length,
+      'icon': 'globe'},
+     {'key': 'certs', 'label': 'Certificates', 'count': ncerts|length,
+      'icon': 'lock'}]) }}
+
+{% if cur == 'services' %}
+<div class="card">
+  <div class="card-h">Services
+    <span class="hint">{{ nsvcs|selectattr('published')|list|length }} reachable
+      from outside · those first</span></div>
+  {% if nsvcs %}
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr><th style="min-width:210px;">Service</th><th style="width:150px;">Namespace</th>
+        <th style="width:125px;">Type</th><th style="min-width:160px;">Address</th>
+        <th style="min-width:130px;">Ports</th>
+        <th class="actcol" style="width:120px;">Manage</th></tr></thead>
+      <tbody>
+      {% for sv in nsvcs %}
+      <tr>
+        <td class="jname"><b>{{ sv.name }}</b></td>
+        <td>{{ sv.namespace }}</td>
+        <td><span class="{{ 'sv sv-info' if sv.published else 'badge' }}">{{ sv.type }}</span></td>
+        <td style="font-family:var(--mono);font-size:11.5px;">
+          {% if sv.external %}{{ sv.external|join(', ') }}
+          {% elif sv.pending %}<span class="sv sv-medium">pending</span>
+          {% else %}{{ sv.cluster_ip or '—' }}{% endif %}</td>
+        <td style="font-family:var(--mono);font-size:11px;">{{ sv.ports|join(', ') }}</td>
+        <td class="mid actcol">
+          <button type="button" class="abtn"
+                  {{ bits.yaml_attrs(pid, cid, sv.namespace, sv.name, 'service') }}
+                  >yaml</button>
+          <button type="button" class="abtn"
+                  {{ bits.describe_attrs(pid, cid, sv.namespace, sv.name, 'service') }}
+                  >desc</button>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-b" style="color:var(--muted);font-size:13px;">
+    {{ data.network.get('error') or ('no services in ' ~ ns if ns
+       else 'no services at all, which is unusual') }}</div>
+  {% endif %}
+</div>
+
+{% elif cur == 'routes' %}
+<div class="card">
+  <div class="card-h">Ingresses
+    <span class="hint">{{ (data.network.get('hosts') or [])|length }} host name(s) served here</span></div>
+  {% if nroutes %}
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr><th style="width:115px;">Kind</th><th style="min-width:170px;">Name</th>
+        <th style="width:130px;">Namespace</th><th style="min-width:210px;">Hosts</th>
+        {# The host is only half of what an ingress says. "api.example.com is
+           served by WHAT" is the other half, and it took opening the YAML. #}
+        <th style="min-width:170px;">Service</th>
+        <th style="width:65px;">TLS</th>
+        <th class="actcol" style="width:120px;">Manage</th></tr></thead>
+      <tbody>
+      {% for r in nroutes %}
+      <tr>
+        <td><span class="badge">{{ r.kind }}</span></td>
+        <td class="jname"><b>{{ r.name }}</b>
+          {% if r.class %}<span class="jbranch">{{ r.class }}</span>{% endif %}</td>
+        <td>{{ r.namespace }}</td>
+        <td>{% for h in r.hosts %}<a class="badge" href="https://{{ h }}"
+            target="_blank" rel="noopener">{{ h }}</a>{% endfor %}
+          {% if not r.hosts %}<span class="na">any host</span>{% endif %}</td>
+        <td>{% for sv in r.services or [] %}
+            {# the service is a link to itself in the Services list, which is
+               where its address and ports are #}
+            <a class="badge" href="{{ qbase }}&tab=network&sec=services&ns={{ r.namespace|urlencode }}"
+               title="find {{ sv }} in Services">{{ sv }}</a>
+            {% endfor %}
+            {% if not r.services %}<span class="na">none named</span>{% endif %}</td>
+        <td>{% if r.tls %}<span class="sv sv-clean">yes</span>
+            {% else %}<span class="sv sv-medium">no</span>{% endif %}</td>
+        <td class="mid actcol">
+          {# r.api is what kubectl is asked for — `ingressroute` is a CRD and not
+             the word the reader sees in the Kind column #}
+          <button type="button" class="abtn"
+                  {{ bits.yaml_attrs(pid, cid, r.namespace, r.name,
+                                     r.api or r.kind|lower) }}>yaml</button>
+          <button type="button" class="abtn"
+                  {{ bits.describe_attrs(pid, cid, r.namespace, r.name,
+                                         r.api or r.kind|lower) }}>desc</button>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-b" style="color:var(--muted);font-size:13px;">
+    no Ingress or IngressRoute objects — nothing is routed by host name here</div>
+  {% endif %}
+</div>
+
+{% elif cur == 'certs' %}
+<div class="card">
+  <div class="card-h">Certificates
+    <span class="hint">cert-manager · soonest expiry first</span></div>
+  {% if ncerts %}
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr><th style="min-width:190px;">Certificate</th><th style="width:150px;">Namespace</th>
+        <th style="width:100px;">Expires in</th><th style="width:105px;">Ready</th>
+        <th style="min-width:200px;">Names</th><th style="width:120px;">Issuer</th>
+        <th class="actcol" style="width:120px;">Manage</th></tr></thead>
+      <tbody>
+      {% for c in ncerts %}
+      <tr>
+        <td class="jname"><b>{{ c.name }}</b></td>
+        <td>{{ c.namespace }}</td>
+        <td>{% if c.days is not none %}
+            <span class="sv {{ 'sv-critical' if c.days < 0 else ('sv-high' if c.days <= 14 else ('sv-medium' if c.days <= 30 else 'sv-clean')) }}">{{ c.days }}d</span>
+            {% else %}<span class="na">—</span>{% endif %}</td>
+        <td>{% if c.ready %}<span class="sv sv-clean">yes</span>
+            {% else %}<span class="sv sv-critical">{{ c.reason or 'no' }}</span>{% endif %}</td>
+        <td><div style="white-space:normal;">{{ c.dns|join(', ')|truncate(85) }}</div></td>
+        <td>{{ c.issuer }}</td>
+        <td class="mid actcol">
+          <button type="button" class="abtn"
+                  {{ bits.yaml_attrs(pid, cid, c.namespace, c.name, 'certificate') }}
+                  >yaml</button>
+          <button type="button" class="abtn"
+                  {{ bits.describe_attrs(pid, cid, c.namespace, c.name, 'certificate') }}
+                  >desc</button>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-b" style="color:var(--muted);font-size:13px;">
+    {# the two reasons for an empty list are not the same answer, and the tab was
+       silently absent for both before #}
+    {{ data.certs.get('error') or ('cert-manager is installed but holds no
+       Certificate objects' if data.certs.get('present') else 'cert-manager is
+       not installed here — TLS is terminated somewhere else') }}</div>
+  {% endif %}
+</div>
+{% endif %}
+
+{# ── CRDs: what this cluster's API can be asked about ── #}
+{% elif tab == 'crds' %}
+{% set crds = data.crds.get('crds') or [] %}
+{% set cgroups = data.crds.get('groups') or [] %}
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:18px;">
+  <div class="sevtile"><div class="n">{{ crds|length }}</div>
+    <div class="l">definitions</div></div>
+  <div class="sevtile"><div class="n">{{ cgroups|length }}</div>
+    <div class="l">api groups</div></div>
+  <div class="sevtile {{ 't-medium' if crds|rejectattr('established')|list|length }}">
+    <div class="n">{{ crds|rejectattr('established')|list|length }}</div>
+    <div class="l">not established</div></div>
+  <div class="sevtile"><div class="n">{{ crds|selectattr('namespaced')|list|length }}</div>
+    <div class="l">namespaced</div></div>
+</div>
+
+<div class="card">
+  <div class="card-h">Custom resource definitions
+    <span class="hint">grouped by API group · what an operator added to this
+      cluster's API</span></div>
+  {% if cgroups %}
+  <div class="card-b" style="padding:0 0 6px;">
+    <table class="jenkins fixed-t">
+      <thead><tr><th style="width:26%;">Kind</th><th style="width:22%;">Group</th>
+        <th style="width:15%;">Versions</th><th style="width:110px;">Scope</th>
+        <th style="width:13%;">Installed by</th><th style="width:60px;">Age</th>
+        <th class="actcol" style="width:120px;">Manage</th></tr></thead>
+      <tbody>
+      {% for g in cgroups %}
+      {# A group heading rather than the group repeated down forty rows: one
+         operator brings eight definitions and a flat list hides that. #}
+      <tr class="grouphead"><td colspan="7">
+        <b>{{ g.group }}</b> <span class="hint">{{ g.count }}
+          definition{{ 's' if g.count != 1 }}{{ ' · ' ~ g.by if g.by }}</span></td></tr>
+      {% for c in g.rows %}
+      <tr>
+        <td class="jname"><b>{{ c.kind }}</b>
+          <div class="sec-note brk" style="margin:1px 0 0;">{{ c.plural }}
+            {%- if c.short %} · {{ c.short|join(', ') }}{% endif %}</div>
+          {% if not c.established %}<span class="sv sv-medium">not established</span>{% endif %}</td>
+        <td class="brk">{{ c.group or '(core)' }}</td>
+        <td>{% for v in c.versions %}<span class="badge">{{ v }}{% if v == c.stored %} ·
+          stored{% endif %}</span>{% endfor %}
+          {%- if not c.versions %}<span class="na">none served</span>{% endif %}</td>
+        <td>{% if c.namespaced %}<span class="badge">namespaced</span>
+            {% else %}<span class="sv sv-info">cluster</span>{% endif %}</td>
+        <td>{{ c.by or '—' }}</td>
+        <td>{{ c.age }}</td>
+        <td class="mid actcol">
+          {# A CRD is cluster-scoped, so no namespace — and its own name, not its
+             kind, is what kubectl knows it by. #}
+          <button type="button" class="abtn"
+                  {{ bits.yaml_attrs(pid, cid, '', c.name, 'crd') }}>yaml</button>
+          <button type="button" class="abtn"
+                  {{ bits.describe_attrs(pid, cid, '', c.name, 'crd') }}>desc</button>
+        </td>
+      </tr>
+      {% endfor %}
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-b" style="color:var(--muted);font-size:13px;">
+    {{ data.crds.get('error') or 'no custom resource definitions — this cluster
+    runs nothing that extends the API' }}</div>
+  {% endif %}
+</div>
+
+{# ── Access: cluster users, their permissions, and their kubeconfig ── #}
+{% elif tab == 'access' %}
+{% if not writable %}
+<div class="flash err">⚠ This cluster is read-only in the portal. Creating a user
+  writes to it — tick “allow management” in
+  <a href="/settings/clusters">Settings → Clusters</a> first. The list below still
+  shows anything the portal created earlier, if the credentials can read it.</div>
+{% endif %}
+
+{% if created %}
+{# shown once: the token is minted, written here, and not stored anywhere #}
+<div class="card" style="border-color:var(--ok);">
+  <div class="card-h" style="flex-wrap:wrap;">
+    <b style="font-size:14.5px;">✓ {{ created.name }}
+      {{ 'issued a new token' if created.get('reissued') else 'created' }}</b>
+    {% if created.get('reissued') %}
+      {% for perm in created.permissions %}<span class="badge">{{ perm }}</span>{% endfor %}
+      {% if not created.permissions %}<span class="sv sv-info">no bindings</span>{% endif %}
+    {% else %}
+      <span class="badge">{{ presets[created.preset].label }}</span>
+      <span class="badge">{{ 'cluster-wide' if not created.namespaces
+                             else created.namespaces|join(', ') }}</span>
+    {% endif %}
+    <span class="badge">valid {{ created.duration }}</span>
+    <span style="flex:1"></span>
+    <button class="btn" type="button" id="dlbtn" style="padding:5px 15px;font-size:12px;"
+            data-name="{{ created.name }}">↓ Download kubeconfig</button>
+    <button class="btn-ghost" type="button" id="copybtn"
+            style="padding:5px 15px;font-size:12px;">Copy</button>
+    <button class="btn-ghost" type="button" id="hidebtn"
+            style="padding:5px 15px;font-size:12px;">Hide</button>
+  </div>
+  <div class="card-b">
+    <div class="flash err" style="border-color:var(--warn);">
+      This token is shown once and is not stored by the portal. Download or copy
+      it now — it hides itself once you do. If it is later lost, use
+      <b>New kubeconfig</b> next to the user to mint another one.
+      {% if created.get('reissued') %}<br>The previous token for this user keeps
+      working until it expires: Kubernetes can revoke a service account, not one
+      of its tokens. Revoke the user if the old one must stop.{% endif %}</div>
+    <pre class="cmdout" id="kubeconfig" style="max-height:300px;">{{ created.kubeconfig }}</pre>
+    <div class="sec-note">
+      {% for st in created.steps %}
+      {{ '✓' if st.ok else '✕' }} {{ st.what }}{% if st.existed %} (already existed){% endif %}{{ ' · ' if not loop.last }}
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<div class="grid" style="grid-template-columns:minmax(0,1.3fr) minmax(300px,1fr);">
+  <div class="card" style="margin:0;">
+    <div class="card-h">Users created here
+      <span class="hint">service accounts labelled by the portal</span></div>
+    {% if access_view and access_view.error %}
+    <div class="card-b"><div class="sec-note" style="color:var(--danger-ink);">
+      {{ access_view.error }}</div></div>
+    {% elif access_view and access_view.users %}
+    <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+      <table class="jenkins">
+        <thead><tr><th style="min-width:180px;">User</th>
+          <th style="width:150px;">Lives in</th>
+          <th style="min-width:220px;">Permissions</th>
+          <th style="width:95px;">Created</th>
+          <th class="actcol" style="width:210px;"></th>
+        </tr></thead>
+        <tbody>
+        {% for u in access_view.users %}
+        <tr>
+          <td class="jname"><b>{{ u.name }}</b></td>
+          <td>{{ u.namespace }}</td>
+          <td>
+            {% for r in u.cluster_roles %}
+            <span class="sv {{ 'sv-critical' if r == 'cluster-admin' else 'sv-medium' }}">{{ r }} · cluster-wide</span>
+            {% endfor %}
+            {% for ns, r in u.scoped %}<span class="badge">{{ r }} in {{ ns }}</span>{% endfor %}
+            {% if u.orphan %}<span class="sv sv-info">no bindings — can sign in,
+              can do nothing</span>{% endif %}
+          </td>
+          <td>{{ u.created }}</td>
+          <td class="mid actcol">
+            <form method="post" action="/clusters/access/reissue"
+                  style="display:inline;">
+              <input type="hidden" name="project" value="{{ pid }}">
+              <input type="hidden" name="cluster" value="{{ cid }}">
+              <input type="hidden" name="name" value="{{ u.name }}">
+              <input type="hidden" name="sa_namespace" value="{{ u.namespace }}">
+              <input type="hidden" name="duration" value="8760h">
+              {% if is_prod %}<input type="hidden" name="confirm" value="" class="prodconfirm">{% endif %}
+              <button class="btn-ghost" style="padding:4px 11px;font-size:11.5px;"
+                      {% if not writable %}disabled{% endif %}
+                      title="mint a new token and show the kubeconfig again — the old token stays valid until it expires">
+                ↓ New kubeconfig</button>
+            </form>
+            <form method="post" action="/clusters/access/revoke"
+                  style="display:inline;"
+                  data-confirm="Revoke {{ u.name }}? Its token stops working immediately.">
+              <input type="hidden" name="project" value="{{ pid }}">
+              <input type="hidden" name="cluster" value="{{ cid }}">
+              <input type="hidden" name="name" value="{{ u.name }}">
+              <input type="hidden" name="sa_namespace" value="{{ u.namespace }}">
+              {% if is_prod %}<input type="hidden" name="confirm" value="" class="prodconfirm">{% endif %}
+              <button class="btn-danger" style="padding:4px 11px;font-size:11.5px;"
+                      {% if not writable %}disabled{% endif %}>Revoke</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="card-b"><div class="sec-note">No users have been created here yet.
+      Accounts made outside the portal are not listed — only the ones it labelled,
+      so it never offers to revoke something it did not create.</div></div>
+    {% endif %}
+  </div>
+
+  <div class="card" style="margin:0;">
+    <div class="card-h">Create a user</div>
+    <div class="card-b">
+      <form method="post" action="/clusters/access/create" id="accessform">
+        <input type="hidden" name="project" value="{{ pid }}">
+        <input type="hidden" name="cluster" value="{{ cid }}">
+        <div class="field-row"><label>name</label>
+          <input type="text" name="name" required pattern="[a-z0-9][-a-z0-9]*"
+                 placeholder="e.g. noc-readonly  ·  lowercase, digits, hyphens"></div>
+        <div class="field-row"><label>permission</label>
+          <select name="preset" data-call-change="presetChanged">
+            {% for key, pr in presets.items() %}
+            <option value="{{ key }}" {% if key == 'view' %}selected{% endif %}>
+              {{ pr.label }} — {{ pr.note }}</option>
+            {% endfor %}
+          </select></div>
+        <div id="customrules" style="display:none;">
+          <div class="field-row"><label>verbs</label>
+            <div style="display:flex;flex-wrap:wrap;gap:9px;">
+              {% for v in verbs %}
+              <label style="font-weight:400;font-size:12.5px;cursor:pointer;">
+                <input type="checkbox" name="verb_{{ v }}" value="1"
+                       style="width:auto;vertical-align:-2px;margin-right:5px;"
+                       {% if v in ('get', 'list', 'watch') %}checked{% endif %}>{{ v }}</label>
+              {% endfor %}
+            </div></div>
+          <div class="field-row"><label>resources</label>
+            <input type="text" name="resources"
+                   placeholder="pods,pods/log,deployments,configmaps"></div>
+        </div>
+        <div class="field-row"><label>namespaces</label>
+          <div>
+            <input type="text" name="namespaces"
+                   placeholder="preprod-deployment, temporal">
+            <label style="font-weight:400;font-size:12.5px;cursor:pointer;
+                          display:block;margin-top:6px;">
+              <input type="checkbox" name="cluster_wide_ok" value="1"
+                     style="width:auto;vertical-align:-2px;margin-right:6px;">
+              leave blank and grant it <b>cluster-wide, on purpose</b></label>
+          </div></div>
+        <div class="field-row"><label>account lives in</label>
+          <input type="text" name="sa_namespace" value="default"
+                 placeholder="the namespace holding the service account"></div>
+        <div class="field-row"><label>token lifetime</label>
+          <input type="text" name="duration" value="8760h"
+                 placeholder="8760h = one year · 720h = 30 days"></div>
+        {% if is_prod %}
+        <div class="field-row"><label>confirm</label>
+          <input type="text" name="confirm" autocomplete="off"
+                 placeholder="type “{{ sel.name }}”"></div>
+        {% endif %}
+        <div class="actions">
+          <button type="submit" {% if not writable %}disabled
+                  title="this cluster is read-only in the portal"{% endif %}>
+            Create user &amp; issue kubeconfig</button>
+        </div>
+      </form>
+      <div class="sec-note" style="margin-top:10px;line-height:1.6;">
+        A ServiceAccount is created, bound to the permission you pick, and a token
+        is minted for it. Service accounts rather than client certificates,
+        because a certificate cannot be revoked without rotating the cluster CA —
+        deleting the account here stops its token working at once.
+        The permissions are Kubernetes' own <code>view</code>, <code>edit</code>,
+        <code>admin</code> and <code>cluster-admin</code> roles, so they mean
+        exactly what your cluster documentation says they mean.
+      </div>
+    </div>
+  </div>
+</div>
+
+<script nonce="{{ csp_nonce() }}">
+function presetChanged(v) {
+  document.getElementById('customrules').style.display = v === 'custom' ? '' : 'none';
+}
+// The file is assembled in the browser from what is already on the page, so the
+// token never makes a second trip to the server. Wired as a listener rather than
+// an inline handler: the name is read from a data attribute, which the template
+// escapes correctly.
+(function () {
+  const btn = document.getElementById('dlbtn');
+  const box = document.getElementById('kubeconfig');
+  if (!btn || !box) return;
+  btn.addEventListener('click', () => {
+    const url = URL.createObjectURL(
+      new Blob([box.textContent], {type: 'application/yaml'}));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = (btn.dataset.name || 'cluster') + '-kubeconfig.yaml';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    conceal('Downloaded');
+  });
+  // Once the file has been taken there is no reason to leave a live token on
+  // screen — a page left open on a shared desk is the likeliest way it leaks.
+  const hide = document.getElementById('hidebtn');
+  function conceal(reason) {
+    box.textContent = '';
+    box.style.display = 'none';
+    const note = document.createElement('div');
+    note.className = 'sec-note';
+    note.style.color = 'var(--ok-ink)';
+    note.textContent = reason + ' — the token is no longer on screen. Use '
+      + '“New kubeconfig” next to the user if you need another one.';
+    box.parentNode.insertBefore(note, box);
+    btn.disabled = true;
+    if (copy) copy.disabled = true;
+    if (hide) hide.disabled = true;
+  }
+  hide?.addEventListener('click', () => conceal('Hidden'));
+
+  const copy = document.getElementById('copybtn');
+  copy?.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(box.textContent);
+      conceal('Copied to the clipboard');
+    } catch (e) {
+      // clipboard access needs a secure context; select the text instead so
+      // ⌘C still works rather than leaving the button looking broken
+      const r = document.createRange();
+      r.selectNodeContents(box);
+      window.getSelection().removeAllRanges();
+      window.getSelection().addRange(r);
+      copy.textContent = 'selected — press ⌘C';
+    }
+  });
+})();
+</script>
+
+{# ── Scan: a security audit read through the API, installing nothing ── #}
+{% elif tab == 'scan' %}
+{% set au = scan.audit %}
+{# ── the audit: API only ── #}
+<div class="card" id="audit">
+  <div class="card-h" style="flex-wrap:wrap;">
+    <b style="font-size:14.5px;">Cluster audit</b>
+    <span class="sv sv-clean">nothing installed</span>
+    <span class="hint">read through the Kubernetes API with this cluster's
+      existing credentials</span>
+    <span style="flex:1"></span>
+    <a class="btn btn-ghost" style="padding:4px 12px;font-size:11.5px;"
+       href="{{ qbase }}&tab=scan&refresh=1">↻ Re-run</a>
+    {% if not au.error %}
+    <a class="btn btn-ghost" style="padding:4px 12px;font-size:11.5px;"
+       href="/clusters/scan/report?project={{ pid }}&cluster={{ cid }}&kind=audit&fmt=html">↓ HTML</a>
+    <a class="btn btn-ghost" style="padding:4px 12px;font-size:11.5px;"
+       href="/clusters/scan/report?project={{ pid }}&cluster={{ cid }}&kind=audit&fmt=csv">↓ CSV</a>
+    <a class="btn btn-ghost" style="padding:4px 12px;font-size:11.5px;"
+       href="/clusters/scan/report?project={{ pid }}&cluster={{ cid }}&kind=audit&fmt=json">↓ JSON</a>
+    {% endif %}
+  </div>
+
+  {% if au.error %}
+  <div class="card-b"><div class="flash err">⚠ {{ au.error }}</div></div>
+  {% else %}
+  <div class="card-b">
+    {# what produced these findings, stated before the findings themselves #}
+    <details class="adv" style="margin:0 0 14px;">
+      <summary>Where does this come from?</summary>
+      <div class="sec-note" style="margin-top:9px;line-height:1.7;">
+        No scanner and nothing installed. The portal runs these reads against
+        this cluster with the kubeconfig you gave it, then evaluates them against
+        the checks in <code>app/audit.py</code>. Run any of them yourself and you
+        get the same answer:
+        <table class="jenkins" style="margin-top:9px;">
+          <thead><tr><th style="min-width:330px;">Read</th>
+            <th style="min-width:300px;">What it is used for</th></tr></thead>
+          <tbody>
+          {% for cmd, why in au.commands %}
+          <tr><td style="font-family:var(--mono);font-size:11.5px;">{{ cmd }}</td>
+            <td><div style="white-space:normal;">{{ why }}</div></td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        Every finding below carries the exact read and field it came from, and
+        each download includes those two columns.
+      </div>
+    </details>
+    {# The tiles are the filter. They were four numbers with two hundred rows
+       under them and no way to say "show me the criticals" — the one thing
+       anybody does with a severity count. Clicking the one that is on clears
+       it. #}
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(128px,1fr));">
+      {% for s in severities_scan %}
+      <a class="sevtile {{ {'CRITICAL':'t-critical','HIGH':'t-high','MEDIUM':'t-medium','LOW':'t-low','INFO':'t-info'}[s] }}
+         {{ 'picked' if sev == s }}"
+         href="{{ qbase }}&tab=scan{{ '' if sev == s else '&sev=' ~ s }}#audit"
+         title="{{ 'show every severity again' if sev == s
+                   else 'show only the ' ~ s|lower ~ ' findings' }}">
+        <div class="n">{{ au.totals[s] }}</div><div class="l">{{ s|lower }}</div></a>
+      {% endfor %}
+    </div>
+    <div class="sec-note" style="margin-top:11px;">
+      {{ au.counted.pods }} pods · {{ au.counted.nodes }} nodes ·
+      {{ au.counted.namespaces }} namespaces ·
+      {{ au.counted.kubelets_read }} of {{ au.counted.nodes }} kubelet
+      configurations read · checked at {{ au.at }}
+      {% for g, n in au.groups.items() %} · <b>{{ g }}</b> {{ n }}{% endfor %}
+    </div>
+  </div>
+
+  {% if au.worst_namespaces %}
+  <div class="card-b">
+    <div class="facets"><div class="facet">
+      <div class="fname">namespaces with the most to fix</div>
+      {% for ns_name, n in au.worst_namespaces %}
+      <a class="fval" href="{{ qbase }}&tab=pods&ns={{ ns_name|urlencode }}">
+        <span class="bar" style="width:{{ (n / au.worst_namespaces[0][1] * 100)|round }}%"></span>
+        <span class="t"><span class="v">{{ ns_name }}</span>
+          <span class="n">{{ n }}</span></span></a>
+      {% endfor %}
+    </div></div>
+  </div>
+  {% endif %}
+
+  {# Four columns, not six. Six with their own min-widths came to 1175px before
+     padding, so the table scrolled sideways on any normal window — and the two
+     columns you had to scroll to reach were the fix and where the finding came
+     from, which are the two reasons to read a finding at all. The evidence, the
+     remedy and the provenance are one cell now, stacked, the way the pods table
+     stacks a pod's image under its name. #}
+  {% set shown_f = au.findings|selectattr('severity', 'equalto', sev)|list
+                   if sev else au.findings %}
+  <div class="card-b" style="padding:0 0 6px;">
+    <table class="jenkins fixed-t">
+      <thead><tr>
+        <th style="width:96px;">Severity</th><th style="width:23%;">Check</th>
+        <th style="width:22%;">Object</th>
+        <th>What was found, and what to do</th></tr></thead>
+      <tbody>
+      {% for f in shown_f[:200] %}
+      <tr>
+        <td><span class="sv sv-{{ {'CRITICAL':'critical','HIGH':'high','MEDIUM':'medium','LOW':'low','INFO':'info'}[f.severity] }}">{{ f.severity }}</span></td>
+        <td class="jname"><b>{{ f.check }}</b>
+          <div class="sec-note" style="margin:1px 0 0;">{{ f.group }}</div></td>
+        <td class="brk">{{ f.object }}</td>
+        <td>
+          <div class="wrp">{{ f.evidence }}</div>
+          <div class="wrp fixit">→ {{ f.remediation }}</div>
+          {# Provenance stays on the row: every finding here is meant to be
+             reproducible by hand, and the command is how. #}
+          <details class="adv src"><summary>read from</summary>
+            <div class="wrp mono-c">{{ f.source.command }}{% if f.source.field %}
+              <div class="sec-note">{{ f.source.field }}</div>{% endif %}</div>
+          </details>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if not shown_f %}
+  <div class="card-b" style="color:var(--muted);font-size:13px;">
+    nothing at {{ sev|lower }} — <a href="{{ qbase }}&tab=scan#audit">show every
+    severity</a></div>
+  {% elif shown_f|length > 200 %}
+  <div class="card-b"><span class="hint">showing the worst 200 of
+    {{ shown_f|length }}{{ ' ' ~ sev|lower if sev }} — the downloads carry all of
+    them</span></div>
+  {% endif %}
+
+  <div class="card-b" style="border-top:1px solid var(--line);">
+    <div class="kv" style="margin-bottom:7px;">
+      <b style="font-size:13px;">What this method cannot see</b>
+      <span class="hint">said plainly, because a check nobody ran is not a pass</span>
+    </div>
+    {% for what, why, how in au.not_visible %}
+    <div class="sec-note" style="margin-bottom:4px;">
+      <b>{{ what }}</b> — {{ why }}. {{ how }}.</div>
+    {% endfor %}
+    <div class="sec-note" style="margin-top:8px;">
+      Those need something running on the machine itself — kube-bench on the node,
+      or your provider's own report. This audit stays read-only and deliberately
+      does not install anything to reach them.</div>
+  </div>
+  {% endif %}
+</div>
+
+{# ── Shell: a kubectl console ── #}
+{% elif tab == 'shell' %}
+{# ── kubectl shell ──────────────────────────────────────────────
+   The same window AND the same way of typing as the pod terminal: you type in
+   the terminal, Enter runs, the answer appears under it. There is no input box
+   at the bottom, because a box at the bottom is the thing that makes a
+   terminal feel like a form.
+
+   What is behind it is NOT the same and cannot be. A shell here would be a
+   shell on the PORTAL's machine, which holds every kubeconfig, git token and
+   sealing key on the estate. So each line is still parsed and validated as one
+   kubectl command before it runs, a pipe is still refused rather than obeyed,
+   and every line — including the refused ones — is still audited.
+
+   The consequence is that nothing remote echoes what you type, so the line
+   editing below is ours: printable keys, the cursor, the word and line kills,
+   history and TAB. It is the price of not putting a shell on this machine. #}
+<link rel="stylesheet" href="/static/xterm.css">
+<script nonce="{{ csp_nonce() }}" src="/static/xterm.js"></script>
+<script nonce="{{ csp_nonce() }}" src="/static/addon-fit.js"></script>
+<dialog id="kshDlg" class="psh">
+  <div class="psh-bar">
+    <span class="psh-dots"><b title="close" data-dot="close">✕</b><b title="minimise" data-dot="mini">–</b><b title="maximise" data-dot="maxi">+</b></span>
+    <b>kubectl</b>
+    <span class="psh-ns">{{ sel.name }}</span>
+    {% if writable %}<span class="psh-tag">rw</span>
+    {% else %}<span class="psh-tag" style="background:#1c2436;color:#9fb0c8;">read-only</span>{% endif %}
+    {% if is_prod %}<span class="psh-tag" style="background:#3a1620;color:#ff8f8f;">prod</span>{% endif %}
+    <span style="flex:1"></span>
+    <select id="kshCluster" class="psh-pick" title="switch cluster">
+      {% for c in all_clusters %}
+      <option value="{{ c.url }}" {% if c.cid == cid %}selected{% endif %}>
+        {{ c.name }}{% if c.prod %} · prod{% endif %}{% if not c.manage %} · ro{% endif %}</option>
+      {% endfor %}
+    </select>
+    <select id="kshNs" class="psh-pick" title="default namespace for commands that need one">
+      <option value="">no default namespace</option>
+    </select>
+    <button type="button" class="psh-x" id="kshSave"
+            title="download this session as text">save</button>
+    {# The href is the fallback and the handler is the honest answer: see
+       kshBackUrl below. Both, because the ✕ dot in the title bar clicks this
+       link and a middle-click has to open something sensible. #}
+    <a class="psh-x" href="{{ ksh_back }}" id="kshCloseLink"
+       data-call="kshLeave" data-arg-event>close</a>
+  </div>
+  <div class="psh-term" id="kshTerm"></div>
+  <div class="psh-veil" id="kshVeil" hidden><span class="opspin"></span>
+    <b id="kshVeilText">closing…</b></div>
+</dialog>
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  const dlg = document.getElementById('kshDlg');
+  const host = document.getElementById('kshTerm');
+  if (!dlg || !window.Terminal) return;
+  dlg.showModal();
+
+  // Where closing the console goes.
+  //
+  //   1. the tab it was opened from, when the tab strip said so
+  //   2. otherwise the page that sent us here — the top bar opens a console from
+  //      anywhere, and that page carries its own tab and namespace
+  //   3. otherwise this cluster's Overview, with the namespace kept
+  //
+  // It used to be (3) without the namespace, so closing a console threw away
+  // both the tab you were on and the namespace you had chosen — the two things
+  // you were looking at when you opened it.
+  const KSH_BACK = {{ ksh_back|tojson }};
+  const KSH_FROM = {{ (from_tab or '')|tojson }};
+  window.kshBackUrl = () => {
+    if (KSH_FROM) return KSH_BACK;
+    const ref = document.referrer || '';
+    const mine = ref.includes('/clusters?')
+      && ref.includes('cluster=' + encodeURIComponent({{ cid|tojson }}))
+      && ref.split('#')[0] !== location.href.split('#')[0];
+    return mine ? ref : KSH_BACK;
+  };
+  window.kshLeave = (e) => {
+    if (e) e.preventDefault();
+    kshLeaving('closing…');
+    window.location.href = kshBackUrl();
+    return false;
+  };
+
+  window.kshLeaving = (text) => {
+    document.getElementById('kshVeilText').textContent = text;
+    document.getElementById('kshVeil').hidden = false;
+  };
+
+  const where = {project: {{ pid|tojson }}, cluster: {{ cid|tojson }}};
+  const name = {{ sel.name|tojson }};
+  const isProd = {{ (is_prod or false)|tojson }};
+  const PROMPT = '\x1b[38;5;39m' + name + '\x1b[0m $ ';
+
+  const term = new Terminal({
+    fontFamily: getComputedStyle(document.body).getPropertyValue('--mono')
+                || 'ui-monospace, monospace',
+    fontSize: 13, lineHeight: 1.25, cursorBlink: true, scrollback: 10000,
+    theme: {background: '#0b0f16', foreground: '#d7e2f0', cursor: '#6ee7a8',
+            selectionBackground: '#2b3a52', red: '#ff8f8f', green: '#6ee7a8',
+            yellow: '#febc2e', blue: '#7cb0ff', cyan: '#67d8e0',
+            brightBlack: '#5d6b80', white: '#c6d3e4'},
+  });
+  const fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open(host);
+  fit.fit();
+  term.focus();
+  let sizing;
+  const resize = () => { clearTimeout(sizing); sizing = setTimeout(() => fit.fit(), 80); };
+  new ResizeObserver(resize).observe(host);
+  window.addEventListener('resize', resize);
+
+  term.writeln('\x1b[1mkubectl\x1b[0m against \x1b[1m' + name + '\x1b[0m — '
+    + {{ sel.context|tojson }});
+  term.writeln('\x1b[90mOne kubectl command per line. No shell: a pipe or a '
+    + 'redirect is refused rather than run, and every command — including the '
+    + 'refused ones — is audited.\x1b[0m');
+  term.writeln('\x1b[90mTAB completes · ↑ ↓ history · Ctrl+C clears the line · '
+    + 'Ctrl+L clears the screen · `clear` and `exit` work.\x1b[0m');
+  term.writeln('');
+
+  // ── the line editor ──────────────────────────────────────────
+  // Nothing remote echoes what is typed here, so this end does it. Kept to
+  // what a person actually reaches for in a one-line prompt.
+  let line = '', at = 0, busy = false;
+  const hist = JSON.parse(localStorage.getItem('ksh-hist-' + where.cluster) || '[]');
+  let hpos = hist.length, held = '';
+
+  function draw() {
+    // \r to the start, erase, reprint, then put the cursor where it belongs
+    term.write('\r\x1b[K' + PROMPT + line);
+    const back = line.length - at;
+    if (back > 0) term.write('\x1b[' + back + 'D');
+  }
+  function prompt() { line = ''; at = 0; term.write('\r\n'); draw(); }
+  function put(text) { term.write(text.replace(/\n/g, '\r\n')); }
+
+  async function run(cmd) {
+    busy = true;
+    term.write('\r\n');
+    const body = new FormData();
+    body.append('project', where.project);
+    body.append('cluster', where.cluster);
+    body.append('cmd', cmd);
+    if (pendingConfirm) { body.append('confirm', pendingConfirm); pendingConfirm = ''; }
+    const started = Date.now();
+    try {
+      const r = await fetch('/clusters/shell/run', {method: 'POST', body});
+      const j = await r.json();
+      if (j.refused) {
+        put('\x1b[38;5;210m' + j.refused + '\x1b[0m\n');
+        // A production cluster wants its name typed before anything changes.
+        // Asked for here rather than in a box somewhere else on the page.
+        if (isProd && /type its name/.test(j.refused)) {
+          asking = cmd;
+          term.write('\x1b[93mtype ' + name + ' to confirm, or Ctrl+C: \x1b[0m');
+          busy = false;
+          return;
+        }
+      } else {
+        if (j.stdout) put(j.stdout.replace(/\n$/, '') + '\n');
+        if (j.stderr) put('\x1b[38;5;210m' + j.stderr.replace(/\n$/, '') + '\x1b[0m\n');
+        if (!j.stdout && !j.stderr) put('\x1b[90m(no output)\x1b[0m\n');
+        const bad = j.code !== 0;
+        put((bad ? '\x1b[38;5;210m' : '\x1b[90m') + 'exit ' + j.code + ' · '
+            + (j.took ?? ((Date.now() - started) / 1000).toFixed(2)) + 's\x1b[0m\n');
+      }
+    } catch (err) {
+      put('\x1b[38;5;210mthe portal could not be reached: ' + err + '\x1b[0m\n');
+    }
+    busy = false;
+    hpos = hist.length;
+    prompt();
+  }
+
+  let pendingConfirm = '', asking = '';
+
+  async function complete() {
+    const d = new FormData();
+    const q = new URLSearchParams({project: where.project, cluster: where.cluster,
+                                  text: line, ns: nsPick.value});
+    let j;
+    try { j = await (await fetch('/clusters/shell/complete?' + q)).json(); }
+    catch (err) { return; }
+    const items = j.items || [];
+    if (!items.length) return;
+    const token = j.token || '';
+    if (items.length === 1) {
+      line = line.slice(0, line.length - token.length) + items[0] + ' ';
+      at = line.length; draw(); return;
+    }
+    // the longest prefix they all share, or the list when there is none to add
+    let common = items[0];
+    for (const w of items) {
+      let i = 0;
+      while (i < common.length && i < w.length && common[i] === w[i]) i++;
+      common = common.slice(0, i);
+    }
+    if (common.length > token.length) {
+      line = line.slice(0, line.length - token.length) + common;
+      at = line.length; draw(); return;
+    }
+    term.write('\r\n\x1b[90m' + items.slice(0, 40).join('   ')
+      + (items.length > 40 ? '   …' + (items.length - 40) + ' more' : '') + '\x1b[0m');
+    term.write('\r\n'); draw();
+  }
+
+  term.onData(d => {
+    if (busy) return;
+    for (let i = 0; i < d.length; i++) {
+      const ch = d[i];
+      if (ch === '\r') {                         // Enter
+        const cmd = line.trim();
+        if (asking) {                            // answering the prod confirm
+          pendingConfirm = cmd; const again = asking; asking = '';
+          line = ''; at = 0; run(again); return;
+        }
+        if (!cmd) { prompt(); return; }
+        if (cmd === 'clear') { term.clear(); line = ''; at = 0; term.write('\r\x1b[K'); draw(); return; }
+        // The chosen namespace is inserted VISIBLY, so what ran is what is on
+        // the screen — a command that silently gained a flag is a command
+        // nobody can copy out of here and trust.
+        const ns = nsPick.value;
+        if (ns && !/(^|\s)(-n|--namespace|-A|--all-namespaces)(\s|=|$)/.test(cmd)) {
+          line = cmd + ' -n ' + ns; at = line.length; draw();
+        }
+        if (cmd === 'exit' || cmd === 'quit') {
+          kshLeave();
+          return;
+        }
+        const ran = line.trim();       // with the namespace, if one was added
+        if (hist[hist.length - 1] !== ran) {
+          hist.push(ran);
+          localStorage.setItem('ksh-hist-' + where.cluster,
+                               JSON.stringify(hist.slice(-200)));
+        }
+        run(ran);
+        return;
+      }
+      if (ch === '\x7f') {                       // Backspace
+        if (at > 0) { line = line.slice(0, at - 1) + line.slice(at); at--; draw(); }
+      } else if (ch === '\x03') {                // Ctrl+C — abandon the line
+        asking = ''; term.write('^C'); prompt();
+      } else if (ch === '\x0c') {               // Ctrl+L
+        term.clear(); term.write('\r\x1b[K'); draw();
+      } else if (ch === '\x15') {               // Ctrl+U
+        line = line.slice(at); at = 0; draw();
+      } else if (ch === '\x0b') {               // Ctrl+K
+        line = line.slice(0, at); draw();
+      } else if (ch === '\x01') { at = 0; draw(); }            // Ctrl+A
+      else if (ch === '\x05') { at = line.length; draw(); }    // Ctrl+E
+      else if (ch === '\x17') {                 // Ctrl+W — kill a word
+        const head = line.slice(0, at).replace(/\S*\s*$/, '');
+        line = head + line.slice(at); at = head.length; draw();
+      } else if (ch === '\x1b') {               // an escape sequence
+        const seq = d.slice(i, i + 3);
+        if (seq === '\x1b[A' || seq === '\x1b[B') {            // history
+          if (seq === '\x1b[A' && hpos > 0) {
+            if (hpos === hist.length) held = line;
+            line = hist[--hpos];
+          } else if (seq === '\x1b[B' && hpos < hist.length) {
+            hpos++; line = hpos === hist.length ? held : hist[hpos];
+          }
+          at = line.length; draw();
+        } else if (seq === '\x1b[C') { if (at < line.length) { at++; draw(); } }
+        else if (seq === '\x1b[D') { if (at > 0) { at--; draw(); } }
+        else if (seq === '\x1b[H') { at = 0; draw(); }
+        else if (seq === '\x1b[F') { at = line.length; draw(); }
+        i += seq.length - 1;
+      } else if (ch === '\t') {
+        complete();
+        return;
+      } else if (ch >= ' ') {
+        line = line.slice(0, at) + ch + line.slice(at); at++; draw();
+      }
+    }
+  });
+
+  draw();
+
+  // ── the title bar ────────────────────────────────────────────
+  const nsPick = document.getElementById('kshNs');
+  fetch('/clusters/shell/namespaces?' + new URLSearchParams(
+        {project: where.project, cluster: where.cluster}))
+    .then(r => r.json()).then(list => {
+      for (const n of list || []) {
+        const o = document.createElement('option');
+        o.value = o.textContent = n;
+        nsPick.appendChild(o);
+      }
+    }).catch(() => {});
+  nsPick.addEventListener('change', () => term.focus());
+  document.getElementById('kshCluster').addEventListener('change', e => {
+    kshLeaving('switching cluster…');
+    window.location.href = e.target.value;
+  });
+  // The session, as text. Read off the terminal's own buffer rather than kept
+  // in a second copy, so what is saved is what was on screen.
+  document.getElementById('kshSave').addEventListener('click', () => {
+    const buf = term.buffer.active;
+    const out = [];
+    for (let i = 0; i < buf.length; i++) {
+      out.push(buf.getLine(i).translateToString(true).replace(/\s+$/, ''));
+    }
+    const blob = new Blob([out.join('\n').replace(/\n{3,}/g, '\n\n')],
+                          {type: 'text/plain'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'kubectl-' + name + '.txt';
+    a.click();
+    URL.revokeObjectURL(a.href);
+    term.focus();
+  });
+  dlg.addEventListener('cancel', e => { kshLeave(e); });
+  dlg.addEventListener('click', e => { if (e.target === dlg) term.focus(); });
+})();
+</script>
+{% endif %}
+
+<script nonce="{{ csp_nonce() }}">
+{% if is_prod and writable %}unlock('');{% endif %}
+</script>
+
+<p class="sub" style="margin-top:14px;">
+  Everything on this page is read live with kubectl using this cluster's stored
+  kubeconfig.
+  {%- if writable %} The buttons that change it — restart, scale, cordon, drain,
+  delete, install — are the only writes, and each one is audited.
+  {%- else %} Nothing here writes to the cluster.{% endif %}
+  Kubeconfigs and sealing keys are managed in
+  <a href="/settings/clusters">Settings → Clusters</a>.</p>
+{% endif %}
+{% include "_logs_dialog.html" %}
+{% include "_describe_dialog.html" %}
+{% include "_yaml_dialog.html" %}
+{% include "_values_dialog.html" %}
+{% endblock %}

@@ -1,0 +1,109 @@
+{% if section_error %}
+<div class="flash err">⚠ {{ section_error }}</div>
+{% endif %}
+{% set d = detail %}
+{% if d %}
+{% set col = d.collections %}
+
+<div class="kv" style="gap:8px;margin-bottom:12px;flex-wrap:wrap;">
+  <a href="#" class="backtab hint" data-tab="buckets">← buckets</a>
+  <h2 style="margin:0;font-size:17px;">{{ d.name }}</h2>
+  <span class="badge">{{ d.type }}</span>
+  {% if d.storage %}<span class="badge">{{ d.storage }}</span>{% endif %}
+  <span class="badge">{{ d.replicas }} replica{{ '' if d.replicas == 1 else 's' }}</span>
+  {% if col.supported and col.total is defined %}
+  <span class="badge">{{ col.scopes|length }} scope{{ '' if col.scopes|length == 1
+    else 's' }} · {{ col.total }} collection{{ '' if col.total == 1 else 's' }}</span>
+  {% endif %}
+</div>
+
+<div class="card" style="margin-bottom:14px;">
+  <div class="card-h">Settings</div>
+  <div class="card-b">
+    <div style="display:grid;gap:12px 22px;
+                grid-template-columns:repeat(auto-fit,minmax(150px,1fr));">
+      {% macro fact(label, value, note) %}
+      <div>
+        <div class="cmp-lbl" style="margin:0 0 3px;">{{ label }}</div>
+        <div style="font-size:13.5px;">{{ value }}</div>
+        {% if note %}<div class="hint" style="font-size:11px;">{{ note }}</div>{% endif %}
+      </div>
+      {% endmacro %}
+      {{ fact('Memory quota', human(d.quota), d.quota_pct ~ '% used') }}
+      {{ fact('Documents', '{:,}'.format(d.docs), d.ops ~ ' ops/s') }}
+      {{ fact('Disk', human(d.disk), human(d.data) ~ ' of data') }}
+      {{ fact('Resident', human(d.mem),
+              ('{:,}'.format(d.fetches) ~ ' disk fetches') if d.fetches
+              else 'no disk fetches — the working set fits') }}
+      {{ fact('Eviction', d.eviction or 'server default',
+              'what happens when the quota is full') }}
+      {{ fact('Conflict resolution', d.conflict or '—',
+              'how XDCR settles two writes') }}
+      {% if d.durability %}{{ fact('Minimum durability', d.durability, '') }}{% endif %}
+      {% if d.compression %}{{ fact('Compression', d.compression, '') }}{% endif %}
+      {{ fact('Reader/writer threads', d.threads or '—', '') }}
+      {# 0 is "inherit", not "never" — the two look identical otherwise #}
+      {{ fact('Document TTL', (d.ttl ~ 's') if d.ttl else 'none',
+              'documents expire unless overridden' if d.ttl else '') }}
+      {{ fact('Nodes', d.nodes, '') }}
+      {% if d.auth == 'sasl' %}
+      {{ fact('Bucket authentication',
+              'password set' if d.sasl_set else 'no password',
+              'anyone reaching the data port can read it' if not d.sasl_set
+              else 'SASL, per bucket') }}
+      {% endif %}
+    </div>
+    {% if d.compaction %}
+    <div class="sec-note" style="margin-top:14px;">Auto-compaction is set on this
+      bucket rather than inherited from the cluster.</div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-h">Scopes and collections
+    {% if col.supported and not col.why %}
+    <span class="hint">{{ col.scopes|length }}</span>{% endif %}</div>
+  <div class="card-b">
+    {% if not col.supported %}
+    {# The point of rendering this at all on an old server: an empty tree would
+       read as "this bucket has no collections", which is not the same as "this
+       version has no such concept". #}
+    <p class="sub" style="margin:0;">This cluster reports itself as
+      <b>{{ col.version }}</b>, and {{ col.why }}. A bucket here is flat — its
+      documents sit directly in the bucket, with no scope or collection above
+      them.</p>
+    {% elif col.why %}
+    <p class="sub" style="margin:0;">{{ col.why }}</p>
+    {% elif not col.scopes %}
+    <p class="sub" style="margin:0;">No scopes returned.</p>
+    {% else %}
+    {% for s in col.scopes %}
+    <div style="margin-bottom:{{ '4px' if loop.last else '14px' }};">
+      <div class="kv" style="gap:8px;">
+        <b style="font-size:13.5px;">{{ s.name }}</b>
+        <span class="hint">{{ s.count }} collection{{ '' if s.count == 1 else 's' }}</span>
+        {% if s.name.startswith('_') %}
+        <span class="hint">· created by Couchbase</span>{% endif %}
+      </div>
+      {% if s.collections %}
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:7px;">
+        {% for c in s.collections %}
+        <span class="badge" style="font-family:var(--mono);font-size:11.5px;"
+              {% if c.ttl %}title="documents in this collection expire after {{ c.ttl }}s"{% endif %}>
+          {{ c.name }}{% if c.ttl %} · {{ c.ttl }}s{% endif %}{%
+          if c.history %} · history{% endif %}</span>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="hint" style="margin-top:5px;">no collections in this scope</div>
+      {% endif %}
+    </div>
+    {% endfor %}
+    <div class="sec-note" style="margin-top:12px;">Read-only. Creating a scope or
+      a collection changes how an application addresses its documents, so it
+      belongs with the change that needs it rather than here.</div>
+    {% endif %}
+  </div>
+</div>
+{% endif %}

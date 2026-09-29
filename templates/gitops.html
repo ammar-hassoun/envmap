@@ -1,0 +1,655 @@
+{% extends "base.html" %}
+{% import "_bits.html" as bits %}
+{% block crumbs %}<a href="/gitops">GitOps</a>{% if chosen %}
+  <span class="sep">/</span> <b>{{ chosen.conn.name }}</b>{% endif %}{% endblock %}
+{% block content %}
+{{ bits.collecting(pending, "The applications below are from the controllers
+   that have answered so far.") }}
+
+{% if not conns %}
+<div class="empty">
+  <div class="big">{{ glyph("git-merge", 40) }}</div>
+  <h2>No GitOps controller connected</h2>
+  <p>Connect Argo CD, or point Flux at a cluster the portal already knows, and
+     every application appears here with its sync state, health and resource
+     tree — the missing half of “I pushed it, why is it not running”.</p>
+  <a class="btn" href="/settings/conns/gitops">＋ Connect a controller</a>
+</div>
+
+{% elif not want_conn %}
+{# ── the chooser ────────────────────────────────────────────────
+   One card per controller, even when there is only one. Going straight in
+   hides which controller you are looking at, and the moment a second Argo CD
+   or a second environment is added the same application name appears twice
+   with nothing to tell them apart. #}
+<div class="page-head">
+  <div><h1>GitOps</h1>
+    <p class="sub">{{ conns|length }} controller{{ 's' if conns|length != 1 }} ·
+      {{ total }} application{{ 's' if total != 1 }}
+      {% if roll.outofsync %} · <span style="color:var(--warn-ink);">{{ roll.outofsync }} out of sync</span>{% endif %}
+      {% if roll.degraded %} · <span style="color:var(--danger-ink);">{{ roll.degraded }} not healthy</span>{% endif %}
+      {% if not roll.outofsync and not roll.degraded and total %} · all synced and healthy{% endif %}</p></div>
+  <div style="display:flex;gap:10px;">
+    <a class="btn btn-ghost" href="/gitops?refresh=1">↻ Refresh</a>
+    <a class="btn btn-ghost" href="/settings/conns/gitops">⚙ Manage</a>
+  </div>
+</div>
+
+{# shared chart overview — application health + apps per controller #}
+{% set ctrows = [] %}
+{% for c in controllers if not c.error %}{{ ctrows.append({'label': c.conn.name, 'n': c.roll.total, 'href': '/gitops?conn=' ~ c.conn.id, 'note': (c.roll.outofsync ~ ' out of sync') if c.roll.outofsync else ''}) or '' }}{% endfor %}
+<div class="apanels">
+  {{ bits.donut_panel('Application health',
+       [{'label':'healthy','value':roll.healthy,'color':'var(--ok)'},
+        {'label':'progressing','value':roll.progressing,'color':'var(--accent)'},
+        {'label':'degraded','value':roll.degraded,'color':'var(--danger)'},
+        {'label':'missing','value':roll.missing,'color':'var(--warn)'}],
+       centre=(roll.ok ~ '/' ~ total), sub='synced & healthy', icon='activity',
+       hint='every application') }}
+  {{ bits.bars_panel('Apps by controller', ctrows | sort(attribute='n', reverse=true),
+       hint='most first', icon='git-merge', empty='No applications reported yet.') }}
+</div>
+
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(330px,1fr));">
+  {% for c in controllers %}
+  <a class="card tile-link" style="margin:0;text-decoration:none;"
+     href="/gitops?conn={{ c.conn.id }}"><div class="card-b">
+    <div class="kv">
+      {{ plogo(c.provider, 20) }}
+      <b style="font-size:15px;">{{ c.conn.name }}</b>
+      <span class="badge">{{ c.provider.label or c.conn.type }}</span>
+    </div>
+    {% if c.conn.base_url %}
+    <div class="statsub" style="font-family:var(--mono);font-size:11px;
+         overflow:hidden;text-overflow:ellipsis;">{{ c.conn.base_url }}</div>
+    {% endif %}
+    {% if c.error %}
+    <div class="sec-note" style="margin-top:10px;color:var(--danger-ink);">
+      {{ c.error }}</div>
+    {% else %}
+    <div class="kv" style="margin-top:14px;gap:20px;">
+      <div><div class="stat" style="font-size:22px;">{{ c.roll.total }}</div>
+        <div class="statsub">apps</div></div>
+      <div><div class="stat" style="font-size:22px;color:{{ 'var(--warn-ink)'
+             if c.roll.outofsync else 'var(--ok-ink)' }};">{{ c.roll.outofsync }}</div>
+        <div class="statsub">out of sync</div></div>
+      <div><div class="stat" style="font-size:22px;color:{{ 'var(--danger-ink)'
+             if c.roll.degraded else 'var(--ok-ink)' }};">{{ c.roll.degraded }}</div>
+        <div class="statsub">not healthy</div></div>
+    </div>
+    {% endif %}
+  </div></a>
+  {% endfor %}
+</div>
+
+{% else %}
+{# ── one controller's applications ─────────────────────────────── #}
+<div class="page-head">
+  <div><h1 class="withico">{{ plogo(chosen.provider, 26) if chosen
+        else glyph('git-merge', 26) }}
+      {{ chosen.conn.name if chosen else 'Applications' }}</h1>
+    <p class="sub">{% if chosen %}{{ chosen.roll.total }} application{{ 's' if chosen.roll.total != 1 }}
+      {% if chosen.roll.outofsync %} · <span style="color:var(--warn-ink);">{{ chosen.roll.outofsync }} out of sync</span>{% endif %}
+      {% if chosen.roll.degraded %} · <span style="color:var(--danger-ink);">{{ chosen.roll.degraded }} not healthy</span>{% endif %}
+      {% if not chosen.roll.outofsync and not chosen.roll.degraded %} · all synced and healthy{% endif %}
+      {% endif %}</p></div>
+  <div style="display:flex;gap:10px;">
+    <a class="btn btn-ghost" href="/gitops">← all controllers</a>
+    <a class="btn btn-ghost" href="/gitops?conn={{ want_conn }}&refresh=1">↻ Refresh</a>
+    {% if chosen and chosen.conn.base_url %}
+    <a class="btn btn-ghost" href="{{ chosen.conn.base_url }}" target="_blank"
+       rel="noopener">Open Argo CD ↗</a>
+    {% endif %}
+  </div>
+</div>
+
+{# ── the filter rail, and the applications as tiles ───────────────────
+   This is Argo CD's own applications list, and it is the right shape: the
+   filters stand still on the left with live counts, and each application is a
+   tile that answers "which project, which repo, which revision, where does it
+   land" without being opened. Twelve to a page — three across, four down —
+   which is why the rail is exactly four tiles tall: the two columns end on
+   the same line.
+
+   Every count is read off the tiles actually rendered, not computed a second
+   way on the server, so a count can never disagree with the list it filters. #}
+<style>
+{# twelve to a page, three across, so four rows — see the rail's min-height #}
+{% set apage = 12 if rows|length > 12 else rows|length %}
+:root { --ath:302px; --arows:{{ [1, ((apage + 2) // 3)]|max }}; }
+.alay { display:grid; grid-template-columns:236px minmax(0,1fr); gap:14px; }
+@media (max-width:900px){ .alay { grid-template-columns:1fr; } }
+.arail { border:1px solid var(--line); border-radius:11px; background:var(--panel);
+  padding:12px; align-self:start;
+  /* --arows is a full page's worth of tile rows: the rail's floor, so the two
+     columns end on the same line instead of the rail stopping half way */
+  min-height:calc(var(--ath) * var(--arows) + 14px * (var(--arows) - 1)); }
+.arail-s { margin-bottom:14px; }
+.arail-h { font-size:10.5px; text-transform:uppercase; letter-spacing:.06em;
+  color:var(--muted); margin-bottom:7px; }
+.arail input[type=search], .arail select { width:100%; box-sizing:border-box;
+  background:var(--well); border:1px solid var(--line); border-radius:7px;
+  color:var(--text); font-size:12px; padding:6px 9px; }
+.arail-c { display:flex; align-items:center; gap:7px; font-size:12px;
+  padding:3px 0; cursor:pointer; color:var(--text); }
+.arail-c b { margin-left:auto; color:var(--muted); font-weight:600;
+  font-family:var(--mono); font-size:11px; }
+.arail-c.off { opacity:.45; }
+.arail-c input { margin:0; }
+.atiles { display:grid; gap:14px; min-width:0;
+  grid-template-columns:repeat(auto-fit,minmax(310px,1fr));
+  align-content:start; }
+.atile { border:1px solid var(--line); border-radius:11px; background:var(--panel);
+  height:var(--ath); display:flex; flex-direction:column; overflow:hidden;
+  position:relative; transition:border-color .12s, transform .12s; }
+/* the title's link, stretched over the whole card */
+.atile-h.stretch::after { content:""; position:absolute; inset:0; z-index:0; }
+.atile:hover .atile-h.stretch::after { background:
+  color-mix(in srgb, var(--accent) 4%, transparent); }
+/* everything interactive sits above the overlay */
+.atile-b, .atile-f { position:relative; z-index:1; }
+.atile-b { pointer-events:none; }          /* text, not a second click target */
+.atile-b .v[title] { pointer-events:auto; }
+.atile:hover { border-color:var(--accent); transform:translateY(-1px); }
+.atile-h { display:flex; align-items:center; gap:8px; padding:10px 12px;
+  border-bottom:1px solid var(--line); text-decoration:none; color:var(--text);
+  background:var(--well); }
+.atile-h b { font-size:13.5px; min-width:0; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap; }
+.atile-b { padding:8px 12px; flex:1; min-height:0; overflow:hidden;
+  display:grid; grid-template-columns:auto minmax(0,1fr); gap:2px 9px;
+  align-content:start; font-size:11.5px; }
+.atile-b span.k { color:var(--muted); white-space:nowrap; }
+.atile-b span.v { color:var(--text); overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap; }
+.atile-b span.v.mono { font-family:var(--mono); font-size:10.5px; }
+.atile-f { display:flex; gap:6px; padding:8px 10px; border-top:1px solid var(--line); }
+.atile-f .abtn { flex:1; justify-content:center; text-align:center; }
+.apill { font-size:10px; padding:2px 7px; border-radius:20px; font-weight:600;
+  border:1px solid var(--line); white-space:nowrap; }
+.apill.ok { color:var(--ok-ink); border-color:color-mix(in srgb,var(--ok) 45%,transparent); }
+.apill.warn { color:var(--warn-ink); border-color:color-mix(in srgb,var(--warn) 45%,transparent); }
+.apill.bad { color:var(--danger-ink); border-color:color-mix(in srgb,var(--danger) 45%,transparent); }
+.apager { display:flex; align-items:center; gap:8px; margin-top:14px;
+  flex-wrap:wrap; }
+.apg { border:1px solid var(--line); background:var(--panel); color:var(--text);
+  border-radius:7px; padding:5px 11px; font-size:12px; cursor:pointer; }
+.apg.on { border-color:var(--accent); color:var(--accent-ink); }
+.apg[disabled] { opacity:.4; cursor:default; }
+
+/* ── the drawer, and the fields the Synchronize panel brings with it ──
+   Inline rather than in app.css because app.css is version-cached and this has
+   to work before a release — the same reason base.html carries the dropdown
+   component. See CLAUDE.md → "the .dd* CSS is INLINE". */
+.sdrawer-scrim { position:fixed; inset:0; z-index:129; background:transparent; }
+.sdrawer { position:fixed; top:0; right:0; bottom:0; width:min(520px,94vw);
+  z-index:130; background:var(--panel); border-left:1px solid var(--line);
+  box-shadow:var(--shadow); display:flex; flex-direction:column;
+  animation:sslide .18s ease-out; }
+.sdrawer.wide { width:min(760px,96vw); }
+@keyframes sslide { from { transform:translateX(24px); opacity:.4; } }
+.sdrawer form { display:flex; flex-direction:column; min-height:0; flex:1; }
+.sdrawer-h { display:flex; align-items:center; gap:9px; padding:12px 14px;
+  border-bottom:1px solid var(--line); flex:none; }
+.sdrawer-b { padding:14px; overflow-y:auto; flex:1; min-height:0; }
+.sfield { display:block; margin-bottom:14px; }
+.sfield > span { display:block; font-size:10.5px; text-transform:uppercase;
+  letter-spacing:.05em; color:var(--muted); margin-bottom:5px; }
+.sfield input, .sfield select { width:100%; box-sizing:border-box;
+  background:var(--well); border:1px solid var(--line); border-radius:7px;
+  color:var(--text); font-size:13px; padding:7px 10px; }
+.srow { display:flex; gap:14px; flex-wrap:wrap; margin-bottom:14px; }
+.srow.two { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); }
+.schk { display:flex; align-items:center; gap:8px; font-size:12.5px;
+  color:var(--text2); cursor:pointer; }
+.schk input { width:auto; margin:0; }
+.sres { max-height:240px; overflow-y:auto; border:1px solid var(--line);
+  border-radius:8px; padding:8px 10px; }
+.asec { border-top:1px solid var(--line); padding-top:14px; margin-top:16px; }
+.asec:first-child { border-top:0; padding-top:0; margin-top:0; }
+.asec-h { font-size:12px; font-weight:700; text-transform:uppercase;
+  letter-spacing:.06em; color:var(--muted); margin-bottom:10px;
+  display:flex; gap:9px; align-items:baseline; }
+.arow { display:flex; gap:12px; align-items:flex-start; padding:8px 0;
+  border-bottom:1px dashed var(--line); }
+.arow:last-of-type { border-bottom:0; }
+.arow > div:first-child { flex:1; min-width:0; }
+.mono { font-family:var(--mono); }
+</style>
+
+{% for b in broken %}
+<div class="flash err">⚠ {{ b.name }}: {{ b.error }}
+  — <a href="/settings/conns/gitops#{{ b.id }}">check the connection</a></div>
+{% endfor %}
+
+<div class="alay" id="apps">
+<aside class="arail">
+  <div class="arail-s">
+    <div class="arail-h">Name</div>
+    <input type="search" id="afind" value="{{ q }}" autocomplete="off"
+           placeholder="filter by name…">
+  </div>
+  {% if projects|length > 1 %}
+  <div class="arail-s">
+    <div class="arail-h">Argo project</div>
+    <select id="afproj">
+      <option value="">any project</option>
+      {% for pr in projects %}
+      <option value="{{ pr }}" {% if pr == want_project %}selected{% endif %}>{{ pr }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  {% endif %}
+  <div class="arail-s">
+    <div class="arail-h">Sync status</div>
+    {% for st in ['Synced', 'OutOfSync', 'Unknown'] %}
+    <label class="arail-c" data-c="sync-{{ st }}">
+      <input type="checkbox" class="afsync" value="{{ st }}">
+      <span class="dot {{ 'ok' if st == 'Synced' else 'dirty' if st == 'OutOfSync' else '' }}"></span>
+      {{ st }} <b>0</b></label>
+    {% endfor %}
+  </div>
+  <div class="arail-s">
+    <div class="arail-h">Health status</div>
+    {% for st in ['Healthy', 'Progressing', 'Degraded', 'Suspended', 'Missing', 'Unknown'] %}
+    <label class="arail-c" data-c="health-{{ st }}">
+      <input type="checkbox" class="afhealth" value="{{ st }}">
+      <span class="dot {{ 'ok' if st == 'Healthy' else 'dirty'
+        if st in ('Degraded', 'Missing') else '' }}"></span>
+      {{ st }} <b>0</b></label>
+    {% endfor %}
+  </div>
+  <div class="arail-s">
+    <div class="arail-h">Sync policy</div>
+    <label class="arail-c" data-c="pol-auto">
+      <input type="checkbox" class="afpol" value="auto"> auto-sync <b>0</b></label>
+    <label class="arail-c" data-c="pol-heal">
+      <input type="checkbox" class="afpol" value="heal"> self-heal <b>0</b></label>
+  </div>
+  <button type="button" class="btn-ghost" id="afclear"
+          style="padding:5px 12px;font-size:11.5px;width:100%;">clear filters</button>
+
+  {% if argo is defined and argo %}
+  {# Argo CD's own settings, from the rail: which repositories it has
+     credentials for, which clusters it can reach, and what its projects
+     permit. Adding a repository is the step that blocks a new application from
+     syncing at all, and until now the only place to do it was Argo's own UI. #}
+  <div class="arail-s" style="margin-top:18px;border-top:1px solid var(--line);
+       padding-top:14px;">
+    <div class="arail-h">Argo CD</div>
+    <button type="button" class="btn-ghost argoOpen"
+            style="padding:5px 12px;font-size:11.5px;width:100%;
+                   text-align:left;">
+      ⚙ repositories, clusters, projects</button>
+    <div class="hint" style="margin-top:6px;">{{ argo.repos|length }} repo{{
+      's' if argo.repos|length != 1 }} · {{ argo.clusters|length }} cluster{{
+      's' if argo.clusters|length != 1 }} · {{ argo.projects|length }} project{{
+      's' if argo.projects|length != 1 }}</div>
+  </div>
+  {% endif %}
+  {% if state %}
+  <a class="btn btn-ghost" href="/gitops?conn={{ want_conn }}"
+     style="display:block;text-align:center;padding:5px 12px;font-size:11.5px;
+            margin-top:7px;text-decoration:none;">drop “{{ state }}” →</a>
+  {% endif %}
+</aside>
+
+<div class="atiles" id="atiles">
+    {% for a in rows %}
+    <div class="atile" data-sync="{{ a.sync }}" data-health="{{ a.health }}"
+         data-project="{{ a.project }}" data-auto="{{ 1 if a.auto else 0 }}"
+         data-heal="{{ 1 if a.self_heal else 0 }}"
+         data-text="{{ (a.name ~ ' ' ~ a.project ~ ' ' ~ a.repo ~ ' ' ~ a.path ~ ' ' ~ a.dest)|lower }}">
+      {# The whole card opens the application, not just its title. An `<a>`
+         cannot wrap the buttons below (interactive content inside a link is
+         invalid and unusable with a keyboard), so the title's link stretches
+         over the card with ::after and the footer sits above it on z-index.
+         That is the standard shape for a clickable card with controls in it. #}
+      <a class="atile-h stretch"
+         href="/gitops/app?conn={{ want_conn }}&name={{ a.name|urlencode }}">
+        {{ glyph('git-merge', 15) }}
+        <b title="{{ a.name }}">{{ a.name }}</b>
+        <span style="flex:1"></span>
+        <span class="apill {{ 'ok' if a.health == 'Healthy' else 'bad'
+              if a.health in ('Degraded', 'Missing') else 'warn' }}">{{ a.health }}</span>
+        <span class="apill {{ 'ok' if a.sync == 'Synced' else 'warn' }}">{{ a.sync }}</span>
+      </a>
+      <div class="atile-b">
+        <span class="k">Project</span><span class="v">{{ a.project or '—' }}</span>
+        <span class="k">Labels</span><span class="v" title="{{ a.labels|join(', ') }}">{%
+          if a.labels %}{% for k, v in a.labels.items() %}{{ k }}={{ v }}{{ ', '
+          if not loop.last }}{% endfor %}{% else %}—{% endif %}</span>
+        <span class="k">Status</span><span class="v">{{ a.sync }}
+          {%- if a.auto %}, auto-sync{% endif %}{% if a.self_heal %}, self-heal{% endif %}</span>
+        <span class="k">Repository</span><span class="v mono"
+          title="{{ a.repo }}">{{ a.repo or '—' }}</span>
+        <span class="k">Target&nbsp;revision</span><span class="v mono">{{ a.target or 'HEAD' }}</span>
+        <span class="k">Path</span><span class="v mono" title="{{ a.path }}">{{ a.path or '—' }}</span>
+        <span class="k">Destination</span><span class="v mono"
+          title="{{ a.dest_server }}">{{ a.dest_server or '—' }}</span>
+        <span class="k">Namespace</span><span class="v mono">{{ a.dest_ns or '—' }}</span>
+        {% if a.when %}
+        <span class="k">Last&nbsp;sync</span><span class="v">{{ a.when }}</span>
+        {% endif %}
+      </div>
+      <div class="atile-f">
+        {# Sync opens the REAL panel in a drawer, fetched here — navigating to
+           the application page just to reveal it loaded everything else on the
+           way. Delete still goes to the app's own page, because its confirm
+           wants the application's name typed and that belongs where the thing
+           being deleted is on screen. #}
+        <button type="button" class="abtn asyncbtn"
+                data-app="{{ a.name }}">{{ glyph('rocket', 12) }} sync</button>
+        <form method="post" style="display:flex;flex:1;"
+              action="/gitops/app/refresh?conn={{ want_conn }}&name={{ a.name|urlencode }}">
+          <button class="abtn" type="submit" style="flex:1;">↻ refresh</button>
+        </form>
+        <a class="abtn danger" href="/gitops/app?conn={{ want_conn }}&name={{ a.name|urlencode }}&del=1">
+          delete</a>
+      </div>
+    </div>
+    {% endfor %}
+</div>
+</div>
+
+{# ── the drawers ────────────────────────────────────────────────────────
+   One shell, two contents: the Synchronize panel (fetched per application) and
+   Argo CD's own settings (rendered with the page — one SWR call already made).
+   The CSS is inline rather than in app.css because app.css is version-cached
+   and a shared component has to work before a release. See CLAUDE.md. #}
+<div class="sdrawer-scrim" id="drawerScrim" hidden></div>
+<div class="sdrawer wide" id="listDrawer" hidden>
+  <div class="sdrawer-h">
+    <b id="drawerTitle" style="font-size:13px;">Synchronize</b>
+    <span style="flex:1"></span>
+    <button type="button" class="psh-x" id="drawerClose">✕</button>
+  </div>
+  <div id="drawerBody" style="overflow-y:auto;flex:1;min-height:0;"></div>
+</div>
+
+{% if argo is defined and argo %}
+<div class="sdrawer wide" id="argoDrawer" hidden>
+  <div class="sdrawer-h">
+    <b style="font-size:13px;">Argo CD settings</b>
+    <span class="hint">{{ chosen.conn.name if chosen }}</span>
+    <span style="flex:1"></span>
+    <button type="button" class="psh-x argoClose">✕</button>
+  </div>
+  <div class="sdrawer-b">
+    <div class="asec">
+      <div class="asec-h">Repositories
+        <span class="hint">{{ argo.repos|length }}</span></div>
+      {% if argo.repos_error %}
+      <div class="flash err" style="margin:0 0 10px;">{{ argo.repos_error }}</div>
+      {% endif %}
+      {% for r in argo.repos %}
+      <div class="arow">
+        <div style="min-width:0;">
+          <div class="mono" style="font-size:11.5px;overflow-wrap:anywhere;"
+               >{{ r.url }}</div>
+          <div class="hint">{{ r.type }}{{ ' · ' ~ r.username if r.username }}
+            {%- if r.state %} · <span style="color:{{ 'var(--ok-ink)'
+              if r.state == 'Successful' else 'var(--danger-ink)' }};"
+              >{{ r.state }}</span>{% endif %}
+            {%- if r.why and r.state != 'Successful' %} — {{ r.why }}{% endif %}</div>
+        </div>
+        <form method="post" action="/gitops/repo/remove?conn={{ want_conn }}"
+              data-del-skip
+              data-call-submit="repoCredDrop" data-url="{{ r.url }}">
+          <input type="hidden" name="url" value="{{ r.url }}">
+          <input type="hidden" name="confirm" value="">
+          <button class="abtn danger" type="submit">remove</button>
+        </form>
+      </div>
+      {% endfor %}
+      <details style="margin-top:10px;">
+        <summary class="hint" style="cursor:pointer;">＋ add a repository</summary>
+        <form method="post" action="/gitops/repo/add?conn={{ want_conn }}"
+              style="margin-top:10px;">
+          <label class="sfield"><span>repository URL</span>
+            <input name="url" required
+                   placeholder="https://git.example.com/team/manifests.git"></label>
+          <div class="srow two">
+            <label class="sfield"><span>username</span>
+              <input name="username" autocomplete="off"
+                     placeholder="blank for a public repo"></label>
+            <label class="sfield"><span>password or token</span>
+              <input name="password" type="password" autocomplete="off"></label>
+          </div>
+          <div class="srow two">
+            <label class="sfield"><span>name</span>
+              <input name="name" placeholder="optional label"></label>
+            <label class="sfield"><span>Argo project</span>
+              <input name="project" placeholder="blank for any"></label>
+          </div>
+          <label class="schk" style="margin-bottom:12px;">
+            <input type="checkbox" name="insecure"> skip TLS verification</label>
+          <button class="btn" type="submit">Add to Argo CD</button>
+          <p class="hint" style="margin-top:9px;">Argo CD validates the
+            credential as part of this call, so a wrong one is refused here
+            rather than turning up later as a failing sync. The portal does not
+            keep it — Argo CD does.</p>
+        </form>
+      </details>
+    </div>
+
+    <div class="asec">
+      <div class="asec-h">Clusters
+        <span class="hint">{{ argo.clusters|length }}</span></div>
+      {% for c in argo.clusters %}
+      <div class="arow">
+        <div style="min-width:0;">
+          <div style="font-size:12.5px;">{{ c.name or c.server }}</div>
+          <div class="hint mono" style="font-size:11px;">{{ c.server }}</div>
+          <div class="hint">{{ c.apps }} application{{ 's' if c.apps != 1 }}
+            {%- if c.version %} · {{ c.version }}{% endif %}
+            {%- if c.state %} · <span style="color:{{ 'var(--ok-ink)'
+              if c.state == 'Successful' else 'var(--danger-ink)' }};"
+              >{{ c.state }}</span>{% endif %}</div>
+        </div>
+      </div>
+      {% endfor %}
+      <p class="hint">Adding a cluster to Argo CD needs its own credentials in
+        the cluster — done with <code>argocd cluster add</code> where the
+        controller runs, not from here.</p>
+    </div>
+
+    <div class="asec">
+      <div class="asec-h">Projects
+        <span class="hint">{{ argo.projects|length }}</span></div>
+      {% for pr in argo.projects %}
+      <div class="arow">
+        <div style="min-width:0;">
+          <div style="font-size:12.5px;">{{ pr.name }}
+            <a class="hint" href="/gitops?conn={{ want_conn }}&project={{ pr.name|urlencode }}"
+               style="margin-left:7px;">filter to it →</a></div>
+          {% if pr.description %}<div class="hint">{{ pr.description }}</div>{% endif %}
+          <div class="hint">{{ pr.repos|length }} source repo{{ 's' if pr.repos|length != 1 }}
+            · {{ pr.destinations|length }} destination{{ 's' if pr.destinations|length != 1 }}</div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<div class="empty" id="anone" hidden style="margin-top:0;">
+  <div class="big">{{ glyph("git-merge", 40) }}</div><h2>Nothing matches</h2>
+  <p>No application matches this filter.</p></div>
+<div class="apager" id="apager" hidden>
+  <button type="button" class="apg" id="apgprev">← previous</button>
+  <span id="apgnums" style="display:flex;gap:6px;flex-wrap:wrap;"></span>
+  <button type="button" class="apg" id="apgnext">next →</button>
+  <span style="flex:1"></span>
+  <span class="sec-note" id="apgnote" style="margin:0;"></span>
+</div>
+
+<script nonce="{{ csp_nonce() }}">
+(() => {
+  const PER = 12;                      // three across, four down — one screen
+  const CONN = {{ want_conn|tojson }};
+  const wrap = document.getElementById('atiles');
+  if (!wrap) return;
+  const tiles = [...wrap.querySelectorAll('.atile')];
+  const find = document.getElementById('afind');
+  const proj = document.getElementById('afproj');
+  const rail = document.querySelector('.arail');
+  const none = document.getElementById('anone');
+  const pager = document.getElementById('apager');
+  const nums = document.getElementById('apgnums');
+  const note = document.getElementById('apgnote');
+  const on = cls => [...rail.querySelectorAll('.' + cls)]
+    .filter(b => b.checked).map(b => b.value);
+  let page = 1;
+
+  const hits = () => {
+    const q = find.value.trim().toLowerCase();
+    const pr = proj ? proj.value : '';
+    const wantS = on('afsync'), wantH = on('afhealth'), wantP = on('afpol');
+    return tiles.filter(t =>
+      (!q || t.dataset.text.includes(q))
+      && (!pr || t.dataset.project === pr)
+      && (!wantS.length || wantS.includes(t.dataset.sync))
+      && (!wantH.length || wantH.includes(t.dataset.health))
+      && (!wantP.length || wantP.every(w =>
+            t.dataset[w === 'auto' ? 'auto' : 'heal'] === '1')));
+  };
+
+  // The counts are read off the tiles themselves, so the number beside a box
+  // is always exactly how many tiles ticking it leaves behind.
+  function counts() {
+    const c = {};
+    tiles.forEach(t => {
+      c['sync-' + t.dataset.sync] = (c['sync-' + t.dataset.sync] || 0) + 1;
+      c['health-' + t.dataset.health] = (c['health-' + t.dataset.health] || 0) + 1;
+      if (t.dataset.auto === '1') c['pol-auto'] = (c['pol-auto'] || 0) + 1;
+      if (t.dataset.heal === '1') c['pol-heal'] = (c['pol-heal'] || 0) + 1;
+    });
+    rail.querySelectorAll('.arail-c').forEach(l => {
+      const n = c[l.dataset.c] || 0;
+      l.querySelector('b').textContent = n;
+      // a state nothing is in is not a filter worth offering
+      l.classList.toggle('off', n === 0);
+      const box = l.querySelector('input');
+      if (box && !box.checked) box.disabled = n === 0;
+    });
+  }
+
+  function paint() {
+    const keep = hits();
+    const pages = Math.max(1, Math.ceil(keep.length / PER));
+    if (page > pages) page = pages;
+    const from = (page - 1) * PER;
+    const shown = new Set(keep.slice(from, from + PER));
+    tiles.forEach(t => { t.hidden = !shown.has(t); });
+    none.hidden = keep.length > 0;
+    pager.hidden = keep.length <= PER;
+    document.getElementById('apgprev').disabled = page === 1;
+    document.getElementById('apgnext').disabled = page === pages;
+    note.textContent = keep.length
+      ? `${from + 1}–${Math.min(from + PER, keep.length)} of ${keep.length}`
+        + (keep.length !== tiles.length ? ` (${tiles.length} in total)` : '')
+      : '';
+    nums.innerHTML = '';
+    for (let i = 1; i <= pages; i++) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'apg' + (i === page ? ' on' : '');
+      b.textContent = i;
+      b.onclick = () => { page = i; paint(); scrollTo({top: 0, behavior: 'smooth'}); };
+      nums.appendChild(b);
+    }
+  }
+
+  // ── the drawers ──
+  // Sync fetches the REAL panel rather than navigating: "open the drawer, not
+  // everything" was the whole point. One shell, and only one drawer open at a
+  // time, so Escape and the scrim never have to guess which.
+  const scrim = document.getElementById('drawerScrim');
+  const drawer = document.getElementById('listDrawer');
+  const argoDrawer = document.getElementById('argoDrawer');
+  const body = document.getElementById('drawerBody');
+  const title = document.getElementById('drawerTitle');
+  const shut = () => {
+    if (drawer) drawer.hidden = true;
+    if (argoDrawer) argoDrawer.hidden = true;
+    if (scrim) scrim.hidden = true;
+  };
+  const show = el => { shut(); el.hidden = false; scrim.hidden = false; };
+  if (scrim) scrim.addEventListener('click', shut);
+  document.getElementById('drawerClose')?.addEventListener('click', shut);
+  document.querySelectorAll('.argoClose').forEach(b =>
+    b.addEventListener('click', shut));
+  addEventListener('keydown', e => {
+    if (e.key === 'Escape' && !scrim.hidden) { e.preventDefault(); shut(); }
+  });
+  document.querySelectorAll('.argoOpen').forEach(b =>
+    b.addEventListener('click', () => { if (argoDrawer) show(argoDrawer); }));
+
+  document.querySelectorAll('.asyncbtn').forEach(b =>
+    b.addEventListener('click', async () => {
+      const name = b.dataset.app;
+      title.textContent = 'Synchronize ' + name;
+      body.innerHTML = '<div class="sdrawer-b"><p class="sub" ' +
+        'style="margin:0;display:flex;align-items:center;gap:10px;">' +
+        '<span class="opspin"></span>Reading it from Argo CD…</p></div>';
+      show(drawer);
+      try {
+        const r = await fetch('/gitops/app/sync/panel?' + new URLSearchParams(
+          {conn: CONN, name: name}));
+        if (r.status === 409) { location.reload(); return; }
+        body.innerHTML = await r.text();
+        // the panel's own resource picker, wired the same way the app page
+        // wires it — all / out of sync / none
+        body.addEventListener('click', ev => {
+          const a = ev.target.closest('[data-spick]');
+          if (!a) return;
+          ev.preventDefault();
+          const how = a.dataset.spick;
+          body.querySelectorAll('.sres input[type=checkbox]').forEach(c => {
+            c.checked = how === 'all' ? true
+                      : how === 'oos' ? c.dataset.oos === '1' : false;
+          });
+        });
+        body.querySelector('#syncCancel')?.addEventListener('click', shut);
+        body.querySelector('#syncClose')?.addEventListener('click', shut);
+        body.querySelector('#syncWord')?.focus();
+      } catch (e) {
+        body.innerHTML = '<div class="sdrawer-b"><div class="flash err">' +
+          'could not read it: ' + String(e).replace(/[<>&]/g, '') + '</div></div>';
+      }
+    }));
+
+  const reset = () => { page = 1; paint(); };
+  find.addEventListener('input', reset);
+  if (proj) proj.addEventListener('change', reset);
+  rail.querySelectorAll('input[type=checkbox]').forEach(b =>
+    b.addEventListener('change', reset));
+  document.getElementById('afclear').addEventListener('click', () => {
+    find.value = '';
+    if (proj) proj.value = '';
+    rail.querySelectorAll('input[type=checkbox]').forEach(b => { b.checked = false; });
+    reset();
+  });
+  document.getElementById('apgprev').addEventListener('click',
+    () => { if (page > 1) { page--; paint(); } });
+  document.getElementById('apgnext').addEventListener('click',
+    () => { page++; paint(); });
+  counts();
+  paint();
+})();
+</script>
+{% endif %}
+{% endblock %}
+
+<script nonce="{{ csp_nonce() }}">
+/* The typed URL is copied into the form's hidden confirm field; the server
+   checks it again, so this is the reminder and not the gate. */
+window.repoCredDrop = function (form) {
+  const want = form.dataset.url;
+  if (prompt('Type the repository URL to remove its credentials from Argo CD. '
+             + 'Applications on it stop syncing.') !== want) return false;
+  form.confirm.value = want;
+};
+</script>

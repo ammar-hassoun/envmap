@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% from "_set_head.html" import head %}
+{% block crumbs %}<a href="/settings">Settings</a> <span class="sep">/</span>
+  <b>Infrastructure Provisioning</b>{% endblock %}
+{% block content %}
+{{ head("Infrastructure Provisioning",
+        "Whether this portal may apply or destroy infrastructure, and how hard it
+         works when it does. Stacks and their code live on the Infrastructure
+         Provisioning page — this is the policy behind them.",
+        msg, "") }}
+
+<div class="card">
+  <div class="card-h">The runner
+    <span class="hint">what the portal found when it looked</span></div>
+  <div class="card-b">
+    <div class="field-row"><label>terraform</label>
+      <div>{% if tool.found %}
+        <span class="sv sv-clean">found</span>
+        <span class="badge" style="font-family:var(--mono);">{{ tool.flavour or 'terraform' }}</span>
+        <span class="badge" style="font-family:var(--mono);">{{ tool.version }}</span>
+        <div class="sec-note" style="font-family:var(--mono);">{{ tool.path }}</div>
+        {% else %}
+        <span class="sv sv-critical">not available</span>
+        <div class="sec-note">{{ tool.error }}</div>
+        <div class="sec-note">Point <code>PORTAL_TERRAFORM</code> at a terraform (or
+          <code>tofu</code>) binary, or add its directory to
+          <code>PORTAL_TOOL_PATH</code>.</div>
+        {% endif %}
+      </div></div>
+  </div>
+</div>
+
+<form method="post" action="/settings/terraform">
+<div class="card">
+  <div class="card-h">What it may do</div>
+  <div class="card-b">
+    <div class="field-row"><label>apply &amp; destroy</label>
+      <div>
+        <label style="font-weight:400;font-size:13px;cursor:pointer;">
+          <input type="checkbox" name="allow_apply" value="1"
+                 style="width:auto;vertical-align:-2px;margin-right:7px;"
+                 {% if cfg.allow_apply %}checked{% endif %}>
+          permit runs that change real infrastructure</label>
+        <div class="sec-note">Off on a new installation: a stack can be written
+          and <b>planned</b> — which changes nothing — before anything here can
+          create or destroy a machine. Turning it on does not grant it to anybody
+          — a person also needs the <b>Terraform: apply</b> area, and a stack
+          marked production still has its name typed. Every run is recorded either
+          way.</div>
+        <div class="sec-note">This is the same posture as Ansible's “real runs”
+          and a cluster's “allow management”: the portal being willing, and the
+          credential being allowed, are two separate things.</div>
+      </div></div>
+
+    <div class="field-row"><label>parallelism</label>
+      <div><input type="number" name="parallelism" min="1" max="100"
+             value="{{ cfg.parallelism }}" style="max-width:120px;">
+        <span class="hint">resources at once</span>
+        <div class="sec-note">How many resource operations Terraform runs
+          concurrently. Its own default is 10. Lower it for a gentle API, raise it
+          for a big fleet.</div></div></div>
+
+    <div class="actions">
+      <button type="submit" style="padding:6px 16px;font-size:12.5px;">Save</button>
+      <a class="btn btn-ghost" style="padding:6px 16px;font-size:12.5px;"
+         href="/terraform">Go to Infrastructure Provisioning →</a></div>
+  </div>
+</div>
+</form>
+
+<div class="card">
+  <div class="card-h">How a run reaches a provider</div>
+  <div class="card-b">
+    <ul class="sec-note" style="margin:0;line-height:1.75;">
+      <li>The portal runs terraform <b>from wherever the portal runs</b> — in a
+        cluster, that is the pod's own network. A provider endpoint it cannot
+        reach is a run that fails however correct the <code>.tf</code> is.</li>
+      <li>Each stack keeps its own <b>working directory</b> under the data volume,
+        so <code>terraform.tfstate</code> and the downloaded providers persist
+        between runs — Terraform's memory of what it built.</li>
+      <li>The provider credential is <b>encrypted at rest</b> and injected as
+        environment variables at run time; it is never written to disk and never
+        shown back on the stack page.</li>
+      <li>Every run keeps <b>the whole output</b>, the exact command, who started
+        it and Terraform's own change summary.</li>
+    </ul>
+  </div>
+</div>
+{% endblock %}

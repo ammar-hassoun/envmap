@@ -1,0 +1,454 @@
+{% extends "base.html" %}
+{% block crumbs %}<a href="/pam">Privileged Access</a> <span class="sep">/</span>
+  <a href="/pam?sec=sessions">Recordings</a> <span class="sep">/</span>
+  <b>{{ s.who or '—' }} · {{ s.target_name or s.address }}</b>{% endblock %}
+{% block content %}
+{#- Replay of one recorded session. An SSH session is an asciinema cast played in
+    an xterm; an RDP/VNC session is a Guacamole recording played by the Guacamole
+    player. The player is chosen by rec_kind so the two never mix. -#}
+<link rel="stylesheet" href="/static/xterm.css">
+<script nonce="{{ csp_nonce() }}" src="/static/xterm.js"></script>
+<style>
+  .rec-head { display:flex; align-items:flex-start; gap:14px; flex-wrap:wrap; margin-bottom:12px; }
+  .rec-meta { display:flex; gap:16px; flex-wrap:wrap; font-size:12px; color:var(--muted); margin-top:4px; }
+  .rec-meta b { color:var(--text); font-variant-numeric:tabular-nums; }
+  .rec-meta code { font-family:var(--mono); color:var(--text2); }
+  .rec-wrap { border:1px solid var(--line); border-radius:12px; background:#0b0f16;
+    padding:10px 12px; overflow:auto; position:relative; }
+  .rec-bar { display:flex; align-items:center; gap:12px; margin-top:10px; flex-wrap:wrap; }
+  .rec-bar input[type=range] { flex:1 1 220px; accent-color:var(--accent); min-width:160px; }
+  /* HOW MUCH IS SEEKABLE, shown rather than discovered by dragging. Until the
+     file is parsed a seek past the parsed point is silently dropped, so the
+     control has to say where it will and will not work. */
+  .rec-seek { position:relative; flex:1 1 220px; min-width:160px; display:flex;
+    align-items:center; }
+  .rec-seek input[type=range] { flex:1 1 auto; min-width:0; position:relative; z-index:1; }
+  .rec-buf { --buf: 0%; position:absolute; left:2px; right:2px; top:50%; height:4px;
+    transform:translateY(-50%); border-radius:2px; overflow:hidden;
+    background:transparent; pointer-events:none; }
+  .rec-buf::after { content:""; display:block; height:100%; width:var(--buf, 0%);
+    background:var(--text2); opacity:.35; border-radius:2px;
+    transition:width .25s linear; }
+  /* Still loading is not the same as unusable: the bar works within what has
+     been read, so it must not look switched off. The buffered fill says how
+     far that is. */
+  .rec-seek.loading input[type=range] { cursor:progress; }
+  /* OUT OF THE LAYOUT, OVER THE MIDDLE. As a block in flow it was fine in
+     the card and wrong in full screen, where the wrapper becomes a flex row --
+     so the message sat BESIDE the picture, down the left-hand edge, over a
+     recording that was visibly playing. A caption about the pane belongs on
+     the pane. */
+  .rec-prep { position:absolute; inset:0; display:flex; align-items:center;
+    justify-content:center; pointer-events:none; z-index:2;
+    font-size:12.5px; color:var(--muted); font-family:var(--mono);
+    font-variant-numeric:tabular-nums; }
+  .rec-time { font-family:var(--mono); font-size:12px; color:var(--muted);
+    font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .rec-speed button.on { background:var(--accent); color:#fff; border-color:var(--accent); }
+  /* Full screen paints its own ground: the element is lifted out of the page,
+     so it inherits no background and would otherwise show white behind a
+     1280x800 canvas on a dark UI. */
+  .rec-fs:fullscreen { background:var(--bg); padding:10px;
+    display:flex; flex-direction:column; }
+  .rec-fs:fullscreen .rec-wrap { flex:1; min-height:0; display:flex;
+    align-items:center; justify-content:center; }
+  .rec-fs:fullscreen #guacPlayer { min-height:0; }
+  .rec-fs:-webkit-full-screen { background:var(--bg); padding:10px; }
+</style>
+
+<div class="rec-head">
+  <div>
+    <h1 style="margin:0;">Session replay</h1>
+    <div class="rec-meta">
+      <span><b>{{ s.who or '—' }}</b> on <code>{{ s.target_name or s.address }}</code></span>
+      <span><span class="badge">{{ proto_meta.get(s.protocol, {}).get('label', s.protocol) }}</span></span>
+      {% if s.protocol == 'ssh' %}<span><b>{{ s.cmd_count }}</b> command{{ 's' if s.cmd_count != 1 }}</span>{% endif %}
+      <span title="{{ s.started }} → {{ s.ended }}">{{ s.started[:16]|replace('T',' ') }}</span>
+      {% if s.status == 'failed' %}<span class="sv sv-high">did not start</span>{% endif %}
+      {% if s.source == 'ansible' %}<span class="muted">recorded via Ansible</span>{% endif %}
+      {% if integ.state == 'verified' %}
+      <span style="color:var(--ok);" title="the recording on disk matches the SHA-256 taken when the session ended">✓ recording verified</span>
+      {% elif integ.state == 'tampered' %}
+      <span style="color:var(--danger);font-weight:600;" title="stored {{ integ.stored[:16] }}… now {{ integ.current[:16] }}…">⚠ recording altered since it was filed</span>
+      {% endif %}
+    </div>
+    {% if s.reason or s.ticket or s.session_time %}
+    <div class="rec-meta" style="margin-top:6px;">
+      {% if s.reason %}<span>summary: <code>{{ s.reason }}</code></span>{% endif %}
+      {% if s.session_time %}<span>session time: <b>{{ s.session_time }}</b></span>{% endif %}
+      {% if s.ticket %}<span>ticket:
+        {% if s.ticket.startswith(('http://', 'https://')) %}<a href="{{ s.ticket }}"
+          target="_blank" rel="noopener noreferrer">{{ s.ticket }}</a>
+        {% else %}<code>{{ s.ticket }}</code>{% endif %}</span>{% endif %}
+    </div>{% endif %}
+  </div>
+  <span style="flex:1"></span>
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+    {% if s.protocol == 'ssh' %}<button type="button" class="abtn"
+      data-pamcmd="{{ s.id }}" data-pamname="{{ s.who }} · {{ s.target_name or s.address }}">commands</button>{% endif %}
+    {% if has_rec %}<a class="abtn" href="/pam/sessions/{{ s.id }}/recording">recording ⤓</a>{% endif %}
+    <a class="btn btn-ghost" href="/pam?sec=sessions">← All recordings</a>
+  </div>
+</div>
+
+{% if not has_rec %}
+<div class="card"><div class="card-b" style="color:var(--muted);font-size:13px;">
+  The recording for this session is no longer on disk — it may have been cleared,
+  or recording was off when it ran.
+  {% if s.protocol == 'ssh' %}The commands are still kept:
+  <a href="#" data-pamcmd="{{ s.id }}" data-pamname="{{ s.who }} · {{ s.target_name or s.address }}">view them</a>.{% endif %}
+</div></div>
+
+{% elif s.rec_kind == 'guac' %}
+{# RDP/VNC replay — the Guacamole player. Wired in the guacamole phase. #}
+{#- The player AND its bar sit in one element, because that is what goes
+    full screen: a full-screen canvas with no way to pause or scrub is worse
+    than a small one with both. -#}
+<div id="recFs" class="rec-fs">
+<div class="rec-wrap" id="recWrap" style="min-height:420px;">
+  {#- A BLANK BOX FOR HALF A MINUTE reads as a broken recording. A Guacamole
+      display is 0x0 until a frame is applied and the first frame cannot be
+      painted until the file is parsed, so the honest thing is to say what is
+      happening and how far along it is. -#}
+  <div id="guacPrep" class="rec-prep">preparing recording…</div>
+  <div id="guacPlayer" style="min-height:400px;"></div>
+</div>
+<div class="rec-bar">
+  <button type="button" class="abtn go" id="gPlay">► play</button>
+  {#- THE TOTAL COMES FROM THE ROW, not from the player. A Guacamole
+      recording reports the duration it has parsed SO FAR, which grows as the
+      file downloads — so a bar scaled to it put the thumb near the middle of a
+      20s "recording" that was really 81s, then walked it backwards for half a
+      minute as the real length arrived. Reported as the bar "dancing", and it
+      was: `value/max` where max was moving. The session row knows the true
+      length the moment the page renders. -#}
+  <span class="rec-seek">
+    <span class="rec-buf" id="gBuf"></span>
+    <input type="range" id="gSeek" min="0" max="{{ (s.seconds or 0) * 1000 }}"
+           value="0" data-total="{{ (s.seconds or 0) * 1000 }}"
+           step="100" aria-label="seek">
+  </span>
+  <span class="rec-time" id="gTime">0:00 / 0:00</span>
+  {#- Same controls the SSH replay has had all along. A recorded desktop is
+      the one that most needs them: reading a two-minute terminal at 1x is
+      tolerable, watching somebody fill in a form at 1x is not. -#}
+  <span class="rec-speed">
+    <button type="button" class="abtn" data-gspeed="1">1×</button>
+    <button type="button" class="abtn" data-gspeed="2">2×</button>
+    <button type="button" class="abtn" data-gspeed="4">4×</button>
+    <button type="button" class="abtn" data-gspeed="8">8×</button>
+  </span>
+  <button type="button" class="abtn" id="gFull" title="full screen (Escape to leave)">⛶ full screen</button>
+</div>
+</div>
+<script nonce="{{ csp_nonce() }}" src="/static/guacamole-common.min.js"></script>
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  if (!window.Guacamole || !Guacamole.SessionRecording) {
+    document.getElementById('recWrap').textContent =
+      'the Guacamole player is not available'; return; }
+  const url = '/pam/sessions/{{ s.id }}/recording';
+  const tunnel = new Guacamole.StaticHTTPTunnel(url);
+  const rec = new Guacamole.SessionRecording(tunnel);
+  const display = rec.getDisplay();
+  const host = document.getElementById('guacPlayer');
+  host.appendChild(display.getElement());
+  // A recording is captured at the seat's own size (1280x800 by default) and
+  // the display renders at exactly that, so on a narrower card it overflowed.
+  // Scale it to the space available, and again when the window changes.
+  const fit = () => {
+    const w = display.getWidth(), hgt = display.getHeight();
+    if (!w || !hgt) return;
+    // Width alone is right on the page, where the card scrolls vertically,
+    // and wrong in full screen, where a 1280x800 recording scaled to a wide
+    // screen's width would run off the bottom. Fit BOTH, and never upscale
+    // past 1:1 — a magnified framebuffer is blurry, not bigger.
+    const box = host.parentElement || host;
+    const room = box.clientHeight || host.clientHeight || hgt;
+    display.scale(Math.min(1, host.clientWidth / w, room / hgt));
+  };
+  display.onresize = fit;
+  window.addEventListener('resize', fit);
+  const play = document.getElementById('gPlay'), seek = document.getElementById('gSeek'),
+        timeEl = document.getElementById('gTime');
+  const mmss = s => { s = Math.max(0, Math.round(s/1000));
+    return Math.floor(s/60)+':'+String(s%60).padStart(2,'0'); };
+  // THE ROW'S LENGTH, not the player's running total. `onprogress` reports
+  // the duration parsed so far and it GROWS: on a real 81s recording of 15.7MB
+  // it read 20s a few seconds in, so a bar scaled to it showed the playhead
+  // near the middle and then walked it backwards for the half-minute the file
+  // took to parse. The row has been carrying the true length all along.
+  const seekWrap = document.querySelector('.rec-seek');
+  const bufEl = document.getElementById('gBuf');
+  const total = +(seek.dataset.total || 0);
+  let dur = total, playing = false, posted = false, loaded = 0, ready = false;
+  // Until the file is parsed a seek past the parsed point is DROPPED, so the
+  // control says so instead of letting somebody drag and wonder.
+  if (total > 0) seekWrap.classList.add('loading');
+  // HOW FAR A SEEK WILL ACTUALLY LAND. Past the parsed point it is silently
+  // dropped, so everything that seeks — the slider, the stepper, replay —
+  // aims at this rather than at the total. Disabling the control until the
+  // whole file was parsed was worse than the problem: half a minute of not
+  // being able to move at all, in a player that was already playing.
+  const seekable = () => (ready || loaded <= 0) ? dur : Math.min(dur, loaded);
+  // ONE PLACE PAINTS THE BAR. The label and the thumb were written from four
+  // handlers and drifted apart from each other; a player whose clock and whose
+  // thumb disagree reads as broken even when both are nearly right.
+  let prepEl = document.getElementById('guacPrep');
+  function paint() {
+    const pos = rec.getPosition ? rec.getPosition() : 0;
+    if (prepEl) {
+      // GONE AS SOON AS THERE IS SOMETHING TO SEE, not when the file finishes
+      // parsing. A Guacamole display is 0x0 until a frame is applied, so that
+      // is the exact moment the pane stops being empty -- and it happens long
+      // before the last byte arrives. Saying "preparing" over a recording that
+      // is already playing is just wrong, and the time label carries the
+      // loading percentage for anyone who wants it.
+      if (ready || display.getWidth() > 0) { prepEl.remove(); prepEl = null; }
+      else if (dur > 0)
+        prepEl.textContent = 'preparing recording… '
+          + Math.min(99, Math.floor(loaded / dur * 100)) + '%';
+    }
+    if (document.activeElement !== seek) seek.value = Math.min(pos, dur);
+    timeEl.textContent = mmss(pos) + ' / ' + mmss(dur)
+      + (ready || dur <= 0 || loaded >= dur ? ''
+         : '  · loading ' + Math.min(99, Math.floor(loaded / dur * 100)) + '%');
+  }
+  // AT THE END, PLAY MEANS PLAY AGAIN. Reported: the recording finishes and
+  // the button stops doing anything. BOTH paths were silently no-ops there and
+  // for different reasons — `rec.play()` has nothing left to play, and the
+  // stepper's first target is already `dur`, so it seeked to the end and set
+  // itself back to stopped. A player whose main control does nothing reads as
+  // broken, and this is the artefact the whole feature exists to produce.
+  //
+  // The tolerance is there because a recording rarely stops on a round
+  // number: the last frame lands a little short of the reported duration, so
+  // an exact `>= dur` test leaves a player that is visibly finished and still
+  // refuses to start.
+  const END_SLACK = 250;
+  const atEnd = () => dur > 0 && (rec.getPosition ? rec.getPosition() : 0)
+                                 >= dur - END_SLACK;
+  // PARSING PROGRESS IS NOT THE DURATION. It only says how much is seekable
+  // yet, which is what the buffered fill shows. `max` is set once, from the
+  // row, and never moves — a moving max is the dance itself. Old rows with no
+  // recorded length keep the previous behaviour, monotonically, so the bar can
+  // still only grow rather than jump about.
+  rec.onprogress = d => {
+    loaded = d;
+    if (total <= 0) { dur = Math.max(dur, d); seek.max = dur; }
+    if (dur > 0 && bufEl)
+      bufEl.style.setProperty('--buf',
+        Math.min(100, Math.round(loaded / dur * 100)) + '%');
+    paint();
+  };
+  // PAINT A FIRST FRAME, on `onload` and not on `onprogress`. A Guacamole
+  // display is 0x0 until a frame is applied, so the page opened as an empty
+  // box and stayed one until somebody pressed play — reported, reasonably, as
+  // "the recording is blank". Measured on a real 82s recording: seeking from
+  // inside `onprogress` does nothing (the recording is still downloading and
+  // the seek is dropped), while `onload` means it is fully buffered and
+  // seekable. Seek slightly IN rather than to zero: at 0ms the framebuffer is
+  // 0% lit and at 500ms it is 100% lit, so zero would poster the very blank
+  // frame this exists to avoid.
+  rec.onload = () => {
+    if (posted) return;
+    posted = true;
+    // NOW it is safe to trust the player: fully parsed, so `getDuration` is
+    // final. Preferred over the row only when the row had nothing to say.
+    // THE ROW'S LENGTH IS A SCALE TO DRAW WITH, NOT THE END OF THE FILE.
+    // Once parsed, the player's own duration is the authority and they differ
+    // by a fraction of a second — the row is whole seconds, the file ends
+    // where it ends. Trusting the row past this point broke two things at
+    // once: `atEnd` never became true, so a finished recording would not
+    // replay, and the fast-forward stepper aimed past the last frame, where a
+    // seek is dropped and its callback never comes, so 8x stopped dead.
+    const real = rec.getDuration ? rec.getDuration() : 0;
+    if (real > 0) dur = real;
+    seek.max = dur;
+    loaded = dur;
+    ready = true;
+    seekWrap.classList.remove('loading');
+    seek.max = dur;
+    if (bufEl) bufEl.style.setProperty('--buf', '100%');
+    rec.seek(Math.min(1500, Math.floor(dur / 10)), () => {
+      paint();
+      fit();
+    });
+  };
+  rec.onseek = () => { paint();
+    fit();
+    // The slider's handler calls stopPlay() BEFORE the seek lands, so it reads
+    // the old position; the label is settled here, once the position is real.
+    if (!playing) play.textContent = atEnd() ? '↻ replay' : '► play'; };
+  // Only trusted at 1x: above that the recording is deliberately paused
+  // while our own ticker drives it, and letting onpause flip the label would
+  // make the button lie about what it is doing.
+  rec.onplay = () => { if (rate === 1) { playing = true;
+                       play.textContent = '❚❚ pause'; } };
+  rec.onpause = () => { if (rate === 1) { playing = false;
+                        play.textContent = atEnd() ? '↻ replay' : '► play'; } };
+  // SPEED. `Guacamole.SessionRecording` has play/pause/seek and NO rate
+  // control — checked against the vendored build's own method list — so
+  // anything above 1x has to be driven. At 1x the player's own clock is used,
+  // because it is smooth and correct; above that the recording is paused and
+  // stepped forward by `rate * interval` on a timer, which is what `seek`
+  // is for. Stepping rather than a rate means 8x is 8x of RECORDED time, not
+  // 8x of frames, so a still period stays still instead of racing.
+  const STEP = 200;
+  let rate = 1, ticker = 0, target = 0;
+  const stopTicker = () => { if (ticker) { clearTimeout(ticker); ticker = 0; } };
+  // CHAINED ON THE CALLBACK, and tracking its OWN target. The first version
+  // used setInterval and computed each next target from `rec.getPosition()` —
+  // which LAGS an in-flight asynchronous seek, so the target barely moved and
+  // the measured result was 1x->0.6x, 2x->0.1x, 4x->0.4x, 8x->1.1x. An "8x"
+  // button that plays at 1.1x is worse than no button. Measured again after:
+  // seek costs 0-5ms for a 200ms step and is O(delta), not O(position), so
+  // chaining sustains 8x with room to spare.
+  function step() {
+    if (!playing || rate === 1) return;
+    // AIMED AT WHAT IS READ, NOT AT THE TOTAL. Past the parsed point a seek
+    // is dropped and its callback never arrives, so the chain that drives
+    // every rate above 1x simply stopped — reported as "when I click pause and
+    // replay or play again it is stuck".
+    const end = seekable();
+    target = Math.min(end, target + STEP * rate);
+    if (target >= end) {
+      // Only the REAL end finishes the recording; catching up with the
+      // parser just waits for it, at the position it got to.
+      if (ready) {
+        rec.seek(end, () => {});
+        playing = false; play.textContent = '↻ replay';
+        return;
+      }
+      target = end;
+      ticker = setTimeout(step, STEP);
+      return;
+    }
+    rec.seek(target, () => {
+      if (playing && rate !== 1) ticker = setTimeout(step, STEP);
+    });
+  }
+  function beginPlay() {
+    if (rate === 1) { rec.play(); return; }
+    rec.pause();
+    playing = true;
+    play.textContent = '❚❚ pause';
+    target = rec.getPosition ? rec.getPosition() : 0;
+    step();
+  }
+  function startPlay() {
+    stopTicker();
+    // Rewound to the START, not to the poster offset. The poster deliberately
+    // seeks a little in to avoid a blank first frame, but somebody pressing
+    // replay asked for the session from the beginning.
+    if (atEnd()) { rec.seek(0, beginPlay); return; }
+    beginPlay();
+  }
+  function stopPlay() { stopTicker(); rec.pause(); playing = false;
+                        play.textContent = atEnd() ? '↻ replay' : '► play'; }
+  play.addEventListener('click', () => playing ? stopPlay() : startPlay());
+  document.querySelectorAll('[data-gspeed]').forEach(b =>
+    b.addEventListener('click', () => {
+      rate = +b.dataset.gspeed;
+      document.querySelectorAll('[data-gspeed]').forEach(
+        x => x.classList.toggle('on', x === b));
+      if (playing) startPlay();          // re-arm at the new rate
+    }));
+  document.querySelector('[data-gspeed="1"]').classList.add('on');
+
+  // FULL SCREEN, on the wrapper so the controls come too — a full-screen
+  // canvas you cannot pause is worse than a small one. The display is
+  // re-fitted on the change, or it stays letterboxed at the old scale.
+  const wrap = document.getElementById('recWrap').parentElement || document.body;
+  document.getElementById('gFull').addEventListener('click', () => {
+    const el = document.getElementById('recFs');
+    if (document.fullscreenElement || document.webkitFullscreenElement) {
+      (document.exitFullscreen || document.webkitExitFullscreen
+       || (() => {})).call(document);
+    } else {
+      (el.requestFullscreen || el.webkitRequestFullscreen
+       || (() => {})).call(el);
+    }
+  });
+  document.addEventListener('fullscreenchange', () => setTimeout(fit, 60));
+  document.addEventListener('webkitfullscreenchange', () => setTimeout(fit, 60));
+  seek.addEventListener('input', () => { const p = playing; stopPlay();
+    const want = Math.min(+seek.value, seekable());
+    if (want !== +seek.value) seek.value = want;   // it would not have landed
+    rec.seek(want, () => { if (p) startPlay(); }); });
+  rec.connect();
+})();
+</script>
+
+{% else %}
+{# SSH replay — the asciinema cast in an xterm. #}
+<div class="rec-wrap" id="recWrap"><div id="recTerm"></div></div>
+<div class="rec-bar">
+  <button type="button" class="abtn go" id="recPlay">► play</button>
+  <input type="range" id="recSeek" min="0" max="1000" value="0" step="1" aria-label="seek">
+  <span class="rec-time" id="recTime">0:00 / 0:00</span>
+  <span class="rec-speed">
+    <button type="button" class="abtn" data-speed="1">1×</button>
+    <button type="button" class="abtn" data-speed="2">2×</button>
+    <button type="button" class="abtn" data-speed="4">4×</button>
+    <button type="button" class="abtn" data-speed="8">8×</button>
+  </span>
+</div>
+<p class="sub" style="margin-top:10px;font-size:11.5px;">
+  A recording of what the host showed, at the original timing. Idle gaps over two
+  seconds are shortened so a long pause is still watchable.</p>
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  const el = document.getElementById('recTerm'), wrap = document.getElementById('recWrap');
+  if (!window.Terminal) { wrap.textContent = 'terminal library did not load'; return; }
+  const term = new Terminal({
+    fontFamily: getComputedStyle(document.body).getPropertyValue('--mono') || 'ui-monospace, monospace',
+    fontSize: 13, lineHeight: 1.25, cursorBlink: false, scrollback: 20000,
+    disableStdin: true, convertEol: false, allowProposedApi: false,
+    theme: {background: '#0b0f16', foreground: '#d7e2f0', green: '#6ee7a8', brightGreen: '#8ff0bf'},
+  });
+  term.open(el);
+  const IDLE_CAP = 2.0;
+  let events = [], duration = 0, cols = 100, rows = 24;
+  const PLAY = '► play', PAUSE = '❚❚ pause';
+  const btnPlay = document.getElementById('recPlay'), seek = document.getElementById('recSeek'),
+        timeEl = document.getElementById('recTime');
+  const mmss = s => { s = Math.max(0, Math.round(s)); return Math.floor(s/60)+':'+String(s%60).padStart(2,'0'); };
+  fetch('/pam/sessions/{{ s.id }}/recording').then(r => r.ok ? r.text() : Promise.reject(r.status)).then(text => {
+    const lines = text.split('\n').filter(Boolean);
+    let header = {}; try { header = JSON.parse(lines[0]); } catch (e) {}
+    cols = header.width || 100; rows = header.height || 24; term.resize(cols, rows);
+    let prev = 0, clock = 0;
+    for (let i = 1; i < lines.length; i++) {
+      let ev; try { ev = JSON.parse(lines[i]); } catch (e) { continue; }
+      const [t, kind, data] = ev; if (kind !== 'o' && kind !== 'r') continue;
+      clock += Math.min(Math.max(0, t - prev), IDLE_CAP); prev = t; events.push({t: clock, kind, data});
+    }
+    duration = events.length ? events[events.length - 1].t : 0;
+    timeEl.textContent = mmss(0) + ' / ' + mmss(duration);
+    renderTo(0); if (events.length) play();
+  }).catch(code => term.write('\x1b[31mCould not load the recording' + (code ? ' (' + code + ')' : '') + '.\x1b[0m\r\n'));
+  let head = 0, cursor = 0, playing = false, speed = 1, raf = 0, last = 0;
+  const applyResize = d => { const m = /^(\d+)x(\d+)$/.exec(d || ''); if (m) term.resize(+m[1], +m[2]); };
+  function renderTo(target) { term.reset(); term.resize(cols, rows); cursor = 0;
+    while (cursor < events.length && events[cursor].t <= target) { const e = events[cursor++];
+      if (e.kind === 'o') term.write(e.data); else applyResize(e.data); } head = target; updateBar(); }
+  function step(target) { while (cursor < events.length && events[cursor].t <= target) { const e = events[cursor++];
+    if (e.kind === 'o') term.write(e.data); else applyResize(e.data); } head = target; updateBar(); }
+  function updateBar() { seek.value = duration ? Math.round(head / duration * 1000) : 0;
+    timeEl.textContent = mmss(head) + ' / ' + mmss(duration); }
+  function frame(ts) { if (!playing) return; if (!last) last = ts; const dt = (ts - last) / 1000 * speed; last = ts;
+    step(Math.min(head + dt, duration)); if (head >= duration) { pause(); return; } raf = requestAnimationFrame(frame); }
+  function play() { if (!events.length) return; if (head >= duration) renderTo(0);
+    playing = true; last = 0; btnPlay.textContent = PAUSE; raf = requestAnimationFrame(frame); }
+  function pause() { playing = false; btnPlay.textContent = PLAY; if (raf) cancelAnimationFrame(raf); }
+  btnPlay.addEventListener('click', () => playing ? pause() : play());
+  seek.addEventListener('input', () => { const t = seek.value / 1000 * duration; const w = playing; pause(); renderTo(t); if (w) play(); });
+  document.querySelectorAll('.rec-speed button').forEach(b => b.addEventListener('click', () => {
+    speed = +b.dataset.speed; document.querySelectorAll('.rec-speed button').forEach(x => x.classList.toggle('on', x === b)); last = 0; }));
+  document.querySelector('.rec-speed button[data-speed="1"]').classList.add('on');
+})();
+</script>
+{% endif %}
+{% include "_pam_commands_dialog.html" %}
+{% endblock %}

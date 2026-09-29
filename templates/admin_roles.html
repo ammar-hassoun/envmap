@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+{% from "_set_head.html" import head %}
+{% macro role_form(r) %}
+<form method="post" action="/admin/roles/save" style="margin-top:12px;">
+  <input type="hidden" name="rid" value="{{ r.id if r else '' }}">
+  <div class="field-row"><label>role name</label>
+    <input type="text" name="name" required value="{{ r.name if r else '' }}"
+           placeholder="e.g. Kenya on-call, or Read-only auditor"></div>
+  <div class="field-row"><label>note <span style="font-family:inherit;
+        text-transform:none;letter-spacing:0;">(optional)</span></label>
+    <input type="text" name="note" value="{{ r.note if r else '' }}"
+           placeholder="who this is for, so the next admin knows"></div>
+
+  <div class="field-row" style="align-items:flex-start;">
+    <label style="padding-top:6px;">areas</label>
+    <div class="pickgrid">
+      {% for key, meta in areas.items() %}
+      {% set risky = key in escalating %}
+      <label class="pick{{ ' risky' if risky }}">
+        <input type="checkbox" name="areas" value="{{ key }}"
+               {% if r and key in r.areas %}checked{% endif %}>
+        <span><b>{{ meta[0] }}</b>{% if risky %}
+          <span class="badge" style="color:var(--warn-ink);margin-left:6px;"
+            >full control</span>{% endif %}
+          <small>{{ meta[1] }}</small></span>
+      </label>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="field-row" style="align-items:flex-start;">
+    <label style="padding-top:6px;">projects</label>
+    <div>
+      <div class="pickgrid">
+        {% for pid2, nm in project_names.items() %}
+        <label class="pick"><input type="checkbox" name="projects" value="{{ pid2 }}"
+                 {% if r and pid2 in r.projects %}checked{% endif %}>
+          <span><b>{{ nm }}</b></span></label>
+        {% endfor %}
+      </div>
+      <div class="sec-note">Tick none for every project — including ones added later.</div>
+    </div>
+  </div>
+
+  <div class="field-row" style="align-items:flex-start;">
+    <label style="padding-top:6px;">clusters</label>
+    <div>
+      <div class="pickgrid">
+        {% for cid2, nm in cluster_names.items() %}
+        <label class="pick"><input type="checkbox" name="clusters" value="{{ cid2 }}"
+                 {% if r and cid2 in r.clusters %}checked{% endif %}>
+          <span><b>{{ nm }}</b></span></label>
+        {% endfor %}
+      </div>
+      <div class="sec-note">Tick none for every cluster — including ones added later.</div>
+    </div>
+  </div>
+
+  {# Privileged-Access targets — the per-device scope, grouped by environment so
+     "this host in this env" is an unambiguous pick, not a guess between two
+     same-named rows. Only meaningful when the role grants a PAM area, but always
+     shown so it is discoverable. #}
+  {% if target_groups %}
+  <div class="field-row" style="align-items:flex-start;">
+    <label style="padding-top:6px;">access targets</label>
+    <div>
+      {% for grp in target_groups %}
+      <div style="display:flex;align-items:center;gap:8px;margin:8px 0 5px;">
+        <span class="envtag {{ grp.tone }}">{{ grp.env }}</span>
+        <span class="hint">{{ grp.targets|length }}</span></div>
+      <div class="pickgrid" style="margin-bottom:10px;">
+        {% for t in grp.targets %}
+        <label class="pick"><input type="checkbox" name="targets" value="{{ t.id }}"
+                 {% if r and t.id in r.targets %}checked{% endif %}>
+          <span><b>{{ t.label }}</b></span></label>
+        {% endfor %}
+      </div>
+      {% endfor %}
+      <div class="sec-note">For <b>Privileged Access</b>: tick the exact hosts —
+        in the exact environment — this role may see and connect to. Tick none
+        for every target, including ones added later. Only applies when the role
+        grants a Privileged Access area.</div>
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="actions"><button type="submit">{{ 'Save role' if r else 'Create role' }}</button></div>
+</form>
+{% endmacro %}
+
+{% block crumbs %}<b>Administration</b> <span class="sep">/</span> <b>Roles</b>{% endblock %}
+{% block content %}
+{{ head("Roles",
+        "A role grants areas of the portal, and can narrow them to particular projects and clusters. People hold any number of roles and get the union of them — so adding a role always widens access, never reduces it. Settings, User accounts and Cluster management are marked below: each is a route to full control, so only an administrator can hand one out.",
+        msg, err) }}
+
+<div class="card">
+  <div class="card-h">Roles <span class="hint">{{ roles|length }} defined</span></div>
+  <div class="card-b">
+    {% if not roles %}
+    <div class="sec-note">No roles yet. Everyone who is not an administrator can
+      currently see only the Overview — create a role below and assign it on
+      <a href="/admin/users">Users</a>.</div>
+    {% endif %}
+    {% for r in roles %}
+    <div class="rowcard" id="{{ r.id }}">
+      <div class="kv">
+        <span style="font-size:16px;">🎭</span>
+        <b style="font-size:14.5px;">{{ r.name }}</b>
+        <span class="badge">{{ r.areas|length }} area{{ 's' if r.areas|length != 1 }}</span>
+        {% if r.projects %}<span class="badge">{{ r.projects|length }} project{{ 's' if r.projects|length != 1 }}</span>
+        {% else %}<span class="badge">all projects</span>{% endif %}
+        {% if r.clusters %}<span class="badge">{{ r.clusters|length }} cluster{{ 's' if r.clusters|length != 1 }}</span>
+        {% else %}<span class="badge">all clusters</span>{% endif %}
+        <span class="badge" style="color:var(--accent-ink);">{{ counts.get(r.id, 0) }} user{{ 's' if counts.get(r.id, 0) != 1 }}</span>
+        <span style="flex:1"></span>
+        <form method="post" action="/admin/roles/{{ r.id }}/delete"
+              data-del="the role “{{ r.name }}” ({{ counts.get(r.id, 0) }} user(s) hold it and will lose that access)">
+          <button class="btn-danger" style="padding:5px 13px;font-size:11.5px;">Delete</button></form>
+      </div>
+      {% if r.note %}<div class="sec-note" style="margin-top:6px;">{{ r.note }}</div>{% endif %}
+      <div class="sec-note" style="margin-top:6px;">
+        {% for a in r.areas %}<span class="badge">{{ areas[a][0] if a in areas else a }}</span> {% endfor %}
+      </div>
+
+      <details class="adv" style="margin-top:8px;"><summary>Edit</summary>
+        {{ role_form(r) }}
+      </details>
+    </div>
+    {% endfor %}
+
+    <details class="adv" {% if not roles %}open{% endif %}>
+      <summary>＋ New role</summary>
+      {{ role_form(none) }}
+    </details>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-h">What each area covers</div>
+  <div class="card-b">
+    <p class="sub" style="margin:0 0 10px;">Areas come from the code, not a list
+      typed here — a page added to the portal appears in this table on its own.
+      Two are worth reading twice:</p>
+    <div class="sec-note" style="margin-bottom:10px;">
+      <b>Cluster management</b> is separate from reading a cluster: without it a
+      person sees every tab but cannot run a command or use the fixed actions.
+      <b>Settings</b> holds every credential the portal stores — grant it only to
+      people you would hand those credentials to directly.</div>
+    {% for key, meta in areas.items() %}
+    <div class="kv" style="border-top:1px solid var(--line);padding-top:9px;margin-top:9px;">
+      <b style="font-size:13px;min-width:150px;">{{ meta[0] }}</b>
+      <div class="sec-note" style="margin:0;">{{ meta[1] }}</div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

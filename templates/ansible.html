@@ -1,0 +1,684 @@
+{% extends "base.html" %}
+{% import "_bits.html" as bits %}
+{% block crumbs %}<b>Ansible</b>{% endblock %}
+
+{% block content %}
+{#- Three sections, one per thing a person came here to do: the playbooks, the
+    hosts they run against, and what happened last time. Sub-tabs rather than one
+    long page, for the reason the cluster page uses them — an inventory and a run
+    history are each a table in their own right, and stacking them means
+    scrolling past one to reach the other. -#}
+{% set cur = sec if sec in ('overview', 'playbooks', 'inventory', 'runs', 'schedules') else 'overview' %}
+
+<div class="page-head">
+  <div>
+    <h1>Ansible</h1>
+    <p class="sub">Playbooks, the hosts they run against, and every run — with
+      its output kept.</p>
+  </div>
+  <div class="ans-actions">
+    {% if may('settings') %}
+    <a class="btn btn-ghost" href="/settings/ansible">Settings</a>
+    {% endif %}
+    <a class="btn" href="/ansible/playbooks/new">＋ New playbook</a>
+    {# same region picker as the Infrastructure Provisioning page — filters every
+       tab. Page-local on these two pages only: a portal-wide version was built
+       and reverted on request. #}
+    <div class="region-pick" id="regionPick">
+      <button type="button" class="region-btn" id="regionBtn" title="filter every tab by region">
+        {{ glyph('globe', 15) }}<span class="region-cur">{{ region_label }}</span>
+        <span class="region-caret">▾</span></button>
+      <div class="region-menu" id="regionMenu" hidden>
+        <a class="region-item {{ 'on' if not reg }}" href="/ansible?sec={{ cur }}">All regions</a>
+        {% set ns = namespace(proj='') %}
+        {% for r in region_opts %}
+          {% if r.project != ns.proj %}<div class="region-grp">{{ r.project }}</div>{% set ns.proj = r.project %}{% endif %}
+          <a class="region-item {{ 'on' if reg == r.id }}" href="/ansible?sec={{ cur }}&reg={{ r.id }}">{{ r.name }}</a>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+</div>
+
+{# region picker styles + toggle — inline (not app.css) so they land before a release
+   busts the cache; a shared copy also lives inline in terraform.html. #}
+<style>
+  .ans-actions { display:flex; align-items:center; gap:9px; flex-wrap:wrap; justify-content:flex-end; }
+  .ans-actions .btn, .ans-actions .region-btn { height:38px; box-sizing:border-box; }
+  .region-pick { position:relative; }
+  .region-btn { display:inline-flex; align-items:center; gap:7px; border:1px solid var(--line);
+    border-radius:9px; padding:0 13px; background:var(--panel); color:var(--text); font:inherit; font-size:13px; font-weight:600; cursor:pointer; }
+  .region-btn:hover, .region-btn.open { border-color:var(--accent); }
+  .region-cur { max-width:190px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .region-caret { color:var(--muted); font-size:10px; }
+  .region-menu { position:absolute; right:0; top:calc(100% + 6px); z-index:50; min-width:250px;
+    max-height:62vh; overflow:auto; background:var(--panel); border:1px solid var(--line);
+    border-radius:10px; padding:6px; box-shadow:var(--shadow); }
+  .region-grp { font-size:10.5px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); padding:8px 10px 3px; }
+  .region-item { display:block; padding:7px 10px; border-radius:7px; font-size:13px; color:var(--text); text-decoration:none; }
+  .region-item:hover { background:var(--overlay); }
+  .region-item.on { background:var(--accent-wash); color:var(--accent); font-weight:600; }
+  .region-note { display:flex; align-items:center; gap:6px; font-size:12px; color:var(--muted); margin:-6px 0 12px; }
+</style>
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  const regBtn = document.getElementById('regionBtn'), regMenu = document.getElementById('regionMenu');
+  if (!regBtn || !regMenu) return;
+  const close = () => { regMenu.hidden = true; regBtn.classList.remove('open'); };
+  regBtn.addEventListener('click', e => { e.stopPropagation();
+    regMenu.hidden = !regMenu.hidden; regBtn.classList.toggle('open', !regMenu.hidden); });
+  document.addEventListener('click', e => { if (!regMenu.hidden && !regMenu.contains(e.target)) close(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') close(); });
+})();
+</script>
+
+{% if msg %}<div class="flash ok">✓ {{ msg }}</div>{% endif %}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+
+{# The one thing that makes everything else here impossible, said once at the top
+   rather than as a failure per run. #}
+{% if not tool.found %}
+<div class="flash err">⚠ <b>ansible-playbook is not available to the portal.</b>
+  {{ tool.error }}<br>Runs cannot start until it is. The container image ships it;
+  a source install needs <code>ansible-core</code> in the portal's own
+  environment, or <code>PORTAL_ANSIBLE</code> pointing at the binary.</div>
+{% endif %}
+{% if not cfg.allow_real %}
+<div class="flash">Real runs are switched off for this installation, so every run
+  is a <b>--check</b> dry run.
+  {% if may('settings') %}<a href="/settings/ansible">Turn them on in Settings →
+  Ansible</a> when you are ready.{% else %}An administrator can turn them on in
+  Settings → Ansible.{% endif %}</div>
+{% endif %}
+{% if not may_run %}
+<div class="flash">{{ why_no_run }}. Everything here is still readable.</div>
+{% endif %}
+
+{# The base carries the region filter, so switching tabs keeps it: a filter
+   that silently falls off on a tab change reads as the data changing. #}
+{% set tabbase = '/ansible' ~ ('?reg=' ~ reg ~ '&' if reg) %}
+{% set regq = ('&reg=' ~ reg) if reg else '' %}{# appended to tile links that already carry ?sec= #}
+{{ bits.subtabs(tabbase, 'sec', cur, [
+     {'key': 'overview', 'label': 'Overview', 'count': none,
+      'icon': 'chart-line'},
+     {'key': 'playbooks', 'label': 'Playbooks', 'count': summary.playbooks,
+      'icon': 'scroll-text'},
+     {'key': 'inventory', 'label': 'Inventory', 'count': summary.hosts,
+      'icon': 'server'},
+     {'key': 'runs', 'label': 'Runs', 'count': summary.runs,
+      'icon': 'history'},
+     {'key': 'schedules', 'label': 'Schedules', 'count': schedules|length,
+      'icon': 'hourglass'}], wide=true) }}
+{% if reg %}<div class="region-note">{{ glyph('globe', 13) }} filtered to
+  <b>{{ region_label }}</b> — <a href="/ansible?sec={{ cur }}">show all regions</a></div>{% endif %}
+
+{# Every tile goes to what it counts. They were figures, so the number that
+   somebody wants to act on — the failed runs — was a thing to read and then go
+   looking for. `on` marks the one whose list you are looking at, so a filtered
+   run list says where it came from. The component is the expiry radar's, from
+   base.html — the two pages answering "what needs me" should look like one
+   product. #}
+<div class="ex-tiles">
+  <a class="ex-tile {{ 'quiet' if not summary.playbooks }} {{ 'on' if cur == 'playbooks' }}"
+     href="/ansible?sec=playbooks{{ regq }}">
+    <span class="ico">{{ glyph("scroll-text", 17) }}</span>
+    <span><span class="big">{{ summary.playbooks }}</span>
+      <span class="cap">playbook{{ 's' if summary.playbooks != 1 }}</span>
+      <span class="sub">every version kept</span></span>
+  </a>
+  <a class="ex-tile {{ 'quiet' if not summary.hosts }} {{ 'on' if cur == 'inventory' }}"
+     href="/ansible?sec=inventory{{ regq }}">
+    <span class="ico">{{ glyph("server", 17) }}</span>
+    <span><span class="big">{{ summary.hosts }}</span>
+      <span class="cap">host{{ 's' if summary.hosts != 1 }}</span>
+      <span class="sub">in {{ summary.groups }} group{{ 's' if summary.groups != 1 }}</span></span>
+  </a>
+  <a class="ex-tile act {{ 'quiet' if not summary.running }} {{ 'on' if state == 'running' }}"
+     href="/ansible?sec=runs&state=running{{ regq }}">
+    <span class="ico">{{ glyph("zap", 17) }}</span>
+    <span><span class="big">{{ summary.running }}</span>
+      <span class="cap">running now</span>
+      <span class="sub">the window follows the output</span></span>
+  </a>
+  <a class="ex-tile ok {{ 'quiet' if not summary.ok }} {{ 'on' if state == 'ok' }}"
+     href="/ansible?sec=runs&state=ok{{ regq }}">
+    <span class="ico">{{ glyph("circle-check", 17) }}</span>
+    <span><span class="big">{{ summary.ok }}</span>
+      <span class="cap">run{{ 's' if summary.ok != 1 }} ok</span>
+      <span class="sub">finished clean</span></span>
+  </a>
+  <a class="ex-tile bad {{ 'quiet' if not summary.failed }} {{ 'on' if state == 'failed' }}"
+     href="/ansible?sec=runs&state=failed{{ regq }}">
+    <span class="ico">{{ glyph("triangle-alert", 17) }}</span>
+    <span><span class="big">{{ summary.failed }}</span>
+      <span class="cap">run{{ 's' if summary.failed != 1 }} failed</span>
+      <span class="sub">task failed or unreachable</span></span>
+  </a>
+  <a class="ex-tile {{ 'quiet' if not summary.runs }} {{ 'on' if cur == 'runs' and not state }}"
+     href="/ansible?sec=runs{{ regq }}">
+    <span class="ico">{{ glyph("history", 17) }}</span>
+    <span><span class="big">{{ summary.runs }}</span>
+      <span class="cap">run{{ 's' if summary.runs != 1 }} recorded</span>
+      <span class="sub">with the full output of each</span></span>
+  </a>
+</div>
+
+{# the project/region two-select place filter was replaced by the region picker in
+   the header (same component as Infrastructure Provisioning) — one region, grouped
+   by project, filtering every tab. #}
+
+{# ── Overview ──────────────────────────────────────────────── #}
+{% if cur == 'overview' %}
+<style>
+  /* A column per day. Bars rather than a line: runs are a count for a day, and
+     a line between two days invents a slope through hours nobody ran anything. */
+  .arun-days { display:grid; grid-auto-flow:column; grid-auto-columns:1fr;
+    gap:6px; align-items:end; height:150px; }
+  .arun-days .col { display:flex; flex-direction:column;
+    justify-content:flex-end; height:100%; text-decoration:none; }
+  .arun-days .n { font-size:11px; font-weight:700; text-align:center;
+    color:var(--muted); padding-bottom:4px; min-height:15px;
+    font-variant-numeric:tabular-nums; }
+  .arun-days .col.has .n { color:var(--text); }
+  .arun-days .bar { position:relative; flex:0 0 auto; min-height:3px;
+    border-radius:5px 5px 2px 2px; background:var(--ok); opacity:.55;
+    transition:opacity .12s; }
+  .arun-days .col:hover .bar { opacity:1; }
+  /* Failures drawn INSIDE the day's bar, from the bottom: the eye compares the
+     share against the day's own height rather than against another chart. */
+  .arun-days .bad { position:absolute; left:0; right:0; bottom:0;
+    background:var(--danger); border-radius:0 0 2px 2px; }
+  .arun-days .lbl { font-size:9.5px; color:var(--muted); text-align:center;
+    padding-top:5px; border-top:1px solid var(--line); margin-top:5px;
+    white-space:nowrap; overflow:hidden; }
+  .arun-days .col.today .lbl { color:var(--accent-ink); font-weight:700; }
+  .amix { display:flex; gap:15px; align-items:center; flex-wrap:wrap; }
+  .amix .keys { flex:1 1 130px; min-width:0; }
+  .akey { display:flex; align-items:center; gap:8px; font-size:12px;
+    padding:3px 7px; margin:0 -7px; border-radius:7px; color:var(--text2);
+    text-decoration:none; }
+  .akey:hover { background:var(--overlay); color:var(--text); }
+  .akey i { width:9px; height:9px; border-radius:3px; flex:0 0 auto; }
+  .akey .v { margin-left:auto; font-family:var(--mono); font-size:11.5px;
+    color:var(--muted); }
+  .apanels { display:grid; gap:12px; margin-bottom:14px;
+    grid-template-columns:minmax(0,1.5fr) minmax(260px,1fr); }
+  @media (max-width:980px) { .apanels { grid-template-columns:minmax(0,1fr); } }
+  .atask { display:flex; gap:14px; flex-wrap:wrap; }
+  .atask div { font-size:12px; color:var(--muted); }
+  .atask b { display:block; font-size:19px; color:var(--text);
+    font-variant-numeric:tabular-nums; letter-spacing:-.3px; }
+</style>
+
+{# One line saying what all of that amounts to, because six numbers are six
+   questions. The most recent failure is named — "4 runs failed" is a count,
+   "node_exporter failed 2h ago" is somewhere to start. #}
+{% if hist.counted %}
+{% set lastbad = runs | selectattr('status', 'in', ('failed', 'unreachable')) | first %}
+{% if lastbad %}
+<div class="ex-call work">
+  <span class="ico">{{ glyph("triangle-alert", 16) }}</span>
+  <span>The last failure was <b>{{ lastbad.pb_name or '—' }}</b> against
+    {{ lastbad.group_name or '—' }}, {{ lastbad.ago }} —
+    {{ 'a host was unreachable' if lastbad.status == 'unreachable'
+       else 'a task failed' }}.</span>
+  <a class="btn btn-ghost more" href="/ansible?sec=runs&state=failed">Show the
+    failures</a>
+</div>
+{% elif hist.rate is not none %}
+<div class="ex-call calm">
+  <span class="ico">{{ glyph("circle-check", 16) }}</span>
+  <span>Every one of the last {{ hist.finished }}
+    finished run{{ 's' if hist.finished != 1 }} ended clean.</span>
+</div>
+{% endif %}
+{% endif %}
+
+{% if not hist.counted %}
+<div class="empty">
+  <div class="big">{{ glyph("history", 40) }}</div>
+  <h2>Nothing has run yet</h2>
+  <p>Once a playbook runs — check or real — this page shows what happened, how
+     often, and which playbooks are doing the work.
+     {% if playbooks %}<a href="/ansible?sec=playbooks">Run one</a>, or press
+     Test connection on a group.{% else %}<a href="/ansible/playbooks/new">Write a
+     playbook</a> to start.{% endif %}</p>
+</div>
+{% else %}
+<div class="apanels">
+  <div class="card" style="margin:0;">
+    <div class="card-h">{{ glyph("chart-line", 15) }} Runs over the last {{ hist.days|length }} days
+      <span class="hint">green is a run that finished clean, red is one that did
+        not · click a day</span></div>
+    <div class="card-b">
+      <div class="arun-days">
+        {% for d in hist.days %}
+        {# A link only where there is something behind it, and TO that day — the
+           hint says "click a day", and it opened the whole history whatever was
+           clicked. A quiet day stays a plain column: a link that filters to
+           nothing invites a click that answers nothing. #}
+        {% set tip %}{{ d.label }} — {{ d.total }} run{{ 's' if d.total != 1 }}{% if d.bad %}, {{ d.bad }} failed{% endif %}{% if d.check %}, {{ d.check }} a dry run{% endif %}{% endset %}
+        {% set tag = 'a' if d.total else 'span' %}
+        <{{ tag }} class="col {{ 'has' if d.total }} {{ 'today' if loop.last }}"
+           {% if d.total %}href="/ansible?sec=runs&day={{ d.day }}"{% endif %}
+           title="{{ tip }}">
+          <span class="n">{{ d.total or '' }}</span>
+          <span class="bar" style="height:{{ (4 + d.pct * 1.05)|round }}px">
+            {% if d.bad and d.total %}
+            <span class="bad" style="height:{{ (d.bad / d.total * 100)|round }}%"></span>
+            {% endif %}
+          </span>
+          <span class="lbl">{{ d.short }}</span>
+        </{{ tag }}>
+        {% endfor %}
+      </div>
+      <div class="atask" style="margin-top:14px;border-top:1px solid var(--line);
+                                padding-top:12px;">
+        {# The tasks themselves, not the runs: "9 runs" says nothing about how
+           much actually changed on a machine. #}
+        <div><b>{{ hist.tasks.ok }}</b> tasks ok</div>
+        <div><b>{{ hist.tasks.changed }}</b> changed something</div>
+        <div><b>{{ hist.tasks.failed }}</b> failed</div>
+        <div><b>{{ hist.tasks.unreachable }}</b> unreachable</div>
+        <div style="margin-left:auto;text-align:right;">
+          <b>{{ (hist.seconds / 60)|round|int }}</b> minutes of running</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin:0;">
+    <div class="card-h">{{ glyph("activity", 15) }} How runs end
+      <span class="hint">{{ 'the last run' if hist.counted == 1
+         else 'the last ' ~ hist.counted ~ ' runs' }}</span></div>
+    <div class="card-b amix">
+      {{ ring([('ok', hist.mix.ok, 'var(--ok)'),
+               ('failed', hist.mix.failed, 'var(--danger)'),
+               ('unreachable', hist.mix.unreachable, 'var(--warn)'),
+               ('running', hist.mix.running, 'var(--accent)')],
+              centre=(hist.rate ~ '%') if hist.rate is not none else '—',
+              sub='finished ok', size=118) }}
+      <div class="keys">
+        <a class="akey" href="/ansible?sec=runs&state=ok">
+          <i style="background:var(--ok);"></i><span>ok</span>
+          <span class="v">{{ hist.mix.ok }}</span></a>
+        <a class="akey" href="/ansible?sec=runs&state=failed">
+          <i style="background:var(--danger);"></i><span>a task failed</span>
+          <span class="v">{{ hist.mix.failed }}</span></a>
+        <a class="akey" href="/ansible?sec=runs&state=failed">
+          <i style="background:var(--warn);"></i><span>unreachable</span>
+          <span class="v">{{ hist.mix.unreachable }}</span></a>
+        <a class="akey" href="/ansible?sec=runs&state=running">
+          <i style="background:var(--accent);"></i><span>still going</span>
+          <span class="v">{{ hist.mix.running }}</span></a>
+      </div>
+      {# The rate counts only runs that FINISHED. A run still going has no outcome
+         yet, and counting it as either would make the figure move on its own. #}
+      <div class="sec-note" style="flex:1 1 100%;margin:0;">
+        {{ hist.rate if hist.rate is not none else '—' }}% of
+        {{ hist.finished }} finished run{{ 's' if hist.finished != 1 }} ended
+        clean. A run still going is not counted either way.</div>
+    </div>
+  </div>
+</div>
+
+<div class="apanels">
+  <div class="card" style="margin:0;">
+    <div class="card-h">{{ glyph("scroll-text", 15) }} Which playbooks do the work
+      <span class="hint">most run first</span></div>
+    <div class="card-b">
+      <div class="facets"><div class="facet">
+        {% for p in hist.playbooks %}
+        <a class="fval" href="/ansible?sec=runs&ran={{ p.name|urlencode }}">
+          <span class="bar" style="width:{{ (p.runs / hist.playbooks[0].runs * 100)|round }}%"></span>
+          <span class="t"><span class="v">{{ p.name }}</span>
+            <span class="n">{{ p.runs }}{% if p.bad %} · {{ p.bad }} failed{% endif %}</span></span></a>
+        {% endfor %}
+      </div></div>
+    </div>
+  </div>
+
+  <div class="card" style="margin:0;">
+    <div class="card-h">{{ glyph("settings", 15) }} What is set up</div>
+    <div class="card-b">
+      <div class="facets"><div class="facet">
+        <a class="fval" href="/ansible?sec=playbooks"><span class="t">
+          <span class="v">playbooks</span>
+          <span class="n">{{ summary.playbooks }}</span></span></a>
+        <a class="fval" href="/ansible?sec=inventory"><span class="t">
+          <span class="v">host groups</span>
+          <span class="n">{{ summary.groups }}</span></span></a>
+        <a class="fval" href="/ansible?sec=inventory"><span class="t">
+          <span class="v">hosts</span>
+          <span class="n">{{ summary.hosts }}</span></span></a>
+        <a class="fval" href="/settings/ansible"><span class="t">
+          <span class="v">real runs</span>
+          <span class="n">{{ 'allowed' if cfg.allow_real else 'off — dry runs only' }}</span></span></a>
+        <a class="fval" href="/settings/ansible"><span class="t">
+          <span class="v">ansible-playbook</span>
+          <span class="n">{{ tool.version or 'not found' }}</span></span></a>
+      </div></div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{# ── Playbooks ─────────────────────────────────────────────── #}
+{% elif cur == 'playbooks' %}
+<div class="card">
+  <div class="card-h">Playbooks
+    <span class="hint">every version is kept · run opens a window and follows the
+      output</span></div>
+  {% if playbooks %}
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr>
+        <th style="min-width:230px;">Playbook</th>
+        <th style="width:135px;">Place</th>
+        <th style="width:150px;">Usual target</th>
+        <th style="width:75px;">Tasks</th>
+        <th style="min-width:210px;">Last run</th>
+        <th class="actcol" style="width:200px;">Actions</th>
+      </tr></thead>
+      <tbody>
+      {% for p in playbooks %}
+      <tr>
+        <td class="jname"><b>{{ p.name }}</b>
+          {% if p.notes %}<div class="sec-note" style="margin:2px 0 0;white-space:normal;">
+            {{ p.notes|truncate(90) }}</div>{% endif %}</td>
+        <td>{% if p.project_name %}<span class="badge">{{ p.project_name }}{% if p.region_name %} · {{ p.region_name }}{% endif %}</span>
+            {% else %}<span class="na">—</span>{% endif %}</td>
+        <td>{% if p.group_name %}<span class="badge">{{ p.group_name }}</span>
+            {% else %}<span class="na">not set</span>{% endif %}</td>
+        <td>{{ p.tasks or '—' }}</td>
+        <td>{% if p.last %}{{ bits.runpill(p.last) }}
+            <div class="sec-note" style="margin:2px 0 0;">{{ p.last.ago }} ·
+              {{ p.last.by }}</div>
+            {% else %}<span class="na">never run</span>{% endif %}</td>
+        <td class="mid actcol">
+          <button type="button" class="abtn"
+                  {{ bits.ansrun_attrs(p.id, p.name, p.group_id) }}>run</button>
+          <a class="abtn" href="/ansible/playbooks/{{ p.id }}">edit</a>
+          <form method="post" action="/ansible/playbook/delete"
+                data-del="{{ p.name }} (its runs are kept)" style="display:inline;">
+            <input type="hidden" name="pb_id" value="{{ p.id }}">
+            <button type="submit" class="abtn danger">delete</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-b" style="color:var(--muted);font-size:13px;">
+    Nothing here yet. <a href="/ansible/playbooks/new">Write your first
+    playbook</a> — it opens with a working example, and a check run costs
+    nothing.</div>
+  {% endif %}
+</div>
+
+{# ── Inventory ─────────────────────────────────────────────── #}
+{% elif cur == 'inventory' %}
+{#- The groups, one row each, and nothing else.
+
+    This page held every group's card, each with a host table, an asset picker and
+    a thirteen-field settings form behind a disclosure — plus one more empty form
+    at the bottom to create another. So "which groups do I have" was a question
+    you answered by scrolling past forms, and "add a group" was a disclosure
+    hiding inside a card. Both are pages of their own now:
+    /ansible/groups/<id> and /ansible/groups/new. -#}
+<div class="card">
+  <div class="card-h">Host groups
+    <span class="hint">{{ groups|length }} group{{ 's' if groups|length != 1 }} ·
+      {{ summary.hosts }} host{{ 's' if summary.hosts != 1 }} · a group is what a
+      playbook runs against</span>
+    <span style="flex:1"></span>
+    <a class="btn" href="/ansible/groups/new"
+       style="padding:4px 14px;font-size:11.5px;">＋ Add a group</a>
+  </div>
+  {% if groups %}
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr>
+        <th style="min-width:220px;">Group</th>
+        <th style="width:135px;">Place</th>
+        <th style="width:80px;">Hosts</th>
+        <th style="min-width:170px;">Reached as</th>
+        <th style="min-width:190px;">How it is set up</th>
+        <th class="actcol" style="width:190px;">Actions</th>
+      </tr></thead>
+      <tbody>
+      {% for g in groups %}
+      <tr {% if focus_group == g.id %}style="background:var(--panel2);"{% endif %}>
+        <td class="jname">
+          <a class="wname" href="/ansible/groups/{{ g.id }}"><b>{{ g.name }}</b></a>
+          {% if g.notes %}<div class="sec-note" style="margin:2px 0 0;white-space:normal;">
+            {{ g.notes|truncate(70) }}</div>{% endif %}</td>
+        <td>{% if g.project_name %}<span class="badge">{{ g.project_name }}{% if g.region_name %} · {{ g.region_name }}{% endif %}</span>
+            {% else %}<span class="na">—</span>{% endif %}</td>
+        <td>{% if g.hosts %}{{ g.hosts|length }}
+            {% else %}<span class="sv sv-medium">none</span>{% endif %}</td>
+        <td class="mono-c">{{ g.ssh_user or 'ansible default' }}
+          <span class="hint">:{{ g.ssh_port or 22 }}</span></td>
+        <td><div class="gchips">
+          {% if g.is_prod %}<span class="sv sv-high">production</span>{% endif %}
+          {% if g.become_root %}<span class="badge">sudo</span>{% endif %}
+          {% if g.key_sealed %}<span class="badge">key stored</span>
+          {% elif g.key_path %}<span class="badge">key on disk</span>
+          {% else %}<span class="na">no key</span>{% endif %}
+          {% if not g.host_key_checking %}<span class="sv sv-medium">host keys unchecked</span>{% endif %}
+        </div></td>
+        <td class="mid actcol">
+          {# The question an inventory exists to answer: can the portal reach
+             these machines, as this user, with this key. #}
+          <button type="button" class="abtn"
+                  {{ bits.ansrun_attrs('builtin:ping', 'connection test', g.id, 'check') }}
+                  {% if not g.hosts %}disabled title="add a host first"
+                  {% elif not may_run %}disabled title="{{ why_no_run }}"
+                  {% elif not tool.found %}disabled title="ansible-playbook is not installed"
+                  {% else %}title="reach every host in {{ g.name }} and report"{% endif %}
+                  >test</button>
+          <a class="abtn" href="/ansible/groups/{{ g.id }}">open</a>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-b" style="color:var(--muted);font-size:13px;">
+    No groups yet. <a href="/ansible/groups/new">Add your first group of
+    hosts</a> — a name and a list of addresses is enough, and a connection test
+    costs nothing.</div>
+  {% endif %}
+</div>
+
+{# ── Schedules ─────────────────────────────────────────────── #}
+{% elif cur == 'schedules' %}
+<div class="card">
+  <div class="card-h" style="flex-wrap:wrap;">Schedules
+    <span class="hint">a stored intention to run · every gate a manual run has
+      · times are the portal's clock</span>
+    <span style="flex:1"></span>
+    <a class="btn" href="/ansible/schedules/new"
+       style="padding:4px 14px;font-size:11.5px;"
+       {% if not may_run %}data-noop disabled title="{{ why_no_run }}"{% endif %}
+       >＋ Add a schedule</a>
+  </div>
+  {% if schedules %}
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr>
+        <th style="min-width:170px;">Schedule</th>
+        <th style="min-width:200px;">What it runs</th>
+        <th style="width:120px;">Place</th>
+        <th style="width:150px;">How often</th>
+        <th style="width:110px;">Next</th>
+        <th style="min-width:150px;">Last fired</th>
+        <th class="actcol" style="width:150px;"></th>
+      </tr></thead>
+      <tbody>
+      {% for s in schedules %}
+      <tr {% if not s.enabled %}style="opacity:.55;"{% endif %}>
+        <td class="jname">
+          <a class="wname" href="/ansible/schedules/{{ s.id }}"><b>{{ s.name }}</b></a>
+          {% if not s.enabled %}<span class="badge">paused</span>{% endif %}
+          {% if s.broken %}<div class="sec-note" style="margin:2px 0 0;color:var(--danger-ink);">
+            ⚠ cannot fire — {{ s.broken }}</div>
+          {% elif s.last_error %}<div class="sec-note" style="margin:2px 0 0;color:var(--warn-ink);white-space:normal;">
+            {{ s.last_error|truncate(80) }}</div>{% endif %}</td>
+        <td><b>{{ s.pb_name or '—' }}</b>
+          <div class="sec-note" style="margin:2px 0 0;">→ {{ s.group_name or '—' }}
+            {%- if s.is_prod %} <span class="sv sv-high">production</span>{% endif %} ·
+            {% if s.check_mode %}check{% else %}<b>real</b>{% endif %}</div></td>
+        <td>{% if s.project_name %}<span class="badge">{{ s.project_name }}{% if s.region_name %} · {{ s.region_name }}{% endif %}</span>
+            {% else %}<span class="na">—</span>{% endif %}</td>
+        <td>{{ s.words }}</td>
+        <td>{% if s.enabled and not s.broken %}{{ until(s.next_at) }}
+            {% else %}<span class="na">—</span>{% endif %}</td>
+        <td>{% if s.last_run_id %}
+            <button type="button" class="abtn" data-ansout="{{ s.last_run_id }}"
+                    data-anstitle="{{ s.pb_name }} → {{ s.group_name }}">output</button>
+            <div class="sec-note" style="margin:2px 0 0;">{{ s.last_ago }}</div>
+            {% else %}<span class="na">never</span>{% endif %}</td>
+        <td class="mid actcol">
+          {% if may_run %}
+          <form method="post" action="/ansible/schedule/toggle" style="display:inline;">
+            <input type="hidden" name="sid" value="{{ s.id }}">
+            {% if s.enabled %}
+            <button type="submit" class="abtn">pause</button>
+            {% else %}
+            <input type="hidden" name="enabled" value="1">
+            <button type="submit" class="abtn go">resume</button>
+            {% endif %}
+          </form>
+          {% endif %}
+          <a class="abtn" href="/ansible/schedules/{{ s.id }}">edit</a>
+          {% if may_run %}
+          <form method="post" action="/ansible/schedule/delete"
+                data-del="{{ s.name }} (runs it already made are kept)" style="display:inline;">
+            <input type="hidden" name="sid" value="{{ s.id }}">
+            <button type="submit" class="abtn danger">delete</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-b" style="color:var(--muted);font-size:13px;">
+    {% if reg %}Nothing scheduled in this region —
+    <a href="/ansible?sec=schedules">show every schedule</a>.
+    {% else %}Nothing runs on a clock yet.
+    <a href="/ansible/schedules/new">Add a schedule</a> — a nightly host report
+    in check mode is the classic first one: it costs nothing and the record
+    fills itself.{% endif %}</div>
+  {% endif %}
+</div>
+
+{# ── Runs ──────────────────────────────────────────────────── #}
+{% else %}
+<div class="card">
+  <div class="card-h" style="flex-wrap:wrap;">Runs
+    <span class="hint">newest first · the output is kept, including for a run
+      that failed{% if state %} · showing only {{ state }}{% endif %}
+      {%- if day %} · on {{ day }}{% endif %}
+      {%- if ran %} · of “{{ ran }}”{% endif %}</span>
+    <span style="flex:1"></span>
+    {% if state or day or ran %}
+    <a class="abtn" href="/ansible?sec=runs">show all</a>{% endif %}
+    {# Deleting the record of what was done to which machines is behind the same
+       permission as doing it, and a run still going is refused rather than
+       orphaned — the row is what its output lives in. #}
+    {% if runs and may_run %}
+    <form method="post" action="/ansible/runs/clear" data-del="every run that finished ok (the failures are kept)" style="display:inline;">
+      <input type="hidden" name="which" value="ok">
+      <button type="submit" class="abtn" title="keep the failures, forget the successes"
+              >clear ok</button>
+    </form>
+    <form method="post" action="/ansible/runs/clear" data-del="every finished run and its output" style="display:inline;">
+      <input type="hidden" name="which" value="finished">
+      <button type="submit" class="abtn danger" title="every finished run, ok or not"
+              >clear all</button>
+    </form>
+    {% endif %}
+  </div>
+  {% if runs %}
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      {# Sized to FIT rather than to breathe. The action column is sticky — an
+         action you have to scroll sideways to reach is an action nobody uses —
+         and a sticky cell overlays its neighbour whenever the table is wider than
+         its box. It was, by 242px, so "Took" and "Who, when" sat underneath it.
+         The host pills wrap instead of forcing that column wide. #}
+      <thead><tr>
+        <th style="width:104px;">Result</th>
+        <th style="min-width:168px;">Playbook</th>
+        <th style="width:118px;">Group</th>
+        <th style="width:66px;">Mode</th>
+        <th style="min-width:150px;">Hosts</th>
+        <th style="width:58px;">Took</th>
+        <th style="width:122px;">Who, when</th>
+        <th class="actcol" style="width:148px;"></th>
+      </tr></thead>
+      <tbody>
+      {% for r in runs %}
+      <tr>
+        <td>{{ bits.runpill(r) }}</td>
+        <td class="jname"><b>{{ r.pb_name or '—' }}</b>
+          {% if r.limit_to %}<div class="sec-note" style="margin:2px 0 0;">
+            limit {{ r.limit_to }}</div>{% endif %}
+          {% if r.tags %}<div class="sec-note" style="margin:2px 0 0;">
+            tags {{ r.tags }}</div>{% endif %}
+          {% if r.why %}<div class="sec-note" style="margin:2px 0 0;white-space:normal;">
+            {{ r.why|truncate(70) }}</div>{% endif %}</td>
+        <td style="overflow:hidden;text-overflow:ellipsis;max-width:118px;"
+            title="{{ r.group_name }}">{{ r.group_name or '—' }}</td>
+        <td>{% if r.check_mode %}<span class="badge">check</span>
+            {% else %}<span class="sv sv-medium">real</span>{% endif %}</td>
+        <td class="wrapcell">{% set t = r.stats.get('totals') if r.stats else none %}
+            {% if t %}<span class="sv sv-clean">{{ t.ok }} ok</span>
+              {% if t.changed %}<span class="sv sv-info">{{ t.changed }} changed</span>{% endif %}
+              {% if t.failed %}<span class="sv sv-high">{{ t.failed }} failed</span>{% endif %}
+              {% if t.unreachable %}<span class="sv sv-critical">{{ t.unreachable }} unreachable</span>{% endif %}
+            {% else %}<span class="hint">{{ r.hosts }} host{{ 's' if r.hosts != 1 }}</span>{% endif %}</td>
+        <td>{{ r.took }}</td>
+        <td><div class="sec-note" style="margin:0;">{{ r.by }}<br>{{ r.ago }}</div></td>
+        <td class="mid actcol">
+          <button type="button" class="abtn" data-ansout="{{ r.id }}"
+                  data-anstitle="{{ r.pb_name }} → {{ r.group_name }}">output</button>
+          {% if may_run %}
+          <form method="post" action="/ansible/run/delete"
+                data-del="this run and its output" style="display:inline;">
+            <input type="hidden" name="run_id" value="{{ r.id }}">
+            <button type="submit" class="abtn danger"
+                    {% if r.status == 'running' %}disabled
+                    title="cancel it before deleting it"{% endif %}>delete</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-b" style="color:var(--muted);font-size:13px;">
+    {% if state or day or ran %}
+    {# An empty FILTERED list is not an empty record, and "no runs yet" over a
+       record with rows in it sends somebody to re-run something that ran. #}
+    Nothing matches this filter —
+    <a href="/ansible?sec=runs">show all {{ summary.runs }}
+      run{{ 's' if summary.runs != 1 }}</a>.
+    {% else %}
+    No runs yet. Every run — check or real — lands here with its full output and
+    stays.
+    {% endif %}</div>
+  {% endif %}
+</div>
+{% endif %}
+
+{% include "_ansible_run.html" %}
+{% endblock %}

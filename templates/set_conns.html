@@ -1,0 +1,178 @@
+{% extends "base.html" %}
+{% from "_set_head.html" import head %}
+{% block crumbs %}<a href="/settings">Settings</a> <span class="sep">/</span>
+  <b>{{ title }}</b>{% endblock %}
+{% block content %}
+{{ head(title, blurb, msg, err) }}
+
+{# One template for every provider-registry integration. Which fields appear
+   comes from the provider's own `fields` map, so adding a provider — or a field
+   to one — needs no change here. #}
+<div class="card" id="conns">
+  <div class="card-h">{{ noun|capitalize }}s
+    <span class="hint">{{ conns|length }} configured{% if page %} · shown on
+      <a href="{{ page }}">{{ page_label }}</a>{% endif %}</span>
+  </div>
+  <div class="card-b">
+    {% for c in conns %}
+    <div class="rowcard" id="{{ c.id }}">
+      <div class="kv">
+        {{ logo(c.type, c.name, 18) }}
+        <b style="font-size:14.5px;">{{ c.name }}</b>
+        <span class="badge">{{ providers[c.type].label if c.type in providers else c.type }}</span>
+        <span class="badge">{{ project_names[c.pid] if c.pid else 'central · all projects' }}</span>
+        {% if c.skip_tls %}<span class="badge" style="color:var(--warn-ink);">⚠ TLS unverified</span>{% endif %}
+        <span style="flex:1"></span>
+        <form method="post" action="/settings/conns/{{ kind }}/{{ c.id }}/test">
+          <input type="hidden" name="pid" value="{{ c.pid }}">
+          <button class="btn-ghost" style="padding:5px 13px;font-size:11.5px;">Test</button></form>
+        <form method="post" action="/settings/conns/{{ kind }}/{{ c.id }}/delete"
+              data-del="{{ c.name }}">
+          <input type="hidden" name="pid" value="{{ c.pid }}">
+          <button class="btn-danger" style="padding:5px 13px;font-size:11.5px;">Remove</button></form>
+      </div>
+      {% if c.base_url %}
+      <div class="sec-note" style="margin-top:7px;font-family:var(--mono);">{{ c.base_url }}</div>
+      {% elif c.cluster %}
+      <div class="sec-note" style="margin-top:7px;">cluster: {{ cluster_names.get(c.cluster, c.cluster) }}</div>
+      {% endif %}
+      {% if c.status %}
+      <div class="sec-note"
+           style="color:{{ 'var(--ok-ink)' if c.status.startswith('ok') or c.status.startswith('connected') else 'var(--danger-ink)' }};">{{ c.status }}</div>
+      {% endif %}
+
+      <details class="adv" style="margin-top:8px;"><summary>Edit</summary>
+        <form method="post" action="/settings/conns/{{ kind }}/{{ c.id }}/update" style="margin-top:10px;">
+          <input type="hidden" name="pid" value="{{ c.pid }}">
+          <div class="field-row"><label>display name</label>
+            <input type="text" name="name" value="{{ c.name }}"></div>
+          {% set flds = providers[c.type].fields if c.type in providers else {} %}
+          {% for key, label in flds.items() %}
+          <div class="field-row"><label>{{ label }}</label>
+            {% if key == 'cluster' %}
+            <select name="cluster">
+              {% for cid2, nm in cluster_names.items() %}
+              <option value="{{ cid2 }}" {% if c.cluster == cid2 %}selected{% endif %}>{{ nm }}</option>
+              {% endfor %}
+            </select>
+            {% elif key == 'asset' %}
+            <select name="asset">
+              <option value="">— not linked —</option>
+              {% for aid, nm in asset_names.items() %}
+              <option value="{{ aid }}" {% if c.asset == aid %}selected{% endif %}>{{ nm }}</option>
+              {% endfor %}
+            </select>
+            {% elif key == 'token' %}
+            <input type="password" name="token" autocomplete="new-password"
+                   placeholder="{% if c.token %}•••••• stored — type to replace{% else %}required{% endif %}">
+            {% else %}
+            <input type="text" name="{{ key }}" value="{{ c[key] or '' }}">
+            {% endif %}
+          </div>
+          {% endfor %}
+          {% if tls_option %}
+          <div class="field-row"><label>skip TLS verification</label>
+            <div><input type="checkbox" name="skip_tls" style="width:auto"
+                        {% if c.skip_tls %}checked{% endif %}>
+              <span class="sec-note" style="margin:0 0 0 8px;">for a self-signed
+                certificate</span></div></div>
+          {% endif %}
+          <div class="actions"><button type="submit"
+                  style="padding:6px 16px;font-size:12.5px;">Save &amp; test</button></div>
+        </form>
+      </details>
+    </div>
+    {% endfor %}
+
+    <details class="adv" {% if not conns %}open{% endif %}>
+      <summary>＋ Add {{ noun }}</summary>
+      <form method="post" action="/settings/conns/{{ kind }}/new" style="margin-top:12px;">
+        <div class="field-row"><label>type</label>
+          <select name="type" id="ct" data-call-change="pickType" required>
+            <option value="">— choose —</option>
+            {% for key, pv in providers.items() %}
+            <option value="{{ key }}">{{ pv.icon }} {{ pv.label }}</option>
+            {% endfor %}
+          </select></div>
+        <div class="field-row"><label>project <span style="font-family:inherit;
+              text-transform:none;letter-spacing:0;">(optional)</span></label>
+          <select name="pid">
+            <option value="">Not assigned — central, all projects</option>
+            {% for pid2, nm in project_names.items() %}
+            <option value="{{ pid2 }}">only {{ nm }}</option>
+            {% endfor %}
+          </select></div>
+        <div class="field-row"><label>display name</label>
+          <input type="text" name="name" placeholder="how it appears in the portal"></div>
+
+        {# one row per field any provider of this kind declares, hidden until
+           the chosen type asks for it — see _conn_ctx for where the list
+           comes from #}
+        {% for key in all_fields %}
+        <div class="field-row" data-f="{{ key }}" hidden><label id="l-{{ key }}"></label>
+          {% if key == 'cluster' %}
+          <select name="cluster">
+            {% for cid2, nm in cluster_names.items() %}
+            <option value="{{ cid2 }}">{{ nm }}</option>
+            {% endfor %}
+          </select>
+          {% elif key == 'asset' %}
+          <select name="asset"><option value="">— not linked —</option>
+            {% for aid, nm in asset_names.items() %}
+            <option value="{{ aid }}">{{ nm }}</option>
+            {% endfor %}
+          </select>
+          {% elif key == 'token' %}
+          <input type="password" name="token" autocomplete="new-password">
+          {% else %}
+          <input type="text" name="{{ key }}" id="i-{{ key }}">
+          {% endif %}
+        </div>
+        {% endfor %}
+        {% if tls_option %}
+        <div class="field-row"><label>skip TLS verification</label>
+          <div><input type="checkbox" name="skip_tls" style="width:auto">
+            <span class="sec-note" style="margin:0 0 0 8px;" id="tls-note">for a
+              self-signed certificate</span></div></div>
+        {% endif %}
+        <div class="sec-note" id="type-note"></div>
+        <div class="actions"><button type="submit">Add &amp; test</button></div>
+      </form>
+    </details>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-h">What the portal reads, per type</div>
+  <div class="card-b">
+    <p class="sub" style="margin:0 0 10px;">{{ readonly_note }}</p>
+    {% for key, pv in providers.items() %}
+    <div class="kv" style="border-top:1px solid var(--line);padding-top:10px;margin-top:10px;">
+      {{ plogo(pv, 20) }}
+      <div style="min-width:0;">
+        <b style="font-size:13.5px;">{{ pv.label }}</b>
+        <span class="badge">{{ pv.auth }}</span>
+        <div class="sec-note" style="margin:2px 0 0;">{{ pv.note }}</div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<script nonce="{{ csp_nonce() }}">
+const FIELDS = {{ provider_fields|tojson }};
+const NOTES = {{ provider_notes|tojson }};
+const HINTS = {{ provider_hints|tojson }};
+function pickType(t) {
+  const want = FIELDS[t] || {};
+  document.querySelectorAll('[data-f]').forEach(row => {
+    const key = row.dataset.f;
+    row.hidden = !(key in want);
+    if (key in want) document.getElementById('l-' + key).textContent = want[key];
+  });
+  document.getElementById('type-note').textContent = NOTES[t] || '';
+  const url = document.getElementById('i-base_url');
+  if (url) url.placeholder = HINTS[t] || '';
+}
+</script>
+{% endblock %}

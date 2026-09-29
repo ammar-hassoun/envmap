@@ -1,0 +1,543 @@
+{% extends "base.html" %}
+{% from "_back.html" import back %}
+{% import "_bits.html" as bits %}
+{% block crumbs %}
+{% if level == 'hub' %}<b>Pipelines</b>
+{% else %}<a href="/pipelines">Pipelines</a> <span class="sep">/</span>
+  {% if level == 'provider' %}<b>{{ providers[provider].label }}</b>
+  {% else %}<a href="/pipelines?provider={{ provider }}">{{ providers[provider].label }}</a>
+    <span class="sep">/</span> <b>{{ sel.name }}</b>{% endif %}
+{% endif %}
+{% endblock %}
+{% block content %}
+
+{% if not conns %}
+<div class="empty">
+  <div class="big">{{ glyph("zap", 40) }}</div>
+  <h2>No CI system connected</h2>
+  <p>Connect Jenkins, GitHub Actions, Bitbucket Pipelines or GitLab CI and your
+     pipelines will be listed here.</p>
+  <a class="btn" href="/settings/pipelines">Configure a connection</a>
+</div>
+{% else %}
+
+{# ── status chips reused at every level ── #}
+{% macro chips(t, n) %}
+<span class="badge"><b>{{ n }}</b> pipeline{{ 's' if n != 1 }}</span>
+{% if t.failed %}<span class="badge" style="color:var(--danger-ink);"><b style="color:var(--danger-ink);">{{ t.failed }}</b> failing</span>{% endif %}
+{% if t.running %}<span class="badge" style="color:var(--accent-ink);"><b style="color:var(--accent-ink);">{{ t.running }}</b> running</span>{% endif %}
+{% if t.success %}<span class="badge" style="color:var(--ok-ink);"><b style="color:var(--ok-ink);">{{ t.success }}</b> passing</span>{% endif %}
+{% endmacro %}
+
+{# the per-connection pipeline list — one `.pl` card each. Shared by the detail
+   view and the Overview's All/Running/Failed tabs. `only` filters rows by status
+   and drops connections with none; `filtered` picks the empty-state wording. #}
+{% macro grouplist(groups, only='', filtered=false) %}
+{% for g in groups %}
+{% set rows = g.rows if not only else (g.rows | selectattr('status', 'equalto', only) | list) %}
+{% if not only or rows %}
+<div class="card">
+  <div class="card-h" style="flex-wrap:wrap;">
+    {{ plogo(g.provider, 18) if g.provider else glyph('zap', 18) }}
+    <b style="font-size:14.5px;">{{ g.conn.name }}</b>
+    <span class="badge">{{ g.provider.label or g.conn.type }}</span>
+    <span class="badge">{{ g.scope }}</span>
+    {% if g.conn.skip_tls %}<span class="badge" style="color:var(--warn-ink);">⚠ TLS unverified</span>{% endif %}
+    <span style="flex:1"></span>
+    <span class="hint">{{ rows|length }} of {{ g.total }} shown</span>
+  </div>
+  {% if g.error %}
+  <div class="card-b"><div class="flash err" style="margin:0;">⚠ {{ g.error }}</div></div>
+  {% elif rows %}
+  <div class="card-b" style="padding:0;">
+    <div class="pl">
+      <div class="pl-head">
+        <span class="pl-c-state"></span>
+        <span>pipeline</span>
+        <span class="pl-c-when">last success</span>
+        <span class="pl-c-when">last failure</span>
+        <span class="pl-c-dur">duration</span>
+        <span class="pl-c-act"></span>
+      </div>
+      {% for r in rows %}
+      {% set w = weather(r.health) %}
+      {% set parts = r.name.split(' · ') %}
+      <div class="pl-row pl-{{ r.status }}" data-ref="{{ r.ref }}"
+           data-conn="{{ g.conn.id }}" data-status="{{ r.status }}">
+        <span class="pl-c-state">
+          {% if r.ref %}
+          <a class="pl-logs" title="Read this run's log in the portal"
+             href="/pipelines/logs?conn={{ g.conn.id }}&ref={{ r.ref|urlencode }}"
+             data-stop>log</a>
+          {% endif %}
+          <button type="button" class="pl-open" title="Show stages"
+                  {% if not r.ref %}disabled{% endif %}>▸</button>
+          <i class="pl-dot s-{{ r.status }}" title="{{ r.status }}"></i>
+        </span>
+        <span class="pl-name">
+          {% if parts|length > 1 %}<span class="pl-svc">{{ parts[0] }}</span>{% endif %}
+          {% if r.url %}<a href="{{ r.url }}" target="_blank" rel="noopener"
+             >{{ parts[-1] }}</a>{% else %}{{ parts[-1] }}{% endif %}
+          {% if r.branch %}<span class="pl-branch"
+            title="{% if r.branches and r.branches|length > 1 %}checked out: {{ r.branches|join(', ') }}{% else %}branch{% endif %}"
+            >⑂ {{ r.branch }}</span>{% endif %}
+          {% if r.number %}<span class="pl-num">#{{ r.number }}</span>{% endif %}
+          <span class="pl-health" title="{{ w[1] }}{% if r.health is not none %} — {{ r.health }}% of recent builds passed{% endif %}">
+            {%- if r.health is not none %}<i style="width:{{ r.health }}%"></i>{% endif %}</span>
+          <span class="pl-failed" hidden></span>
+        </span>
+        <span class="pl-c-when">{% if r.last_success.when %}{{ r.last_success.when }}
+            {% if r.last_success.number %}<em>#{{ r.last_success.number }}</em>{% endif %}
+          {% else %}<span class="na">—</span>{% endif %}</span>
+        <span class="pl-c-when {{ 'bad' if r.last_failure.when }}">
+          {%- if r.last_failure.when %}{{ r.last_failure.when }}
+            {% if r.last_failure.number %}<em>#{{ r.last_failure.number }}</em>{% endif %}
+          {%- else %}<span class="na">—</span>{% endif %}</span>
+        <span class="pl-c-dur">{{ r.duration or '—' }}</span>
+        <span class="pl-c-act">{% if r.url %}<a href="{{ r.url }}" target="_blank"
+           rel="noopener" title="Open in {{ g.provider.label }}">↗</a>{% endif %}</span>
+      </div>
+      <div class="pl-stages" hidden></div>
+      {% endfor %}
+    </div>
+  </div>
+  {% else %}
+  <div class="card-b" style="color:var(--muted);font-size:13px;">
+    {% if filtered %}Nothing matches the current filter.
+    {% else %}No pipelines reported by this connection.{% endif %}</div>
+  {% endif %}
+</div>
+{% endif %}
+{% endfor %}
+{% endmacro %}
+
+{# ═══════════ level 1 — one box per connected provider ═══════════ #}
+{% if level == 'hub' %}
+{%- set cur = sec if sec in ('overview','all','running','failed') else 'overview' -%}
+<div class="page-head">
+  <div>
+    <h1>Pipelines</h1>
+    <p class="sub">{{ total }} pipeline{{ 's' if total != 1 }} across
+      {{ present|length }} CI system{{ 's' if present|length != 1 }} ·
+      {{ conns|length }} connection{{ 's' if conns|length != 1 }} · read-only</p>
+  </div>
+  <a class="btn btn-ghost" href="/pipelines?sec={{ cur }}&refresh=1">↻ Refresh</a>
+</div>
+
+{% if msg %}<div class="flash">✓ {{ msg }}</div>{% endif %}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+
+{{ bits.subtabs('/pipelines?', 'sec', cur, [
+     {'key':'overview','label':'Overview','count':none,'icon':'chart-line'},
+     {'key':'all','label':'All pipelines','count':total,'icon':'zap'},
+     {'key':'running','label':'Running','count':totals.running,'icon':'loader'},
+     {'key':'failed','label':'Failed','count':totals.failed,'icon':'triangle-alert'}], wide=true) }}
+
+{% if cur == 'overview' %}
+<div class="ex-tiles">
+  <a class="ex-tile {{ 'quiet' if not total }}" href="/pipelines?sec=all">
+    <span class="ico">{{ glyph('zap', 17) }}</span>
+    <span><span class="big">{{ total }}</span>
+      <span class="cap">pipeline{{ 's' if total != 1 }}</span>
+      <span class="sub">across every connection</span></span></a>
+  <a class="ex-tile act {{ 'quiet' if not totals.running }}" href="/pipelines?sec=running">
+    <span class="ico">{{ glyph('loader', 17) }}</span>
+    <span><span class="big">{{ totals.running }}</span>
+      <span class="cap">running</span>
+      <span class="sub">building now</span></span></a>
+  <a class="ex-tile bad {{ 'quiet' if not totals.failed }}" href="/pipelines?sec=failed">
+    <span class="ico">{{ glyph('triangle-alert', 17) }}</span>
+    <span><span class="big">{{ totals.failed }}</span>
+      <span class="cap">failing</span>
+      <span class="sub">needs a look</span></span></a>
+  <a class="ex-tile {{ 'quiet' if not present }}" href="/pipelines?sec=overview">
+    <span class="ico">{{ glyph('boxes', 17) }}</span>
+    <span><span class="big">{{ present|length }}</span>
+      <span class="cap">CI system{{ 's' if present|length != 1 }}</span>
+      <span class="sub">connected providers</span></span></a>
+</div>
+
+{# shared chart overview — how builds end + pipelines by CI system #}
+{% set sysrows = [] %}
+{% for c in cards %}{{ sysrows.append({'label': c.provider.label, 'n': c.jobs, 'href': c.href, 'note': (c.totals.failed ~ ' failing') if c.totals.failed else ''}) or '' }}{% endfor %}
+<div class="apanels">
+  {{ bits.donut_panel('How builds end',
+       [{'label':'passing','value':totals.success,'color':'var(--ok)','href':'/pipelines?sec=all'},
+        {'label':'failing','value':totals.failed,'color':'var(--danger)','href':'/pipelines?sec=failed'},
+        {'label':'running','value':totals.running,'color':'var(--accent)','href':'/pipelines?sec=running'}],
+       centre=(totals.success ~ '/' ~ total), sub='passing', icon='activity',
+       hint='last build of each pipeline') }}
+  {{ bits.bars_panel('Pipelines by CI system', sysrows | sort(attribute='n', reverse=true),
+       hint='most first', icon='boxes', empty='No pipelines reported yet.') }}
+</div>
+
+<div class="hub-grid" style="grid-template-columns:repeat(auto-fit,minmax(340px,1fr));">
+  {% for c in cards %}
+  <a class="hub-card" href="{{ c.href }}" style="align-items:flex-start;">
+    <div class="flag">{{ plogo(c.provider, 26) }}</div>
+    <div style="min-width:0;flex:1;">
+      <div class="htitle">{{ c.provider.label }}</div>
+      <div class="hmeta">{{ c.conns|length }} connection{{ 's' if c.conns|length != 1 }} ·
+        {{ c.conns|map(attribute='name')|join(', ')|truncate(46) }}</div>
+      <div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:0;">
+        {{ chips(c.totals, c.jobs) }}
+      </div>
+      {% if c.broken %}
+      <div class="hmeta" style="color:var(--warn-ink);margin-top:2px;">
+        ⚠ {{ c.broken }} connection{{ 's' if c.broken != 1 }} unreachable</div>
+      {% endif %}
+    </div>
+    <div class="arrow">→</div>
+  </a>
+  {% endfor %}
+</div>
+
+{% set idle = providers.keys()|reject('in', present)|list %}
+{% if idle %}
+<p class="sub" style="margin-top:22px;">
+  Not connected yet:
+  {% for k in idle %}{{ providers[k].label }}{{ ', ' if not loop.last }}{% endfor %} —
+  add one in <a href="/settings/pipelines">Settings → Pipelines</a>.</p>
+{% endif %}
+
+{% elif cur == 'all' %}
+{% if total %}{{ grouplist(groups) }}
+{% else %}<div class="empty"><div class="big">{{ glyph('zap', 34) }}</div>
+  <p>No pipelines reported by any connection yet.</p></div>{% endif %}
+
+{% elif cur == 'running' %}
+{% if totals.running %}{{ grouplist(groups, 'running') }}
+{% else %}<div class="empty"><div class="big">{{ glyph('circle-check', 34) }}</div>
+  <p>Nothing is running right now.</p></div>{% endif %}
+
+{% elif cur == 'failed' %}
+{% if totals.failed %}{{ grouplist(groups, 'failed') }}
+{% else %}<div class="empty"><div class="big">{{ glyph('circle-check', 34) }}</div>
+  <p>Nothing is failing — every pipeline's last build passed.</p></div>{% endif %}
+{% endif %}
+
+{# ═══════════ level 2 — one box per connection ═══════════ #}
+{% elif level == 'provider' %}
+<div class="page-head">
+  <div>
+    {{ back('/pipelines', 'All CI systems') }}
+    <h1 class="withico">{{ logo(provider, providers[provider].label, 26) }} {{ providers[provider].label }}</h1>
+    <p class="sub">{{ cards|length }} connection{{ 's' if cards|length != 1 }} ·
+      {{ total }} pipeline{{ 's' if total != 1 }} · read-only</p>
+  </div>
+  <a class="btn btn-ghost" href="/pipelines?provider={{ provider }}&refresh=1">↻ Refresh</a>
+</div>
+
+{% if msg %}<div class="flash">✓ {{ msg }}</div>{% endif %}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+
+<div class="hub-grid" style="grid-template-columns:repeat(auto-fit,minmax(340px,1fr));">
+  {% for c in cards %}
+  <a class="hub-card" href="{{ c.href }}" style="align-items:flex-start;">
+    <div class="flag">{{ plogo(c.provider, 26) }}</div>
+    <div style="min-width:0;flex:1;">
+      <div class="htitle">{{ c.conn.name }}</div>
+      <div class="hmeta">{{ c.scope }}{% if c.conn.folder %} · folder {{ c.conn.folder }}{% endif %}</div>
+      {% if c.conn.base_url or c.conn.repo %}
+      <div class="hmeta" style="font-family:var(--mono);font-size:11px;">
+        {{ c.conn.base_url or c.conn.repo }}</div>
+      {% endif %}
+      {% if c.error %}
+      <div class="hmeta" style="color:var(--danger-ink);margin-top:8px;">⚠ {{ c.error }}</div>
+      {% else %}
+      <div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:0;">
+        {{ chips(c.totals, c.jobs) }}
+        {% if c.views %}<span class="badge">{{ c.views }} view{{ 's' if c.views != 1 }}</span>{% endif %}
+        {% if c.conn.skip_tls %}<span class="badge" style="color:var(--warn-ink);">⚠ TLS unverified</span>{% endif %}
+      </div>
+      {% endif %}
+    </div>
+    <div class="arrow">→</div>
+  </a>
+  {% endfor %}
+</div>
+
+{# ═══════════ level 3 — the pipeline table ═══════════ #}
+{% else %}
+{% set qbase = '/pipelines?provider=' ~ provider ~ '&conn=' ~ conn %}
+<div class="page-head">
+  <div>
+    {{ back('/pipelines?provider=' ~ provider, providers[provider].label) }}
+    <h1 class="withico">{{ logo(provider, sel.name, 26) }} {{ sel.name }}</h1>
+    <p class="sub">{{ total }} pipeline{{ 's' if total != 1 }} ·
+      {{ groups[0].scope }} · read-only</p>
+  </div>
+  <a class="btn btn-ghost" href="{{ qbase }}{{ '&view=' ~ view|urlencode if view }}{{ '&only=' ~ only if only }}&refresh=1">↻ Refresh</a>
+</div>
+
+{% if msg %}<div class="flash">✓ {{ msg }}</div>{% endif %}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+
+{% set t = totals %}
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:20px;">
+  <a class="card" style="margin:0;" href="{{ qbase }}"><div class="card-b">
+    <div class="stat">{{ total }}</div><div class="statsub">all pipelines</div></div></a>
+  <a class="card" style="margin:0;" href="{{ qbase }}&only=failed"><div class="card-b">
+    <div class="stat" style="color:{{ 'var(--danger-ink)' if t.failed else 'var(--muted)' }};">{{ t.failed }}</div>
+    <div class="statsub">failing</div></div></a>
+  <a class="card" style="margin:0;" href="{{ qbase }}&only=running"><div class="card-b">
+    <div class="stat" style="color:var(--accent-ink);">{{ t.running }}</div>
+    <div class="statsub">running</div></div></a>
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat" style="color:var(--ok-ink);">{{ t.success }}</div>
+    <div class="statsub">passing</div></div></div>
+</div>
+
+{% if views %}
+<div class="viewtabs">
+  <a href="{{ qbase }}{{ '&only=' ~ only if only }}"
+     class="vtab {% if not view %}on{% endif %}">All</a>
+  {% for v in views %}
+  <a href="{{ qbase }}&view={{ v|urlencode }}{{ '&only=' ~ only if only }}"
+     class="vtab {% if view == v %}on{% endif %}">{{ v }}</a>
+  {% endfor %}
+</div>
+{% endif %}
+
+<form method="get" action="/pipelines" class="pipefilters">
+  <input type="hidden" name="provider" value="{{ provider }}">
+  <input type="hidden" name="conn" value="{{ conn }}">
+  <input type="hidden" name="view" value="{{ view }}">
+  <input type="search" name="q" value="{{ q }}" placeholder="filter by name…">
+  <select name="only" data-submit>
+    <option value="">any status</option>
+    <option value="failed" {% if only == 'failed' %}selected{% endif %}>failing only</option>
+    <option value="running" {% if only == 'running' %}selected{% endif %}>running only</option>
+  </select>
+  <button type="submit" class="btn-ghost" style="padding:8px 16px;">Apply</button>
+</form>
+
+{{ grouplist(groups, filtered=(only or q or view)) }}
+{% endif %}
+
+<style>
+/* A pipeline list, not a spreadsheet: one line each, the service name muted
+   against the workflow name, health as a bar rather than a percentage, and the
+   stages folded away until asked for. */
+.pl { display:flex; flex-direction:column; }
+.pl-head, .pl-row {
+  display:grid;
+  grid-template-columns:56px minmax(240px, 1fr) 150px 150px 96px 40px;
+  align-items:center; gap:8px; padding:0 14px; }
+.pl-head {
+  height:34px; font-size:10px; text-transform:uppercase; letter-spacing:.9px;
+  color:var(--muted); border-bottom:1px solid var(--line); }
+.pl-row {
+  min-height:44px; border-bottom:1px solid color-mix(in srgb, var(--line) 55%, transparent);
+  position:relative; font-size:12.5px; }
+.pl-row:last-of-type { border-bottom:0; }
+.pl-row:hover { background:color-mix(in srgb, var(--text) 4%, transparent); }
+.pl-failing { }
+.pl-row.pl-failed::before {
+  content:""; position:absolute; left:0; top:0; bottom:0; width:2px;
+  background:var(--danger-ink); }
+.pl-row.pl-running::before {
+  content:""; position:absolute; left:0; top:0; bottom:0; width:2px;
+  background:var(--accent); }
+
+.pl-c-state { display:flex; align-items:center; gap:4px; }
+.pl-open {
+  width:20px; height:20px; padding:0; border:0; background:transparent;
+  color:var(--muted); font-size:10px; cursor:pointer; border-radius:5px;
+  transition:transform .12s ease; }
+.pl-open:hover:not(:disabled) { color:var(--text); }
+.pl-open[aria-expanded=true] { transform:rotate(90deg); }
+.pl-open:disabled { opacity:.25; cursor:default; }
+.pl-dot { width:9px; height:9px; border-radius:50%; display:inline-block; flex:none; }
+
+.pl-name { display:flex; align-items:center; gap:8px; min-width:0; flex-wrap:wrap; }
+.pl-svc { font-family:var(--mono); font-size:11px; color:var(--muted); }
+.pl-svc::after { content:"/"; margin-left:6px; opacity:.5; }
+.pl-name > a { font-weight:600; }
+.pl-branch {
+  font-family:var(--mono); font-size:10.5px; color:var(--muted);
+  border:1px solid var(--line); border-radius:5px; padding:1px 6px; }
+.pl-num { font-family:var(--mono); font-size:10.5px; color:var(--muted); }
+.pl-health {
+  width:46px; height:3px; border-radius:2px; flex:none;
+  background:color-mix(in srgb, var(--text) 12%, transparent); overflow:hidden; }
+.pl-health i { display:block; height:100%; background:var(--ok); }
+.pl-failed {
+  font-size:11px; color:var(--danger-ink); font-family:var(--mono);
+  border:1px solid color-mix(in srgb, var(--danger-ink) 35%, transparent);
+  border-radius:5px; padding:1px 7px; }
+.pl-c-when, .pl-c-dur { font-size:11.5px; color:var(--muted); }
+.pl-c-when em { font-family:var(--mono); font-style:normal; opacity:.65; }
+.pl-c-when.bad { color:var(--danger-ink); }
+.pl-c-act { text-align:right; }
+.pl-c-act a { color:var(--muted); text-decoration:none; }
+.pl-c-act a:hover { color:var(--text); }
+
+/* the stage strip: proportional segments, so a stage that took ten minutes
+   looks like it did */
+.slog { margin-left:12px; font-size:11px; color:var(--muted);
+        text-decoration:none; border-bottom:1px dotted var(--line); }
+.slog:hover { color:var(--accent-ink); }
+.pl-logs { font-size:10.5px; color:var(--muted); text-decoration:none;
+           border:1px solid var(--line); border-radius:6px; padding:2px 7px;
+           margin-right:8px; }
+.pl-logs:hover { color:var(--accent-ink); border-color:var(--accent-ink); }
+.pl-stages { padding:4px 14px 14px 70px;
+  background:color-mix(in srgb, var(--text) 3%, transparent);
+  border-bottom:1px solid color-mix(in srgb, var(--line) 55%, transparent); }
+.pl-strip { display:flex; gap:3px; margin:8px 0 10px; }
+.pl-seg { height:6px; border-radius:3px; min-width:8px; }
+.pl-seg.success { background:var(--ok); }
+.pl-seg.failed { background:var(--danger-ink); }
+.pl-seg.running { background:var(--accent); }
+.pl-seg.pending, .pl-seg.unknown { background:color-mix(in srgb, var(--text) 18%, transparent); }
+.pl-seg.cancelled { background:var(--muted); }
+.pl-stage {
+  display:grid; grid-template-columns:16px 1fr 80px; gap:8px;
+  align-items:center; padding:3px 0; font-size:12px; }
+.pl-stage .mark { text-align:center; font-size:10px; }
+.pl-stage.failed .sname { color:var(--danger-ink); font-weight:600; }
+.pl-stage .sdur { font-size:11px; color:var(--muted); text-align:right;
+                  font-family:var(--mono); }
+.pl-steps { margin:2px 0 8px 24px; }
+.pl-step { display:flex; gap:8px; font-size:11.5px; color:var(--muted);
+           font-family:var(--mono); padding:1px 0; }
+.pl-step.failed { color:var(--danger-ink); }
+.pl-note { font-size:11.5px; color:var(--muted); font-style:italic; }
+</style>
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  const MARK = {success:'✓', failed:'✕', running:'●', pending:'○',
+                cancelled:'–', unknown:'?'};
+
+  function el(tag, cls, text) {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined) n.textContent = text;
+    return n;
+  }
+
+  function seconds(d) {                 // "2m 30s" → 150, for segment widths
+    if (!d) return 0;
+    let total = 0;
+    (d.match(/\d+\s*[hms]/g) || []).forEach(part => {
+      const n = parseInt(part, 10);
+      total += part.includes('h') ? n * 3600 : part.includes('m') ? n * 60 : n;
+    });
+    return total;
+  }
+
+  function draw(box, doc) {
+    box.textContent = '';
+    if (doc.error || (!doc.stages.length && doc.note)) {
+      box.appendChild(el('div', 'pl-note', doc.error || doc.note));
+      return;
+    }
+    if (!doc.stages.length) {
+      box.appendChild(el('div', 'pl-note', 'this run reported no stages'));
+      return;
+    }
+    // the strip: one segment per stage, widths in proportion to time taken
+    const strip = el('div', 'pl-strip');
+    const times = doc.stages.map(s => seconds(s.duration));
+    const total = times.reduce((a, b) => a + b, 0);
+    doc.stages.forEach((s, i) => {
+      const seg = el('div', 'pl-seg ' + s.status);
+      seg.style.flex = total > 0 ? String(Math.max(times[i], total * 0.02)) : '1';
+      seg.title = s.name + ' — ' + s.status + (s.duration ? ' (' + s.duration + ')' : '');
+      strip.appendChild(seg);
+    });
+    box.appendChild(strip);
+
+    doc.stages.forEach(s => {
+      const row = el('div', 'pl-stage ' + s.status);
+      row.appendChild(el('span', 'mark', MARK[s.status] || '?'));
+      const name = el('span', 'sname');
+      if (s.url) {
+        const a = el('a', null, s.name);
+        a.href = s.url; a.target = '_blank'; a.rel = 'noopener';
+        name.appendChild(a);
+      } else { name.textContent = s.name; }
+      row.appendChild(name);
+      row.appendChild(el('span', 'sdur', s.duration || ''));
+      // the log is the next question after "which stage failed", so it is one
+      // click from the stage rather than a trip to the provider
+      const lg = el('a', 'slog', 'logs');
+      lg.href = '/pipelines/logs?conn=' + encodeURIComponent(box._conn)
+              + '&ref=' + encodeURIComponent(box._ref)
+              + (s.job ? '&job=' + encodeURIComponent(s.job) : '');
+      row.appendChild(lg);
+      box.appendChild(row);
+      // steps are shown for the stage that failed: that is the answer to
+      // "where did it break", and printing every step of every stage buries it
+      if (s.status === 'failed' && (s.steps || []).length) {
+        const steps = el('div', 'pl-steps');
+        s.steps.forEach(t => {
+          const line = el('div', 'pl-step ' + t.status);
+          line.appendChild(el('span', null, (MARK[t.status] || '?') + ' ' + t.name));
+          steps.appendChild(line);
+        });
+        box.appendChild(steps);
+      }
+    });
+  }
+
+  async function load(row, box, refresh) {
+    box.textContent = '';
+    box._conn = row.dataset.conn;
+    box._ref = row.dataset.ref;
+    box.appendChild(el('div', 'pl-note', 'reading stages…'));
+    try {
+      const u = '/pipelines/stages?conn=' + encodeURIComponent(row.dataset.conn)
+              + '&ref=' + encodeURIComponent(row.dataset.ref)
+              + (refresh ? '&refresh=1' : '');
+      const r = await fetch(u, {headers: {'Accept': 'application/json'}});
+      const doc = await r.json();
+      draw(box, doc);
+      return doc;
+    } catch (e) {
+      draw(box, {error: 'could not read stages: ' + e.message, stages: []});
+      return null;
+    }
+  }
+
+  document.querySelectorAll('.pl-row').forEach(row => {
+    const box = row.nextElementSibling;
+    const btn = row.querySelector('.pl-open');
+    if (!btn || btn.disabled || !box) return;
+    btn.setAttribute('aria-expanded', 'false');
+    btn.addEventListener('click', () => {
+      const open = box.hidden;
+      box.hidden = !open;
+      btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+      btn.title = open ? 'Hide stages' : 'Show stages';
+      if (open && !box.dataset.loaded) {
+        box.dataset.loaded = '1';
+        load(row, box, false);
+      }
+    });
+  });
+
+  // A failing pipeline is asked about immediately, because "which stage failed"
+  // is the whole question — but only the failing ones, and at most six, so a
+  // page of red does not spend a hundred API calls announcing itself.
+  const failing = [...document.querySelectorAll('.pl-row[data-status=failed]')]
+    .filter(r => r.dataset.ref).slice(0, 6);
+  failing.forEach(async row => {
+    const box = row.nextElementSibling;
+    const doc = await load(row, box, false);
+    box.dataset.loaded = '1';
+    if (doc && doc.failed) {
+      const tag = row.querySelector('.pl-failed');
+      tag.hidden = false;
+      tag.textContent = 'failed at ' + doc.failed.stage
+        + (doc.failed.step ? ' → ' + doc.failed.step : '');
+    }
+  });
+})();
+</script>
+
+<p class="sub" style="margin-top:4px;">
+  Connections are managed in <a href="/settings/pipelines">Settings → Pipelines</a>.</p>
+{% endif %}
+{% endblock %}

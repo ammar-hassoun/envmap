@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% from "_cloud_search.html" import searchbar %}
+{# aliased: the route passes a context variable called "actions" too #}
+{% from "_cloud_action.html" import actions as action_panel %}
+{% block crumbs %}<a href="/clouds">Clouds</a> <span class="sep">/</span>
+  <a href="/clouds?account={{ sel.id }}">{{ sel.name }}</a> <span class="sep">/</span>
+  <a href="/clouds/r/{{ sel.id }}/{{ group_key }}?region={{ region }}">{{ group.label if group else group_key }}</a>
+  <span class="sep">/</span> <b style="font-family:var(--mono);">{{ ident }}</b>{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1 style="font-family:var(--mono);font-size:20px;">{{ ident }}</h1>
+    <p class="sub">{{ group.label if group else group_key }} · {{ region }}
+      · {{ sel.name }}</p>
+  </div>
+  <div style="display:flex;gap:10px;">
+    {% if can_shell %}
+    <a class="btn btn-ghost" href="/clouds/console/{{ sel.id }}/{{ ident }}?region={{ region }}">{{ glyph("server", 14) }} Console</a>
+    <a class="btn btn-ghost" href="/clouds/shell/{{ sel.id }}/{{ ident }}?region={{ region }}">❯ Run a command</a>
+    {% endif %}
+    <a class="btn btn-ghost"
+       href="/clouds/r/{{ sel.id }}/{{ group_key }}?region={{ region }}">← All {{ (group.label if group else group_key)|lower }}</a>
+  </div>
+</div>
+
+{{ searchbar(search_index) }}
+
+{% if msg %}<div class="flash">✓ {{ msg }}</div>{% endif %}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+{% if det.error %}<div class="flash err">⚠ {{ det.error }}</div>{% endif %}
+
+{% if det.fields %}
+<div class="card">
+  <div class="card-h">Detail <span class="hint">as the provider describes it</span></div>
+  <div class="card-b">
+    <div class="kvgrid">
+      {% for label, value in det.fields %}
+      <div class="kvrow">
+        <span class="kvk">{{ label }}</span>
+        <span class="kvv">{{ value }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{% if det.table and det.table.rows %}
+<div class="card">
+  <div class="card-h">{{ det.table.label|capitalize }}
+    <span class="hint">{{ det.table.rows|length }}</span></div>
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr>{% for k in det.table.rows[0].keys() %}
+        <th>{{ k }}</th>{% endfor %}</tr></thead>
+      <tbody>
+      {% for r in det.table.rows %}
+      <tr>{% for k, v in r.items() %}
+        <td {% if k == 'source' and v == '0.0.0.0/0' %}
+            style="color:var(--danger-ink);font-weight:600;"
+            title="open to the whole internet"{% endif %}
+            class="{{ 'hint' if k in ('why', 'direction') }}"
+            style="font-family:var(--mono);font-size:11.5px;">{{ v }}</td>
+      {% endfor %}</tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{% for ex in det.extras %}
+<div class="card">
+  <div class="card-h">{{ ex.label|capitalize }}
+    <span class="hint">{{ ex.rows|length }}{% if ex.note %} · {{ ex.note }}{% endif %}</span></div>
+  <div class="card-b">
+    {% if ex.rows %}
+    <div class="kvgrid">
+      {% for k, v in ex.rows %}
+      <div class="kvrow"><span class="kvk" style="font-family:var(--mono);">{{ k }}</span>
+        <span class="kvv">{{ v }}</span></div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <span class="hint">{{ ex.note or 'none' }}</span>
+    {% endif %}
+  </div>
+</div>
+{% endfor %}
+
+{{ action_panel(sel, region, actions,
+                '/clouds/r/' ~ sel.id ~ '/' ~ group_key ~ '/' ~ ident,
+                prefill) }}
+
+<style>
+  .kvgrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr));
+            gap:2px 22px; }
+  .kvrow { display:grid; grid-template-columns:150px 1fr; gap:10px;
+           padding:5px 0; border-bottom:1px solid
+           color-mix(in srgb, var(--line) 45%, transparent); align-items:baseline; }
+  .kvk { font-size:10.5px; text-transform:uppercase; letter-spacing:.7px;
+         color:var(--muted); }
+  .kvv { font-size:12.5px; font-family:var(--mono); word-break:break-all; }
+</style>
+{% endblock %}

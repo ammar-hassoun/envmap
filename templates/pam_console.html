@@ -1,0 +1,414 @@
+{% extends "base.html" %}
+{% block crumbs %}<a href="/pam">Privileged Access</a> <span class="sep">/</span>
+  <a href="/pam?sec=targets">Targets</a> <span class="sep">/</span>
+  <b>{{ t.name }}</b>{% endblock %}
+{% block content %}
+{#- A live RDP/VNC desktop, rendered by guacamole-common-js over the /pam/guac.ws
+    relay to guacd. The credential is brokered — the browser never receives it —
+    and guacd writes the session recording to the Privileged Access store. -#}
+<script nonce="{{ csp_nonce() }}" src="/static/guacamole-common.min.js"></script>
+<style>
+  .con-head { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:12px; }
+  .con-where { font-family:var(--mono); font-size:13px; color:var(--text2); }
+  .con-where b { color:var(--text); }
+  .con-state { font-size:12px; color:var(--muted); }
+  /* `safe center` centres only while the desktop FITS. Plain centring in a
+     scrollable box puts the overflow on BOTH sides and the left half is then
+     unreachable — scrollLeft cannot go negative — so part of the screen
+     somebody is working on cannot be scrolled to at all. */
+  .con-wrap { border:1px solid var(--line); border-radius:12px; background:#0b0f16;
+    padding:0; overflow:auto; min-height:420px; display:flex;
+    align-items:safe center; justify-content:safe center; }
+  /* Full screen means the desktop, not a rounded card floating on black. */
+  .con-wrap:fullscreen { border:0; border-radius:0; min-height:100vh; }
+  .con-wrap:-webkit-full-screen { border:0; border-radius:0; min-height:100vh; }
+  .con-wrap .guac-display { line-height:0; }
+  #conDisplay { cursor:none; }
+  /* IN ITS OWN WINDOW the session takes the window: the head stays as a thin
+     strip so the state, the watch link and End are still reachable, and
+     everything left over is the desktop. Resizing the window then resizes
+     what is being worked in rather than scrolling a card inside a page. */
+  /* THE SESSION TAKES THE WINDOW. The default bare page is padded for pages
+     with words on them; a desktop is not one of those. */
+  body.bare .bare-content { padding:0; }
+  body.bare .con-head { margin:0; padding:8px 12px;
+    border-bottom:1px solid var(--line); }
+  body.bare .con-wrap { flex:1; min-height:0; border:0; border-radius:0; }
+</style>
+
+<div class="con-head">
+  <div>
+    <h1 style="margin:0;">{% if join %}{% if join.mode == 'control' %}Taking
+      control{% else %}Watching{% endif %}{% else %}Console{% endif %}</h1>
+    <div class="con-where">{{ t.name }} <span class="sep">·</span>
+      <b>{{ t.proto_label }} · {{ t.address }}</b>
+      {% if t.is_prod %}<span class="sv sv-high">production</span>{% endif %}
+      <span class="con-state" id="conState">connecting…</span></div>
+    {% if join %}
+    <div class="sub" style="margin-top:4px;font-size:11.5px;">
+      {% if join.mode == 'control' %}You have the keyboard on
+        <b>{{ join.who }}</b>'s live session. They can still type too — this is
+        one screen with two people on it, and every keystroke of yours is on
+        their recording.
+      {% else %}<b>{{ join.who }}</b>'s live session, read-only. This window has
+        no keyboard and no mouse bound to it.{% endif %}
+    </div>
+    {% endif %}</div>
+  <span style="flex:1"></span>
+  <button class="btn btn-ghost" id="conFit" type="button">Fit</button>
+  {#- FIT OR FILL, because the desktop's shape is fixed and the screen's is
+      not. A seat's Xvfb screen is created with the pod and CANNOT be resized
+      afterwards -- measured on a real seat: "minimum 1 x 1, current 1600x815,
+      maximum 1600x815", and x11vnc is not run with resize support either. So a
+      1600x815 desktop on a 16:9 screen either keeps its shape and leaves bands,
+      or fills the screen and loses a strip off the edges. That is a choice
+      about somebody's session, not a default to pick for them. -#}
+  <button class="btn btn-ghost" id="conFill" type="button"
+          title="Fill the screen: no bands, but a strip off the edges is cut. Fit keeps the whole desktop.">⤢ Fill</button>
+  <button class="btn btn-ghost" id="conFull" type="button">⛶ Full screen</button>
+  <a class="btn btn-ghost" href="/pam?sec=targets">← Back to targets</a>
+</div>
+
+<div class="con-wrap" id="conWrap"><div id="conDisplay"></div></div>
+<p class="sub" style="margin-top:10px;font-size:11.5px;">
+  Rendered by Apache Guacamole. Authenticated by <b>{{ t.name }}</b>'s brokered
+  credential — the browser never receives it. The session is recorded and
+  audited; keystrokes are excluded from the recording.</p>
+
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  const state = document.getElementById('conState');
+  const wrap = document.getElementById('conWrap');
+  const mount = document.getElementById('conDisplay');
+  if (!window.Guacamole || !Guacamole.Client) {
+    state.textContent = 'the Guacamole client did not load'; return; }
+
+  // ONE ANSWER FOR HOW BIG THE PANE IS, used to ask for the desktop AND to
+  // fit it. There used to be three: the request took `innerHeight * 0.72`, the
+  // fitter took `0.78`, and full screen measured the pane. Numbers that
+  // disagree about the same box letterbox it — reported against a console
+  // opened in its own window as "black bar on top and bottom instead of having
+  // the full screen", which is exactly what asking for a desktop 72% of the
+  // window tall and then centring it in a pane that is nearly all of the
+  // window looks like.
+  //
+  // MEASURED WHEREVER THE PANE'S HEIGHT IS REAL. In its own window and in full
+  // screen the wrapper has a resolved height, so measure it. Inside the portal
+  // page the wrapper has no intrinsic height — it is a card that grows to its
+  // content and starts at its min-height — so there the viewport fraction is
+  // still the only thing to go on.
+  // DECLARED BEFORE ITS FIRST USE, not beside the fitter that used to be its
+  // only caller: `paneH` below runs while the connection parameters are being
+  // built, and a `const` read before its initialiser is a ReferenceError, not
+  // an undefined.
+  const isFull = () => (document.fullscreenElement
+                        || document.webkitFullscreenElement) === wrap;
+  const windowed = document.body.classList.contains('bare');
+  const paneH = () => {
+    if (isFull() || windowed) {
+      const got = wrap.clientHeight;
+      // Layout may not be resolved yet on the first call; a pane this short is
+      // not a pane, so fall back rather than ask for a 480px desktop.
+      if (got > 300) return got;
+    }
+    return window.innerHeight * 0.78;
+  };
+  // ONE DESKTOP, TWO SURFACES. A seat's screen is created with the pod and
+  // cannot be resized afterwards -- measured on a real seat: "minimum 1 x 1,
+  // current 1600x815, maximum 1600x815". So the ONE geometry it will ever have
+  // has to suit both the window it is opened in and the screen it will be put
+  // full screen on, and those are different shapes: a 1600x815 pane is 1.96, a
+  // 16:9 screen is 1.78. Fitting left 102px bands; filling cropped 200px off
+  // the sides, which on a right-to-left page cuts the side the content starts
+  // on. Neither is acceptable, and neither had to happen -- the shape of the
+  // window is OURS to choose.
+  //
+  // So the pane is made the shape of the screen before the desktop is asked
+  // for. Then one geometry is exact in both places: 1600x900 in the window,
+  // and 1920x1080 full screen, with no band and nothing cut off.
+  const screenAspect = (screen.width > 0 && screen.height > 0)
+    ? screen.width / screen.height : 0;
+  if (windowed && screenAspect > 0) {
+    const wantH = wrap.clientWidth / screenAspect;
+    const grow = Math.round(wantH - wrap.clientHeight);
+    // Only within the screen, and never small enough to stop being a session.
+    const room = screen.availHeight - window.outerHeight;
+    const by = Math.max(240 - window.outerHeight, Math.min(grow, room));
+    if (Math.abs(by) > 8) { try { window.resizeBy(0, by); } catch (e) {} }
+  }
+  // THE DESKTOP IS THE PANE. Exactly, always, so the scale is 1 and the
+  // application lays itself out for the size it is being read at -- the same
+  // layout the same window would give it without this product in the middle.
+  //
+  // IT WAS BRIEFLY INSCRIBED into the screen's shape instead, to make full
+  // screen exact even when the reshape above was refused. That was the wrong
+  // trade and it was reported at once: on a real install it produced a
+  // 1282x828 desktop inside a 1600-wide pane, so every frame was stretched
+  // 1.25x -- bigger text, softer edges, and a full-surface resample per frame
+  // on the very path that was already complained about for lag. It degraded
+  // the case somebody uses constantly to improve the one they use
+  // occasionally.
+  //
+  // So the window's shape is corrected where that is allowed, and where it is
+  // not, the window stays exact and full screen bands -- which is what Fill is
+  // there for.
+  const dw = wrap.clientWidth, dh = paneH();
+  // EVEN, at the source. A pane is whatever height a window happens to be, and
+  // a seat asked for an odd one gets a framebuffer with an odd dimension --
+  // observed on a customer's session as a desktop of 1728x829 whose VNC link
+  // then died with guacd reporting "Error handling message from VNC server".
+  // Several encoders underneath work in 2x2 blocks. Rounded here so the pod,
+  // guacd and this page all name the same number.
+  const even = v => Math.max(2, v - (v % 2));
+  const w = even(Math.max(640, Math.min(Math.round(dw) || 1280, 3840)));
+  const h = even(Math.max(480, Math.min(Math.round(dh) || 800, 2160)));
+
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  {#- SUPERVISING joins a session guacd is already running; the ordinary case
+      opens a new one. One template, because a second copy of the client is a
+      second copy of every fix that has landed in it. -#}
+  const tunnel = new Guacamole.WebSocketTunnel(proto + '//' + location.host +
+    {% if join %}'/pam/session/{{ join.sid }}/shadow.ws'{% else %}'/pam/guac.ws'{% endif %});
+  // THE CLIENT'S OWN PATIENCE, and 15s of it is not enough for a WEB target.
+  // guacamole-common-js defaults receiveTimeout to 15000 and only an INCOMING
+  // instruction resets it — its keepalive ping is suppressed while the tunnel
+  // is still CONNECTING. An RDP or VNC target answers in well under a second
+  // so this never mattered; a web seat has to schedule a pod, start a browser
+  // and load a page first. The server also sends `nop` while it works, but a
+  // client that gives up at 15s would never see them.
+  tunnel.receiveTimeout = 240000;
+  const client = new Guacamole.Client(tunnel);
+  const display = client.getDisplay();
+  mount.appendChild(display.getElement());
+  display.getElement().className = 'guac-display';
+
+  // "waiting…" is what the browser says while the SERVER is starting a
+  // browser pod, and it told the reader nothing — a blank pane and a word
+  // that could mean anything, for up to forty seconds on a cold node.
+  // Reported as very very slow, which it was, but the silence is what made
+  // it feel broken. Say what is actually happening, and stop escalating once
+  // the display arrives.
+  const STATE = {0:'idle', 1:'connecting…',
+                 2:{% if join %}'joining the session…'{% else %}'starting a browser in the cluster…'{% endif %},
+                 3:'connected',
+                 4:'disconnecting…', 5:'disconnected'};
+  // NEVER CLAIM A CAUSE IT DOES NOT KNOW, and never outlive the session.
+  // The first version asserted "the image is being pulled onto the node"
+  // after 8s and kept counting for ever — so a session that FAILED at 75s
+  // showed "still starting the browser (268s)" with a cause invented from
+  // nothing, while the real reason had already arrived and been overwritten
+  // by the next tick. Both halves were wrong: it lied about why, and it
+  // clobbered the truth.
+  let waited = 0, waitTimer = 0, settled = false;
+  const stopWaiting = () => { if (waitTimer) { clearInterval(waitTimer);
+                                               waitTimer = 0; } };
+  const say = (text, final) => {
+    if (settled && !final) return;      // an error already won; do not talk over it
+    if (final) { settled = true; stopWaiting(); }
+    state.textContent = text;
+  };
+  const patience = () => {
+    waited += 2;
+    if (waited >= 8)
+      say('starting a browser in the cluster… ' + waited + 's'
+          + (waited >= 30 ? ' — a first run on a node has to pull its image,'
+                          + ' which can take a few minutes' : ''));
+  };
+  let curState = 0;
+  client.onstatechange = s => {
+    curState = s;
+    if (s === 2) { if (!waitTimer) waitTimer = setInterval(patience, 2000); }
+    else { stopWaiting(); say(STATE[s] || s, s === 5); }
+    if (s === 3) autoFit(); };
+  // WHAT THE CLUSTER SAID, forwarded by the relay as the protocol's own
+  // `name` instruction. It replaces a count of seconds and a guessed cause
+  // with the reason Kubernetes gave — "ImagePullBackOff: ...", "Unschedulable:
+  // ..." — which is the difference between waiting and knowing.
+  client.onname = n => { if (n) say(String(n)); };
+  // WHAT WENT WRONG, IN WORDS. Both handlers used to fall back to the value
+  // itself, and a Guacamole failure is a `Guacamole.Status` object with a
+  // numeric `code` and often NO `message` -- so the header read
+  // "[object Object]". Reported exactly that way, and it cost a diagnosis: the
+  // real fault was in guacd's log ("Error handling message from VNC server")
+  // and the screen said nothing at all. A status nobody can read is a status
+  // nobody reports.
+  const REASON = {
+    0x0200: 'the gateway had an internal error',
+    0x0201: 'the gateway is too busy to take another session',
+    0x0202: "the session's own screen stopped responding",
+    0x0203: "the session's own screen failed",
+    0x0204: 'the session was not found',
+    0x0206: 'the session was closed',
+    0x0207: 'the browser for this session could not be reached',
+    0x0208: 'the browser for this session is not available',
+    0x0209: 'somebody else is using this session',
+    0x020A: 'the session was idle for too long and was closed',
+    0x0300: 'the gateway rejected the request',
+    0x0301: 'the gateway refused the credential',
+    0x0303: 'the gateway refused this session',
+    0x0308: 'the session was idle for too long and was closed',
+    0x031D: 'too many sessions are open',
+  };
+  const why = e => {
+    if (!e) return '';
+    if (typeof e === 'string') return e;
+    if (e.message) return String(e.message);
+    if (e.reason) return String(e.reason);
+    if (typeof e.code === 'number')
+      return (REASON[e.code] || 'the session ended') +
+             ' (code 0x' + e.code.toString(16) + ')';
+    return '';
+  };
+  client.onerror = e => { say('error: ' + (why(e) || 'the session ended'), true);
+    try { client.disconnect(); } catch (x) {} };
+  // The ws close REASON is where the seat's own refusal arrives — "the
+  // browser never became ready", "the egress policy could not be applied" —
+  // so it is shown verbatim rather than replaced with "tunnel error".
+  tunnel.onerror = e => {
+    say(why(e) || 'the session could not be opened', true);
+  };
+
+  // Scale the display to fit the pane, on BOTH axes — a seat records at its
+  // own geometry and a desktop taller than the pane is one somebody has to
+  // scroll to use.
+  let scale = 1;
+  // REMEMBERED, because it is a preference about how somebody wants to work
+  // and re-choosing it on every connection is the annoyance the button was
+  // added to remove. Wrapped: storage throws in some privacy modes, and a
+  // seat that will not open because a preference could not be read would be a
+  // worse bug than the one this fixes.
+  let fill = false;
+  try { fill = localStorage.getItem('envmap.console.fill') === '1'; } catch (e) {}
+  function autoFit() {
+    const dw = display.getWidth(), dh = display.getHeight();
+    if (!dw || !dh) return;
+    // ON A SCREEN, MEASURE THE SCREEN. In the page the pane is a card and the
+    // height is a fraction of the window; full screen the pane IS the window,
+    // so `innerHeight * 0.78` would letterbox it on purpose. Scaling ABOVE 1
+    // is allowed there and nowhere else: a seat's desktop is a fixed
+    // geometry, and "see the full page" means filling the screen with it
+    // rather than parking it small in the middle of a black rectangle.
+    const full = isFull();
+    // COVER, NOT CONTAIN, when filling: the larger ratio leaves no band, and
+    // the excess overflows the pane instead of being cut off unreachably --
+    // `align-items: safe center` on the wrapper keeps the overflow scrollable,
+    // which is why it was chosen over plain centring.
+    scale = fill ? Math.max(wrap.clientWidth / dw, paneH() / dh)
+                 : Math.min(wrap.clientWidth / dw, paneH() / dh);
+    // NEVER PAST 1:1 IN A WINDOW. The desktop IS the pane there, so a scale
+    // other than 1 means something has changed size since it was created --
+    // and stretching a fixed framebuffer to cover the difference is what made
+    // the page look nothing like the same page in the same browser. Full
+    // screen is the one place the surface is genuinely a different size from
+    // the desktop, so it is the one place growing past native is right.
+    if (!full) scale = Math.min(scale, 1);
+    display.scale(scale);
+  }
+  // ON THE DISPLAY'S OWN RESIZE, not only on CONNECTED. A Guacamole display
+  // is 0x0 until its first `size` instruction — and `size` arrives AFTER the
+  // `ready` that turns the state CONNECTED, so the fit wired to state 3
+  // measured a 0x0 display, returned early, and never ran again. Measured in
+  // a browser against a real recorded stream: 0x0 at CONNECTED, 1280x800 one
+  // instruction later.
+  display.onresize = autoFit;
+
+  // connect data becomes the ws query string the relay reads.
+  const params = new URLSearchParams(
+    {% if join %}{mode: {{ join.mode|tojson }}}
+    {% else %}{tid: {{ t.id|tojson }}, w: w, h: h}{% endif %});
+  {% if t.is_prod %}params.set('confirm', {{ confirm|tojson }});{% endif %}
+  {% if summary %}params.set('ticket', {{ ticket|tojson }});
+  params.set('stime', {{ stime|tojson }});
+  params.set('summary', {{ summary|tojson }});{% endif %}
+  const fillBtn = document.getElementById('conFill');
+  // THE LABEL IS THE STATE. `.on` is not styled for `.btn`, so a class here
+  // would say nothing to anybody; the button naming what it will DO next is
+  // both the affordance and the indicator.
+  const showFill = () => {
+    fillBtn.textContent = fill ? '⤡ Fit to window' : '⤢ Fill';
+  };
+  showFill();
+  fillBtn.addEventListener('click', () => {
+    fill = !fill;
+    try { localStorage.setItem('envmap.console.fill', fill ? '1' : '0'); }
+    catch (e) {}
+    showFill();
+    autoFit();
+  });
+  document.getElementById('conFit').addEventListener('click', autoFit);
+  window.addEventListener('resize', autoFit);
+  // THE PANE goes full screen, not the page: what somebody wants filled is
+  // the desktop they are working in. Re-fitted after the change — the scale
+  // is computed from the box, and the box is a different size now, so
+  // without this it stays at the pane's scale on a full screen.
+  document.getElementById('conFull').addEventListener('click', () => {
+    if (isFull()) {
+      (document.exitFullscreen || document.webkitExitFullscreen
+       || (() => {})).call(document);
+    } else {
+      (wrap.requestFullscreen || wrap.webkitRequestFullscreen
+       || (() => {})).call(wrap);
+    }
+  });
+  const refit = () => setTimeout(autoFit, 60);
+  document.addEventListener('fullscreenchange', refit);
+  document.addEventListener('webkitfullscreenchange', refit);
+  client.connect(params.toString());
+
+  // A BLANK PANE MUST SAY WHY. Reported as "it is showing connected but the
+  // page is blank", and there was no way to tell "nothing arrived" from
+  // "arrived and was not drawn" — the two look identical on screen and the
+  // difference is the entire diagnosis. It cost a long hunt through the relay,
+  // the framer and guacd, all three of which turned out to be correct. The
+  // tunnel's own traffic is counted, so next time the pane answers it.
+  //
+  // Wrapped AFTER connect, because `Guacamole.Client.connect` installs its own
+  // handler and wrapping first would be overwritten.
+  let got = 0, bytes = 0;
+  const passOn = tunnel.oninstruction;
+  tunnel.oninstruction = function (op, args) {
+    got++;
+    bytes += (op || '').length + 1;
+    for (let i = 0; i < args.length; i++) bytes += (args[i] || '').length + 1;
+    if (passOn) passOn.apply(this, arguments);
+  };
+  setTimeout(() => {
+    if (curState !== 3 || (display.getWidth() && display.getHeight())) return;
+    say(got
+        ? 'connected and receiving (' + got + ' instructions, '
+          + Math.round(bytes / 1024) + ' kB) but the display never sized itself'
+        : 'connected, but the gateway has sent no display data at all');
+  }, 10000);
+
+  // ── input ──────────────────────────────────────────────────
+  {% if join and join.mode != 'control' %}
+  {#- READ-ONLY BY CONSTRUCTION, on this side too. The relay already refuses
+      to forward anything but `sync` from a watcher, and this is the other
+      half of the same promise: with no keyboard and no mouse bound there is
+      nothing in the window that could reach the far end even if the filter
+      were wrong. A supervisor watches; only the person at the keyboard
+      types. -#}
+  display.showCursor(true);
+  {% else %}
+  const kbd = new Guacamole.Keyboard(document);
+  kbd.onkeydown = k => client.sendKeyEvent(1, k);
+  kbd.onkeyup = k => client.sendKeyEvent(0, k);
+
+  const el = display.getElement();
+  const mouse = new Guacamole.Mouse(el);
+  const send = s => {
+    // undo the display scale so guacd gets target-space coordinates
+    const m = new Guacamole.Mouse.State(s.x / scale, s.y / scale, s.left,
+      s.middle, s.right, s.up, s.down);
+    client.sendMouseState(m);
+  };
+  mouse.onmousedown = mouse.onmouseup = mouse.onmousemove = send;
+  // hide the local cursor; guacd paints the remote one
+  display.showCursor(true);
+  {% endif %}
+
+  window.addEventListener('pagehide', () => { try { client.disconnect(); } catch (e) {} });
+  window.addEventListener('beforeunload', () => { try { client.disconnect(); } catch (e) {} });
+})();
+</script>
+{% endblock %}

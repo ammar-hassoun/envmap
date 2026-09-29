@@ -1,0 +1,49 @@
+{% if section_error %}
+<div class="flash err">⚠ {{ section_error }}</div>
+{% endif %}
+{% set ix = indexes %}
+<div class="card">
+  <div class="card-h">Secondary indexes
+    <span class="hint">{{ (ix.rows if ix else [])|length }}</span>
+    <span style="flex:1"></span>
+    <span class="hint">from the index service, not from SQL++ — so this still
+      answers when the query service is down</span></div>
+  <div class="card-b" style="overflow-x:auto;">
+    {% if ix and ix.note and not ix.rows %}
+    <p class="sub" style="margin:0;">{{ ix.note }}</p>
+    {% elif not ix or not ix.rows %}
+    <p class="sub" style="margin:0;">No secondary indexes.</p>
+    {% else %}
+    <table class="jenkins" style="min-width:820px;">
+      <thead><tr><th>index</th><th>bucket</th><th>status</th>
+        <th>hosts</th><th>definition</th></tr></thead>
+      <tbody>
+        {% for r in ix.rows %}
+        <tr>
+          <td><b>{{ r.name }}</b>{% if r.replica %}
+            <span class="hint">· replica {{ r.replica }}</span>{% endif %}</td>
+          <td>{{ r.bucket }}{% if r.scope %}<span class="hint">.{{ r.scope
+            }}.{{ r.collection }}</span>{% endif %}</td>
+          <td>
+            {% if r.status in ('Ready', 'ready') %}
+            <span class="badge" style="color:var(--ok-ink);">ready</span>
+            {% elif r.progress and r.progress < 100 %}
+            {# a building index answers queries slowly or not at all, and the
+               percentage is the only thing that says how long to wait #}
+            <span class="badge" style="color:var(--warn-ink);
+                  border-color:var(--warn-line);">{{ r.status }}
+              {{ r.progress }}%</span>
+            {% else %}
+            <span class="badge">{{ r.status or 'unknown' }}</span>
+            {% endif %}
+          </td>
+          <td class="hint" style="font-family:var(--mono);font-size:11.5px;">{{ r.hosts }}</td>
+          <td class="hint" style="font-family:var(--mono);font-size:11.5px;
+                     max-width:340px;overflow-wrap:anywhere;">{{ r.definition }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </div>
+</div>

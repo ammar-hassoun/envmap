@@ -1,0 +1,277 @@
+{# One resource from the tree, opened in place below it. #}
+{% if res_error %}
+<div class="flash err">⚠ {{ res_error }}</div>
+{% elif res %}
+<div class="card" id="rescard" data-uid="{{ uid }}">
+  <div class="card-h" style="flex-wrap:wrap;gap:8px;">
+    {# in the popup (`bare`) the psh window bar already names the resource and
+       carries the close — repeating them read as two windows in one #}
+    {% if not bare %}
+    <span class="badge">{{ res.kind }}</span>
+    <b style="font-size:14px;">{{ res.name }}</b>
+    {% if res.namespace %}<span class="hint">{{ res.namespace }}</span>{% endif %}
+    {% endif %}
+    {% if not res.synced %}
+    <span class="sv sv-medium">differs from git</span>
+    {% endif %}
+    <span style="flex:1"></span>
+    {# the tab worth opening on is chosen per resource, so it is marked rather
+       than the reader having to work out why it opened where it did #}
+    {% set tabs = [] %}
+    {% set _ = tabs.append(('summary', 'Summary')) %}
+    {% if res.kind == 'Pod' %}{% set _ = tabs.append(('logs', 'Logs')) %}{% endif %}
+    {% set _ = tabs.append(('events', 'Events' ~ (' · ' ~ res.events|length if res.events else ''))) %}
+    {% set _ = tabs.append(('manifest', 'Live manifest')) %}
+    {% if res.difftext %}{% set _ = tabs.append(('changes', 'Diff')) %}{% endif %}
+    {% if res.diff %}{% set _ = tabs.append(('diff', 'Desired manifest')) %}{% endif %}
+    {% set _ = tabs.append(('edit', 'Edit')) %}
+    {% set _ = tabs.append(('actions', 'Actions' ~ (' · ' ~ res.actions|length if res.actions else ''))) %}
+    {% for key, label in tabs %}
+    <button class="{{ 'btn' if res.tab == key else 'btn-ghost' }} restab"
+            data-tab="{{ key }}"
+            style="padding:5px 13px;font-size:11.5px;">{{ label }}</button>
+    {% endfor %}
+    {% if not bare %}
+    <button class="btn-ghost" id="resclose"
+            style="padding:5px 11px;font-size:11.5px;">Close</button>
+    {% endif %}
+  </div>
+  <div class="card-b">
+    {% if res.note %}
+    <div class="sec-note" style="margin:0 0 10px;color:var(--warn-ink);"
+      >{{ res.note }}</div>
+    {% endif %}
+
+    {% if res.tab == 'summary' %}
+      {# the facts first, the way Argo's SUMMARY tab leads: what this object is,
+         where it lives, whether git and the cluster agree about it #}
+      <table class="jenkins rsum">
+        <tbody>
+          <tr><th>Kind</th><td>{{ res.kind }}</td></tr>
+          <tr><th>Name</th><td style="font-family:var(--mono);">{{ res.name }}</td></tr>
+          <tr><th>Namespace</th><td style="font-family:var(--mono);">{{ res.namespace or '—' }}</td></tr>
+          {% if res.created %}<tr><th>Created at</th><td>{{ res.created }}</td></tr>{% endif %}
+          {% if res.svc_type %}<tr><th>Type</th><td>{{ res.svc_type }}</td></tr>{% endif %}
+          {% if res.hostnames %}<tr><th>Hostnames</th>
+            <td style="font-family:var(--mono);font-size:11.5px;">{{ res.hostnames|join(', ') }}</td></tr>{% endif %}
+          {% if res.replicas %}<tr><th>Replicas</th><td>{{ res.replicas }} ready</td></tr>{% endif %}
+          {% if res.node %}<tr><th>Node</th><td style="font-family:var(--mono);">{{ res.node }}</td></tr>{% endif %}
+          <tr><th>Status</th>
+            <td>{% if res.synced %}<span class="sv sv-ok">Synced</span>
+                {% else %}<span class="sv sv-medium">OutOfSync</span>{% endif %}</td></tr>
+          {% if res.images_live %}<tr><th>Images</th>
+            <td>{% for i in res.images_live %}<span class="badge"
+                  style="font-family:var(--mono);">{{ i }}</span>{% endfor %}</td></tr>{% endif %}
+          {% if res.containers %}<tr><th>Containers</th>
+            <td>{% for c in res.containers %}<span class="badge">{{ c }}</span>{% endfor %}</td></tr>{% endif %}
+          {% if res.labels %}<tr><th>Labels</th>
+            <td>{% for k, v in res.labels.items() %}<span class="badge"
+                  style="font-family:var(--mono);font-size:10.5px;">{{ k }}={{ v }}</span>{% endfor %}</td></tr>{% endif %}
+          {% if res.uid_live %}<tr><th>UID</th>
+            <td style="font-family:var(--mono);font-size:11px;">{{ res.uid_live }}</td></tr>{% endif %}
+        </tbody>
+      </table>
+      {% if res.events %}
+      <div class="sec-note" style="margin-top:10px;">
+        {{ res.events|length }} event{{ 's' if res.events|length != 1 }} recorded —
+        the <b>Events</b> tab has them.</div>
+      {% endif %}
+
+    {% elif res.tab == 'logs' %}
+      {% if res.containers|length > 1 %}
+      <div class="kv" style="gap:6px;margin-bottom:10px;">
+        <span class="sec-note" style="margin:0;">container</span>
+        {% for c in res.containers %}
+        <button class="{{ 'btn' if c == res.container else 'btn-ghost' }} rescont"
+                data-container="{{ c }}"
+                style="padding:4px 11px;font-size:11px;">{{ c }}</button>
+        {% endfor %}
+      </div>
+      {% endif %}
+      {% if res.log %}
+      <div class="kv" style="gap:8px;margin-bottom:8px;">
+        <button class="btn-ghost" id="reslive"
+                style="padding:4px 12px;font-size:11px;"
+                title="Re-read every few seconds and keep the view at the
+                       newest line">Follow</button>
+        <button class="btn-ghost" id="reswrapx"
+                style="padding:4px 12px;font-size:11px;">Wrap</button>
+        <span class="sec-note" id="reslivenote" style="margin:0;"></span>
+        <span style="flex:1"></span>
+        <a class="btn btn-ghost" id="resdl" href="#"
+           download="{{ res.name }}{{ '-' ~ res.container if res.container }}.log"
+           style="padding:4px 12px;font-size:11px;">Download</a>
+      </div>
+      <pre class="ddl reslogbox" id="reslog"
+           style="max-height:52vh;overflow:auto;">{{ res.log }}</pre>
+      <div class="sec-note" style="margin-top:8px;">The last
+        {{ lines }} lines, read through Argo CD — so it needs no kubeconfig
+        here and shows exactly what that Argo account is allowed to see.</div>
+      {% else %}
+      <p class="sub" style="margin:0;">This container has produced no output,
+        or Argo CD will not show it.</p>
+      {% endif %}
+
+    {% elif res.tab == 'changes' %}
+      {% if not res.difftext %}
+      <p class="sub" style="margin:0;">The live object matches what git wants —
+        there is nothing to diff.{% if not res.diff %} (Git does not manage this
+        object directly — a controller created it.){% endif %}</p>
+      {% else %}
+      <p class="sub" style="margin:0 0 10px;">Line by line: <b>−</b> is what git
+        wants and the cluster lacks, <b>+</b> is what the cluster has that git
+        did not ask for. Both sides are normalised (managedFields and friends
+        removed), so what differs here is what actually differs.</p>
+      <pre class="ddl" style="max-height:56vh;overflow:auto;"
+        >{% for l in res.difftext.split('\n') %}<span class="{{ 'df-a' if l[:1] == '+' else 'df-r' if l[:1] == '-' else 'df-h' if l[:2] == '@@' else '' }}">{{ l }}</span>
+{% endfor %}</pre>
+      {% endif %}
+
+    {% elif res.tab == 'actions' %}
+      {# Argo CD's own resource actions — read from the controller, not a fixed
+         list here, so an action somebody adds to it appears without a release #}
+      {% if res.actions %}
+      <div class="fdet-sec" style="margin-top:0;"><h4>What Argo CD can do to this</h4>
+        <div class="kv" style="gap:8px;flex-wrap:wrap;">
+          {% for a in res.actions %}
+          <form method="post" class="gact"
+                action="/gitops/app/resource/action?conn={{ conn.id }}&name={{ app_name|urlencode }}">
+            <input type="hidden" name="rkind" value="{{ res.kind }}">
+            <input type="hidden" name="rname" value="{{ res.name }}">
+            <input type="hidden" name="rns" value="{{ res.namespace }}">
+            <input type="hidden" name="rgroup" value="{{ res.group }}">
+            <input type="hidden" name="rversion" value="{{ res.version }}">
+            <input type="hidden" name="action" value="{{ a.name }}">
+            <button class="btn btn-ghost" type="submit"
+                    style="padding:6px 15px;font-size:12px;"
+                    data-act-label="{{ a.label }}"
+                    {% if a.disabled %}disabled title="the controller says this
+                    action does not apply right now"{% endif %}>{{ a.label }}</button>
+          </form>
+          {% endfor %}
+        </div>
+        <div class="sec-note" style="margin-top:8px;">The controller's own
+          actions — a Deployment restarts, a CronJob suspends, a Rollout
+          promotes. Each runs through Argo CD's account and is recorded here.</div>
+      </div>
+      {% else %}
+      <p class="sub" style="margin:0 0 14px;">Argo CD offers no actions for a
+        {{ res.kind }} — restart, suspend and promote belong to workloads.</p>
+      {% endif %}
+
+      {# the sharpest control on the page, last and typed #}
+      <div class="fdet-sec"><h4>Delete from the cluster</h4>
+        <form method="post" data-del-skip
+              action="/gitops/app/resource/delete?conn={{ conn.id }}&name={{ app_name|urlencode }}">
+          <input type="hidden" name="rkind" value="{{ res.kind }}">
+          <input type="hidden" name="rname" value="{{ res.name }}">
+          <input type="hidden" name="rns" value="{{ res.namespace }}">
+          <input type="hidden" name="rgroup" value="{{ res.group }}">
+          <input type="hidden" name="rversion" value="{{ res.version }}">
+          <p class="sub" style="margin:0 0 9px;">Removes this object from the
+            cluster. If git still declares it, Argo CD puts it back on the next
+            sync — which is the usual way to make a stuck object rebuild.</p>
+          <div class="kv" style="gap:9px;flex-wrap:wrap;align-items:center;">
+            <input name="confirm" autocomplete="off" placeholder="type delete"
+                   style="width:130px;font-family:var(--mono);font-size:12px;">
+            <label class="chk" style="font-size:12px;">
+              <input type="checkbox" name="orphan"> leave children</label>
+            <label class="chk" style="font-size:12px;">
+              <input type="checkbox" name="force"> force</label>
+            <button class="btn" type="submit"
+                    style="padding:7px 16px;font-size:12.5px;
+                           background:var(--danger);border-color:var(--danger);">
+              Delete {{ res.kind }}</button>
+          </div>
+        </form>
+      </div>
+
+    {% elif res.tab == 'edit' %}
+      {# two ways to change a thing, said plainly: git is the durable one #}
+      <div class="kv" style="gap:10px;flex-wrap:wrap;align-items:center;
+           padding:10px 12px;margin:0 0 12px;border:1px solid var(--line);
+           border-left:3px solid var(--ok);border-radius:0 8px 8px 0;
+           background:var(--overlay);">
+        <b style="font-size:12.5px;">① Edit in git — the durable fix.</b>
+        {% if gitedit %}
+        <a class="btn btn-ghost" style="padding:5px 14px;font-size:12px;"
+           href="{{ gitedit.url }}">Open {{ gitedit.label }} →</a>
+        <span class="sec-note" style="margin:0;">the portal's config editor;
+          Argo CD syncs it from there</span>
+        {% else %}
+        <span class="sec-note" style="margin:0;">this application's repository
+          is not registered in this portal, so the git change happens in your
+          git tooling — the form below edits the LIVE object only</span>
+        {% endif %}
+      </div>
+      <p class="sub" style="margin:0 0 10px;"><b>② Edit live via Argo CD</b> —
+        the change goes through Argo CD's own account, exactly like its Edit
+        button. If the application self-heals, git will win the argument on the
+        next sync.</p>
+      <form method="post" action="/gitops/app/resource/edit?conn={{ conn.id }}&name={{ app_name|urlencode }}">
+        <input type="hidden" name="rkind" value="{{ res.kind }}">
+        <input type="hidden" name="rname" value="{{ res.name }}">
+        <input type="hidden" name="rns" value="{{ res.namespace }}">
+        <input type="hidden" name="rgroup" value="{{ res.group }}">
+        <input type="hidden" name="rversion" value="{{ res.version }}">
+        <textarea name="text" spellcheck="false" data-nosave style="width:100%;box-sizing:border-box;
+          min-height:44vh;font-family:var(--mono);font-size:11.5px;line-height:1.5;
+          color:var(--text);background:var(--well);border:1px solid var(--line);
+          border-radius:8px;padding:10px 12px;">{{ res.manifest }}</textarea>
+        <div class="kv" style="gap:9px;margin-top:10px;flex-wrap:wrap;">
+          <input name="confirm" autocomplete="off" placeholder="type apply"
+                 style="width:130px;font-family:var(--mono);font-size:12px;">
+          <button class="btn" style="padding:7px 18px;font-size:12.5px;"
+                  type="submit">Apply to the cluster</button>
+          <span class="sec-note" style="margin:0;">a merge patch of exactly what
+            is above · audited</span>
+        </div>
+      </form>
+
+    {% elif res.tab == 'diff' %}
+      <p class="sub" style="margin:0 0 10px;">What git says this object should
+        be — Argo CD calls this the desired manifest. The live object is under
+        <b>Live manifest</b>, and <b>Diff</b> is the two side by side.</p>
+      <pre class="ddl lineno" style="max-height:56vh;overflow:auto;">{% for l in res.diff.split('\n') %}<span class="ln">{{ loop.index }}</span>{{ l }}
+{% endfor %}</pre>
+
+    {% elif res.tab == 'events' %}
+      {% if not res.events %}
+      <p class="sub" style="margin:0;">Kubernetes has recorded nothing about
+        this object. Events expire after an hour by default, so silence here
+        usually means nothing has happened recently rather than ever.</p>
+      {% else %}
+      <table class="jenkins">
+        <thead><tr><th>type</th><th>reason</th><th>message</th>
+          <th class="num">count</th><th>when</th></tr></thead>
+        <tbody>
+          {% for e in res.events %}
+          <tr>
+            <td><span class="sv {{ 'sv-high' if e.type == 'Warning'
+                  else 'sv-ok' }}">{{ e.type }}</span></td>
+            <td><b>{{ e.reason }}</b></td>
+            <td class="hint" style="white-space:normal;">{{ e.message }}</td>
+            <td class="num">{{ e.count }}</td>
+            <td class="hint">{{ e.at }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+
+    {% else %}
+      {% if res.manifest %}
+      <pre class="ddl lineno" style="max-height:56vh;overflow:auto;">{% for l in res.manifest.split('\n') %}<span class="ln">{{ loop.index }}</span>{{ l }}
+{% endfor %}</pre>
+      <div class="sec-note" style="margin-top:8px;">As it is in the cluster now.
+        managedFields and the last-applied annotation are always left out —
+        routinely longer than the object and never what anybody came to read,
+        which is why Argo CD's own view has a checkbox for it.</div>
+      {% else %}
+      <p class="sub" style="margin:0;">Argo CD did not return a manifest for
+        this object.</p>
+      {% endif %}
+    {% endif %}
+  </div>
+</div>
+{% endif %}

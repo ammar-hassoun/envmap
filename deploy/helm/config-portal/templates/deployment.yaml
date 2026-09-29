@@ -1,0 +1,174 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "config-portal.fullname" . }}
+  labels: {{- include "config-portal.labels" . | nindent 4 }}
+spec:
+  # one replica, deliberately — see values.yaml
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: {{ .Values.strategy.type }}
+  selector:
+    matchLabels: {{- include "config-portal.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        # roll the pod when the settings change, not only when the image does
+        checksum/env: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}{{- toYaml . | nindent 8 }}{{- end }}
+      labels:
+        {{- include "config-portal.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}{{- toYaml . | nindent 8 }}{{- end }}
+    spec:
+      serviceAccountName: {{ include "config-portal.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: portal
+          image: {{ include "config-portal.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8471
+          env:
+            - name: PORTAL_DATA_DIR
+              value: {{ .Values.persistence.mountPath | quote }}
+            - name: PORTAL_PORT
+              value: "8471"
+            - name: PORTAL_HOST
+              value: "0.0.0.0"
+            - name: PORTAL_ALLOW_NETWORK
+              value: {{ ternary "1" "0" .Values.portal.allowNetwork | quote }}
+            - name: PORTAL_COOKIE_SECURE
+              value: {{ ternary "1" "0" (or .Values.portal.cookieSecure (and .Values.ingress.enabled (gt (len .Values.ingress.tls) 0))) | quote }}
+            - name: PORTAL_SESSION_HOURS
+              value: {{ .Values.portal.sessionHours | quote }}
+            {{- if .Values.rbac.selfUpdate }}
+            {{/* Told, not discovered: a pod working out which Deployment owns it
+                 means walking ReplicaSet owner references, and the chart already
+                 knows the answer. The namespace comes from the pod itself so it
+                 stays right if the release is installed elsewhere. */}}
+            - name: PORTAL_SELF_UPDATE
+              value: "1"
+            - name: PORTAL_SELF_DEPLOYMENT
+              value: {{ include "config-portal.fullname" . | quote }}
+            - name: PORTAL_SELF_CONTAINER
+              value: "portal"
+            - name: PORTAL_SELF_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            {{- end }}
+            {{- with .Values.portal.rootPath }}
+            - name: PORTAL_ROOT_PATH
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.portal.brand.name }}
+            - name: PORTAL_BRAND_NAME
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.portal.brand.org }}
+            - name: PORTAL_BRAND_ORG
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.portal.brand.short }}
+            - name: PORTAL_BRAND_SHORT
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.portal.extraEnv }}{{- toYaml . | nindent 12 }}{{- end }}
+          envFrom:
+            {{- /* The chart's own Secret. It was created, hashed into the pod
+                 annotation so a change rolls the Deployment — and never
+                 referenced, so everything only it carries was dead config:
+                 PORTAL_UPDATE_URL and PORTAL_SECRET_KEY. `--set
+                 portal.secretKey=…` was the documented way to set the sealing
+                 key and it did nothing whatsoever. Found on the first real
+                 install, by asking the running pod what it actually had. */}}
+            - secretRef:
+                name: {{ include "config-portal.fullname" . }}-env
+            {{- with .Values.portal.extraEnvFrom }}{{- toYaml . | nindent 12 }}{{- end }}
+          {{- if .Values.probes.enabled }}
+          # shallow on purpose: it says the process is serving, not that every
+          # cluster it watches is reachable
+          startupProbe:
+            httpGet: {path: /healthz, port: http}
+            failureThreshold: 30
+            periodSeconds: 2
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 20
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+          {{- end }}
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.persistence.mountPath }}
+            # the root filesystem is read-only, so anything that writes needs a
+            # volume: git and kubectl both want a HOME and a temp directory
+            - name: tmp
+              mountPath: /tmp
+            - name: home
+              mountPath: /home/portal
+        {{- if .Values.guacd.enabled }}
+        # Apache Guacamole's guacd — the RDP/VNC gateway for Privileged Access.
+        # A SIDECAR, not a separate Deployment like ollama, precisely because it
+        # must write session recordings into the SAME data volume the portal
+        # serves them from, and a ReadWriteOnce PVC cannot be shared across pods.
+        # The portal reaches it at 127.0.0.1:4822, its default. Off unless
+        # enabled: it is a new, heavyweight dependency, and RDP/VNC targets show
+        # a clear "gateway not reachable" state until it is turned on. Both
+        # containers write the volume via the pod fsGroup; the recordings dir is
+        # created group-writable for exactly this.
+        - name: guacd
+          image: "{{ .Values.guacd.image.repository }}:{{ .Values.guacd.image.tag }}"
+          imagePullPolicy: {{ .Values.guacd.image.pullPolicy }}
+          securityContext: {{- toYaml .Values.guacd.securityContext | nindent 12 }}
+          ports:
+            - name: guacd
+              containerPort: 4822
+          resources: {{- toYaml .Values.guacd.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.persistence.mountPath }}
+        {{- end }}
+      volumes:
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim | default (include "config-portal.fullname" .) }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: tmp
+          emptyDir: {}
+        - name: home
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if gt (int .Values.replicaCount) 1 }}
+      # More than one replica must share one node's volume: SQLite WAL is not
+      # safe over a network filesystem, so the pods co-schedule themselves.
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels: {{- include "config-portal.selectorLabels" . | nindent 18 }}
+        {{- with .Values.affinity }}{{- toYaml . | nindent 8 }}{{- end }}
+      {{- else }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- end }}

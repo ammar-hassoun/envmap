@@ -1,0 +1,247 @@
+{% if section_error %}
+<div class="flash err">⚠ {{ section_error }}</div>
+{% endif %}
+{% set o = overview %}
+{% set rb = rebalance %}
+{% if o %}
+
+{# A node that stopped answering, or a rebalance in progress, is what somebody
+   opened this page to find out. It goes above the detail, not inside a tab. #}
+{% if o.alerts %}
+<div class="flash err" style="margin-bottom:12px;">
+  ⚠ {% for a in o.alerts %}{{ a }}{% if not loop.last %}<br>{% endif %}{% endfor %}
+</div>
+{% endif %}
+
+{# ── rebalance ──────────────────────────────────────────────────────────
+   Two different questions, and only the second is easy to miss: is one running,
+   and is one NEEDED. A node added but not rebalanced in holds no data and
+   serves nothing, so the cluster is quietly smaller than the node count says. #}
+<div class="card" style="margin-bottom:14px;">
+  <div class="card-h">Rebalance
+    {% if rb and rb.running %}
+    <span class="badge" style="color:var(--warn-ink);border-color:var(--warn-line);">
+      running · {{ rb.progress }}%</span>
+    {% elif rb and rb.needed %}
+    <span class="badge" style="color:var(--danger-ink);border-color:var(--danger-line);">
+      required</span>
+    {% elif rb %}
+    <span class="badge" style="color:var(--ok-ink);">balanced</span>
+    {% endif %}
+    <span style="flex:1"></span>
+    {% if rb %}<span class="hint">cluster reports “{{ rb.status }}”</span>{% endif %}
+  </div>
+  <div class="card-b">
+    {% if not rb %}
+    <p class="sub" style="margin:0;">The rebalance state could not be read.</p>
+    {% else %}
+
+    {% if rb.running %}
+    <div style="height:6px;border-radius:3px;background:var(--well);
+                overflow:hidden;margin-bottom:10px;">
+      <div style="height:100%;width:{{ rb.progress }}%;
+                  background:var(--warn-ink);"></div>
+    </div>
+    {% if rb.per_node %}
+    <table class="jenkins" style="width:100%;">
+      <thead><tr><th>node</th><th style="width:30%;text-align:right;">progress</th></tr></thead>
+      <tbody>
+        {% for otp, pct in rb.per_node.items() %}
+        <tr><td class="hint" style="font-family:var(--mono);font-size:11.5px;">{{ otp }}</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums;">{{ pct }}%</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+    <p class="sub" style="margin:10px 0 0;">Data is moving between nodes. It is
+      safe to leave running and safe to stop — stopping leaves the cluster
+      consistent, with whatever had not moved yet still to do.</p>
+
+    {% elif rb.needed %}
+    <p class="sub" style="margin:0 0 10px;">These nodes are part of the cluster
+      but hold no data until a rebalance runs, so the cluster is smaller than
+      its node count suggests:</p>
+    <table class="jenkins" style="width:100%;">
+      <thead><tr><th>node</th><th>state</th></tr></thead>
+      <tbody>
+        {% for p in rb.pending %}
+        <tr><td><b>{{ p.host }}</b></td>
+          <td class="hint">{{
+            'added, not yet rebalanced in' if p.why == 'inactiveAdded'
+            else ('failed over — its data is on the replicas until a rebalance settles it'
+                  if p.why == 'inactiveFailed' else p.why) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    {% else %}
+    <p class="sub" style="margin:0;">{{ 'The single node is' if rb.nodes == 1
+      else 'All ' ~ rb.nodes ~ ' nodes are' }} balanced — nothing is waiting to
+      be rebalanced in.</p>
+    {% endif %}
+
+    <div class="actions" style="margin-top:14px;">
+      {% if rb.running %}
+      {% if held.write %}
+      <form method="post" action="/db/{{ server.id }}/rebalance">
+        <input type="hidden" name="stop" value="1">
+        <button class="btn-ghost">Stop the rebalance</button></form>
+      {% else %}
+      <span class="hint">Stopping it needs write mode.</span>
+      {% endif %}
+      {% elif held.write %}
+      <button class="btn{{ ' btn-danger' if rb.needed else '-ghost' }}"
+              onclick="document.getElementById('rbmode').showModal()">
+        {{ 'Rebalance now' if rb.needed else 'Start a rebalance' }}</button>
+      {% else %}
+      <span class="hint">Starting a rebalance needs write mode — it moves data
+        across every node.</span>
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card" style="margin-bottom:14px;">
+  <div class="card-h">{{ o.name or 'this cluster' }}
+    <span class="hint">{{ o.version }}{{ ' Enterprise' if o.enterprise else ' Community' }}</span>
+    <span style="flex:1"></span>
+    <span class="hint">{{ o.services|join(' · ') }}</span></div>
+  <div class="card-b">
+    <div style="display:grid;gap:14px;
+                grid-template-columns:repeat(auto-fit,minmax(190px,1fr));">
+      {% macro meter(label, used, total, note) %}
+      <div>
+        <div class="cmp-lbl" style="margin:0 0 5px;">{{ label }}</div>
+        <div style="font-size:19px;font-weight:600;">{{ human(used) }}</div>
+        <div class="hint">of {{ human(total) }}{{ ' · ' ~ note if note }}</div>
+        {# the bar is the only thing here that reads at a glance #}
+        <div style="height:5px;border-radius:3px;background:var(--well);
+                    margin-top:7px;overflow:hidden;">
+          <div style="height:100%;width:{{
+            ((used / total * 100) if total else 0)|round(1) }}%;
+            background:{{ 'var(--danger-ink)' if total and used / total > 0.9
+                     else ('var(--warn-ink)' if total and used / total > 0.75
+                     else 'var(--ok-ink)') }};"></div>
+        </div>
+      </div>
+      {% endmacro %}
+      {{ meter('Data service quota', o.ram.quota_used, o.ram.quota_total,
+               'what buckets may use') }}
+      {{ meter('Server memory', o.ram.used, o.ram.total, 'the whole machine') }}
+      {{ meter('Disk', o.hdd.used, o.hdd.total,
+               human(o.hdd.by_data) ~ ' by data') }}
+      <div>
+        <div class="cmp-lbl" style="margin:0 0 5px;">Quotas</div>
+        <div class="hint" style="line-height:1.8;">
+          data <b>{{ o.quota_mb }} MB</b><br>
+          index <b>{{ o.index_quota_mb }} MB</b>
+          {% if o.fts_quota_mb %}<br>search <b>{{ o.fts_quota_mb }} MB</b>{% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{# Ten columns forced a sideways scroll on a three-node cluster. Services moved
+   under the host, replica items under the item count, and the node's own memory
+   into the cell's title — the same information, none of it off-screen. #}
+<div class="card">
+  <div class="card-h">Nodes <span class="hint">{{ o.nodes|length }}</span></div>
+  <div class="card-b">
+    <table class="jenkins" style="width:100%;">
+      <thead><tr>
+        <th>host</th>
+        <th style="width:14%;">status</th>
+        <th style="width:11%;">uptime</th>
+        <th style="width:9%;text-align:right;">cpu</th>
+        <th style="width:15%;text-align:right;">items</th>
+        <th style="width:13%;text-align:right;">ops/s</th>
+      </tr></thead>
+      <tbody>
+        {% for n in o.nodes %}
+        <tr>
+          <td>
+            <b>{{ n.hostname }}</b>{% if n.this %}
+            <span class="hint">· this node</span>{% endif %}
+            <div class="hint" style="font-size:11px;">{{ n.services|join(', ') }}{%
+              if n.version %} · {{ n.version }}{% endif %}</div>
+          </td>
+          <td>
+            {% if n.status == 'healthy' %}
+            <span class="badge" style="color:var(--ok-ink);">healthy</span>
+            {% else %}
+            <span class="badge" style="color:var(--danger-ink);
+                  border-color:var(--danger-line);">{{ n.status }}</span>
+            {% endif %}
+            {% if n.membership and n.membership != 'active' %}
+            <div class="hint" style="font-size:11px;color:var(--warn-ink);">{{ n.membership }}</div>
+            {% endif %}
+          </td>
+          <td class="hint">{{ n.uptime or '—' }}</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums;">{{ n.cpu }}%</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums;"
+              title="{{ human(n.ram_free) }} memory free of {{ human(n.ram_total) }}">
+            {{ '{:,}'.format(n.docs) }}
+            <div class="hint" style="font-size:10.5px;">+{{ '{:,}'.format(n.docs_replica) }} replica</div>
+          </td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums;">{{ n.ops }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% if rb and held.write and not rb.running %}
+<dialog id="rbmode" class="pdialog">
+  <form method="post" action="/db/{{ server.id }}/rebalance">
+    <div class="dhead">
+      <span>
+        <span class="dtitle">Rebalance this cluster</span>
+        <span class="dwhere">{{ server.name }} · {{ where }}</span>
+      </span>
+      <span style="flex:1"></span>
+      <button type="button" class="dx"
+              onclick="document.getElementById('rbmode').close()" aria-label="Close">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2.2" stroke-linecap="round"
+             aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div class="dbody">
+      <div class="dnote" style="margin-bottom:16px;">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2" stroke-linecap="round"
+             aria-hidden="true"><circle cx="12" cy="12" r="9"/>
+          <path d="M12 11v5M12 7.6v.1"/></svg>
+        <span>Data moves between all {{ rb.nodes }} nodes. Clients keep working
+          throughout, but disk and network load rise for as long as it runs, and
+          on a large cluster that is hours rather than minutes.</span>
+      </div>
+      <p class="sub" style="margin:0 0 14px;"><b>No node will be removed.</b>
+        This sends every node the cluster knows about as a node to keep, and an
+        empty ejection list. Removing a node is a different operation and is not
+        available here — it belongs in Couchbase's own console, where the node
+        being ejected is named on screen.</p>
+      <div class="dfield">
+        <label for="rbword">type <b>rebalance</b> to confirm</label>
+        <input id="rbword" type="text" name="confirm" autocomplete="off"
+               required placeholder="rebalance">
+      </div>
+    </div>
+    <div class="dfoot">
+      <button type="button" class="btn-ghost"
+              onclick="document.getElementById('rbmode').close()">Cancel</button>
+      <span class="spacer"></span>
+      <button type="submit" class="btn-danger">Start the rebalance</button>
+    </div>
+  </form>
+</dialog>
+{% endif %}
+
+{% elif not section_error %}
+<div class="card"><div class="card-b">
+  <p class="sub" style="margin:0;">The cluster did not answer with an overview.</p>
+</div></div>
+{% endif %}

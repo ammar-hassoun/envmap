@@ -1,0 +1,748 @@
+{% extends "base.html" %}
+{% block crumbs %}<b>Overview</b>{% endblock %}
+{% block content %}
+{# Panels come from this person's saved layout, and each one is a template in
+   templates/panels/. Adding a panel is a template plus a catalogue entry in
+   app/layout.py — arranging one is dragging it. #}
+{% set f = fleet %}
+{% set t = f.totals if f else none %}
+
+{% if f and not f.projects %}
+<div class="empty">
+  <div class="big">{{ glyph("folder-git-2", 40) }}</div>
+  <h2>Nothing connected yet</h2>
+  <p>Create a project, add its regions and clusters, and this page will fill
+     itself in — every cluster you connect appears here automatically.</p>
+  <a class="btn" href="/settings/projects">＋ Add a project</a>
+</div>
+{% else %}
+
+<div class="page-head">
+  <div>
+    <h1>Fleet overview</h1>
+    <p class="sub">
+      {% if t %}{{ t.projects }} project{{ 's' if t.projects != 1 }} ·
+        {{ t.clusters }} cluster{{ 's' if t.clusters != 1 }} ·
+        {{ t.services }} service{{ 's' if t.services != 1 }} ·
+        {% if f.stale %}<span style="color:var(--warn-ink);" id="staleflag"
+          title="Shown from the last snapshot so the page opens instantly. A fresh read is running now.">
+          snapshot {{ f.at }} · refreshing…</span>
+        {% else %}refreshed {{ f.at }}{% endif %}
+      {% else %}{{ panels|length }} panel{{ 's' if panels|length != 1 }} ·
+        arranged by you{% endif %}</p>
+  </div>
+  <div style="display:flex;gap:10px;align-items:center;">
+    <label class="chk" style="margin-right:6px;">
+      <input type="checkbox" id="autorefresh"> auto 60s <span id="countdown"></span></label>
+    <button type="button" class="btn btn-ghost" id="arrangebtn">⠿ Arrange</button>
+    <a class="btn btn-ghost" href="/?refresh=1">↻ Refresh</a>
+  </div>
+</div>
+
+<div class="card arrangebar" id="tray" hidden>
+  <div class="card-h" style="flex-wrap:wrap;">
+    <b style="font-size:14px;">Arranging</b>
+    <span class="hint">drag <b>⠿</b> to move · drag <b>◢</b> to resize ·
+      or click a panel and use <b>← →</b> to reorder, <b>⇧ ← →</b> to widen,
+      <b>Delete</b> to remove · <b>Esc</b> cancels a drag · saved as you go</span>
+    <span style="flex:1"></span>
+    <span class="hint" id="saved"></span>
+    <button type="button" class="btn-ghost tbtn" id="resetbtn">reset to default</button>
+    <button type="button" class="btn tbtn" id="donebtn">done</button>
+  </div>
+
+  {# The arrangement as JSON: keep one, or hand it to somebody who wants the
+     same page. #}
+  <div class="card-b" style="border-bottom:1px solid var(--line2);">
+    <div class="kv" style="margin:13px 0 8px;flex-wrap:wrap;gap:8px;">
+      <b style="font-size:13px;">This arrangement</b>
+      <span class="hint">as JSON, to keep or to hand to somebody else</span>
+    </div>
+    <div style="display:flex;gap:7px;flex-wrap:wrap;align-items:center;">
+      <button type="button" class="btn-ghost tbtn" id="bexport">⤓ copy JSON</button>
+      <button type="button" class="btn-ghost tbtn" id="bimportbtn">⤒ paste JSON</button>
+      <input type="text" id="bimport" hidden placeholder='[{"id":"tiles","w":12}]'
+             style="flex:1 1 260px;min-width:0;font-family:var(--mono);
+                    font-size:11.5px;">
+    </div>
+  </div>
+
+  <div class="card-b">
+    {% if spare %}
+    <div class="kv" style="margin-bottom:9px;">
+      <b style="font-size:13px;">Add a panel</b>
+      <span class="hint">{{ spare|length }} available</span></div>
+    <div class="addgrid" id="addgrid">
+      {% for p in spare %}
+      <a class="addcard" href="#" data-add="{{ p.id }}">
+        <div class="ico">{{ project_icon(p.icon, 20) }}</div>
+        <div style="min-width:0;">
+          <div class="pname">{{ p.title }}</div>
+          <div class="pmeta">{{ p.note }}</div>
+        </div>
+        <div class="arrow">＋</div>
+      </a>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="sec-note">Every panel is already on the page.</div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="board" id="board">
+  {% for p in panels %}
+  {% set meta = catalogue[p.id] %}
+  <section class="panel w{{ p.w }}{% if p.h %} hfix h{{ p.h }}{% endif %}{%
+             if p.c %} folded{% endif %}"
+           data-id="{{ p.id }}" data-w="{{ p.w }}" data-h="{{ p.h or 0 }}"
+           data-c="{{ 1 if p.c else 0 }}" data-r="{{ p.r or 0 }}">
+    <div class="phead">
+      {# drawn, not typed: ⠿ ⇤ ⇥ ⤒ ✕ are whatever glyphs the reader's font
+         happens to have, at whatever weight it happens to draw them, and they
+         looked like it #}
+      <span class="grip" title="Drag to move" aria-label="Drag to move">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="6" cy="4" r="1.35"/>
+          <circle cx="10" cy="4" r="1.35"/><circle cx="6" cy="8" r="1.35"/>
+          <circle cx="10" cy="8" r="1.35"/><circle cx="6" cy="12" r="1.35"/>
+          <circle cx="10" cy="12" r="1.35"/></svg></span>
+      <span class="ptitle">{{ meta.icon }} {{ meta.title }}</span>
+      <span style="flex:1"></span>
+      {# A panel with its own rate says so on its header, always — not only while
+         arranging. Otherwise a panel that is deliberately 15 minutes stale looks
+         like a panel that is broken. #}
+      {% if p.r %}<span class="prate" title="This panel refreshes on its own">⟳ {{
+        (p.r ~ 's') if p.r < 60 else ((p.r // 60) ~ 'm') }}</span>{% endif %}
+      <span class="pwidth">{{ p.w }}<i>/12</i></span>
+      <div class="pbtns">
+        <button type="button" class="pbtn" data-act="fold"
+                title="Collapse to the title" aria-label="Collapse to the title">
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M3 8h10M5.5 5 8 2.5 10.5 5M5.5 11 8 13.5 10.5 11"/></svg></button>
+        <button type="button" class="pbtn" data-act="opts"
+                title="Size and refresh" aria-label="Size and refresh">
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <circle cx="8" cy="3.2" r="1.3"/><circle cx="8" cy="8" r="1.3"/>
+            <circle cx="8" cy="12.8" r="1.3"/></svg></button>
+        <button type="button" class="pbtn" data-act="narrow" title="Narrower"
+                aria-label="Narrower">
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M8 3v10M3 5.5 5.5 8 3 10.5M13 5.5 10.5 8 13 10.5"/>
+          </svg></button>
+        <button type="button" class="pbtn" data-act="wider" title="Wider"
+                aria-label="Wider">
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M8 3v10M5.5 5.5 3 8l2.5 2.5M10.5 5.5 13 8l-2.5 2.5"/>
+          </svg></button>
+        <button type="button" class="pbtn" data-act="autoh"
+                title="Height back to automatic" aria-label="Height back to automatic">
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M2.5 3h11M8 12.5V6m0 0L5.5 8.5M8 6l2.5 2.5"/></svg></button>
+        <button type="button" class="pbtn pbtn-x" data-act="remove"
+                title="Remove this panel" aria-label="Remove this panel">
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M4.5 4.5 11.5 11.5M11.5 4.5 4.5 11.5"/></svg></button>
+      </div>
+    </div>
+    {# Stepping from a quarter to full is four clicks; this is one. The presets
+       are the same twelfths the grid has, named rather than numbered. #}
+    <div class="popts" hidden>
+      <div class="poptrow">
+        <span class="poptlbl">Width</span>
+        {% for w, lab in [(3, '¼'), (4, '⅓'), (6, '½'), (8, '⅔'), (9, '¾'), (12, 'full')] %}
+        <button type="button" class="poptb{{ ' on' if p.w == w }}"
+                data-setw="{{ w }}">{{ lab }}</button>
+        {% endfor %}
+      </div>
+      <div class="poptrow">
+        <span class="poptlbl">Height</span>
+        <button type="button" class="poptb{{ ' on' if not p.h }}" data-seth="0">auto</button>
+        {% for h in heights if h %}
+        <button type="button" class="poptb{{ ' on' if p.h == h }}"
+                data-seth="{{ h }}">{{ h }}</button>
+        {% endfor %}
+      </div>
+      <div class="poptrow">
+        <span class="poptlbl">Refresh</span>
+        {% for r in refreshes %}
+        <button type="button" class="poptb{{ ' on' if (p.r or 0) == r }}"
+                data-setr="{{ r }}">{{ 'page' if not r else
+          ((r ~ 's') if r < 60 else ((r // 60) ~ 'm')) }}</button>
+        {% endfor %}
+      </div>
+      <div class="poptnote">“page” follows the auto-refresh at the top. Any other
+        rate makes this panel fetch only itself, on its own clock.</div>
+    </div>
+    <div class="pbody">{% include "panels/" ~ p.id ~ ".html" %}</div>
+    <span class="sizehint"></span>
+    <div class="rsz" title="Drag to resize — width and height"
+         aria-label="Resize">
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M13 6.5 6.5 13M13 10.5 10.5 13"/></svg></div>
+  </section>
+  {% endfor %}
+  {% if not panels %}
+  <div class="empty" style="grid-column:1/-1;">
+    <div class="big">{{ glyph("layout-grid", 40) }}</div>
+    <h2>No panels on the page</h2>
+    <p>Press Arrange and add the ones you want.</p>
+  </div>
+  {% endif %}
+</div>
+
+{% set waiting = (f and f.stale) or (pipes and (pipes.pending or pipes.stale))
+                 or (sec and (sec.pending or sec.stale)) %}
+{% if waiting %}
+<script nonce="{{ csp_nonce() }}">
+// Something is still being collected behind the page — the fleet snapshot, or a
+// CI or security roll-up. Pick the result up exactly once, keyed on what we are
+// waiting for, so a permanently slow source cannot cause a reload loop.
+(function () {
+  const key = 'portal-home-swr-{{ f.at if f else "" }}'
+    + '-{{ pipes.pending if pipes else "" }}{{ pipes.stale if pipes else "" }}'
+    + '-{{ sec.pending if sec else "" }}{{ sec.stale if sec else "" }}';
+  if (sessionStorage.getItem(key)) return;
+  sessionStorage.setItem(key, '1');
+  // Arranging must not be interrupted by a reload, but it must not cancel one
+  // either: this used to fire once, find the board being arranged, and give up
+  // — leaving "refreshing…" in the header for as long as the page stayed open.
+  // It waits for arranging to finish instead, and gives up only after ten
+  // minutes so an abandoned tab cannot poll forever.
+  let waited = 0;
+  (function tick(first) {
+    setTimeout(function () {
+      if (document.body.classList.contains('arranging')) {
+        waited += 2000;
+        if (waited < 600000) tick(false);
+        return;
+      }
+      location.replace('/');
+    }, first ? 4500 : 2000);
+  })(true);
+})();
+</script>
+{% endif %}
+
+<script nonce="{{ csp_nonce() }}">
+// ── arranging ────────────────────────────────────────────────────────────────
+// The layout is a list of {id, w, h}. Every change posts the whole list —
+// simpler than diffing, the server validates and snaps it regardless.
+//
+// Both gestures are pointer events, not HTML5 drag-and-drop: pointer events
+// work identically for mouse, trackpad, pen and touch, fire every frame, and
+// allow a live placeholder — the panel itself stays in the grid, dimmed, while
+// a ghost follows the pointer.
+(function () {
+  const board = document.getElementById('board');
+  const tray = document.getElementById('tray');
+  const saved = document.getElementById('saved');
+  const WIDTHS = {{ widths|tojson }};
+  const HEIGHTS = {{ heights|tojson }};
+  let editing = {{ 'true' if arrange else 'false' }};
+
+  const layout = () => Array.from(board.querySelectorAll('.panel')).map(el => ({
+    id: el.dataset.id, w: +el.dataset.w, h: +el.dataset.h || 0,
+    c: el.dataset.c === '1' ? 1 : 0, r: +el.dataset.r || 0
+  }));
+
+  let timer = null, saveFailed = '';
+  function persist() {
+    clearTimeout(timer);
+    saved.textContent = 'saving…';
+    timer = setTimeout(async () => {
+      try {
+        const r = await fetch('/overview/layout', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({panels: layout()})
+        });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        saveFailed = '';
+        saved.textContent = 'saved';
+        setTimeout(() => { if (saved.textContent === 'saved') saved.textContent = ''; }, 1400);
+      } catch (e) {
+        saveFailed = e.message;
+        saved.textContent = 'could not save — ' + e.message;
+      }
+    }, 250);
+  }
+
+  const snap = (v, steps) => steps.reduce((a, b) =>
+    Math.abs(b - v) < Math.abs(a - v) ? b : a);
+
+  function setW(panel, w) {
+    panel.classList.remove(...WIDTHS.map(x => 'w' + x));
+    panel.classList.add('w' + w);
+    panel.dataset.w = w;
+    chrome(panel);
+  }
+
+  // the header tells the truth about the panel it sits on: how wide it is, and
+  // which of the two width buttons still does anything
+  function chrome(panel) {
+    const lab = panel.querySelector('.pwidth');
+    if (lab) lab.firstChild.nodeValue = panel.dataset.w;
+    const i = WIDTHS.indexOf(+panel.dataset.w);
+    const nar = panel.querySelector('[data-act="narrow"]');
+    const wid = panel.querySelector('[data-act="wider"]');
+    if (nar) nar.disabled = i <= 0;
+    if (wid) wid.disabled = i >= WIDTHS.length - 1;
+    const auto = panel.querySelector('[data-act="autoh"]');
+    if (auto) auto.disabled = !+panel.dataset.h;
+  }
+  function setH(panel, h) {
+    panel.classList.remove('hfix', ...HEIGHTS.filter(x => x).map(x => 'h' + x));
+    if (h) panel.classList.add('hfix', 'h' + h);
+    panel.dataset.h = h;
+    chrome(panel);
+  }
+
+  function setEditing(on) {
+    editing = on;
+    document.body.classList.toggle('arranging', on);
+    tray.hidden = !on;
+    document.getElementById('arrangebtn').textContent = on ? '⠿ Arranging' : '⠿ Arrange';
+    // Popovers belong to arranging; leaving with one open would leave a panel
+    // permanently taller than its content.
+    if (!on) board.querySelectorAll('.popts').forEach(x => { x.hidden = true; });
+    // Suspend the per-panel clocks while arranging and start them again after:
+    // refetching a body under a drag replaces the element being dragged.
+    clocks();
+  }
+  document.getElementById('arrangebtn').addEventListener('click', () => setEditing(!editing));
+  document.getElementById('donebtn').addEventListener('click', () => {
+    // no reload: everything on screen is already right, and the next visit
+    // fetches only what the saved layout needs
+    setEditing(false);
+    // the only confirmation used to be a word in the bar that just closed, so
+    // finishing looked identical to nothing having happened
+    say(saveFailed
+        ? 'The layout could not be saved — ' + saveFailed
+        : 'Overview saved — ' +
+          board.querySelectorAll('.panel').length + ' panels', !!saveFailed);
+  });
+
+  // a short-lived line under the heading, in the page's own flash style
+  function say(text, bad) {
+    document.querySelectorAll('.toast').forEach(t => t.remove());
+    const el = document.createElement('div');
+    el.className = 'flash toast' + (bad ? ' err' : '');
+    el.textContent = (bad ? '⚠ ' : '✓ ') + text;
+    document.querySelector('.page-head').after(el);
+    if (bad) return;                      // a failure stays until it is read
+    setTimeout(() => { el.classList.add('fade');
+                       setTimeout(() => el.remove(), 400); }, 2600);
+  }
+  document.getElementById('resetbtn').addEventListener('click', async () => {
+    if (!confirm('Put the Overview back to its default arrangement?')) return;
+    await fetch('/overview/layout', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({reset: true})
+    });
+    location.href = '/?arrange=1';
+  });
+
+  // ── the arrangement as JSON ──────────────────────────────────────────────
+  const bexp = document.getElementById('bexport');
+  if (bexp) bexp.addEventListener('click', async () => {
+    const text = JSON.stringify(layout());
+    try {
+      await navigator.clipboard.writeText(text);
+      say('arrangement copied to the clipboard');
+    } catch (e) {
+      // clipboard needs a permission the browser may refuse; showing the text
+      // is more useful than reporting that copying failed
+      const box = document.getElementById('bimport');
+      box.hidden = false; box.value = text; box.select();
+      say('could not reach the clipboard — copy it from the box', true);
+    }
+  });
+  const bimp = document.getElementById('bimportbtn');
+  if (bimp) bimp.addEventListener('click', async () => {
+    const box = document.getElementById('bimport');
+    if (box.hidden) { box.hidden = false; box.focus(); return; }
+    let parsed;
+    try {
+      parsed = JSON.parse(box.value);
+      if (!Array.isArray(parsed)) throw new Error('expected a list of panels');
+    } catch (e) { say('that is not a panel list — ' + e.message, true); return; }
+    // The server cleans it: unknown panels are dropped and sizes snap, so a
+    // pasted arrangement from a newer build cannot save a broken board.
+    const r = await fetch('/overview/layout', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({panels: parsed})
+    });
+    if (!r.ok) { say('could not save that arrangement', true); return; }
+    location.href = '/?arrange=1';
+  });
+
+  function setFolded(panel, on) {
+    panel.dataset.c = on ? '1' : '0';
+    panel.classList.toggle('folded', !!on);
+  }
+
+  function setRate(panel, secs) {
+    panel.dataset.r = secs || 0;
+    let tag = panel.querySelector('.prate');
+    if (!secs) { if (tag) tag.remove(); }
+    else {
+      if (!tag) {
+        tag = document.createElement('span');
+        tag.className = 'prate';
+        tag.title = 'This panel refreshes on its own';
+        panel.querySelector('.pwidth').before(tag);
+      }
+      tag.textContent = '⟳ ' + (secs < 60 ? secs + 's' : (secs / 60) + 'm');
+    }
+    clocks(panel);
+  }
+
+  // A preset button shows which value is current, so the popover states the
+  // panel rather than only changing it.
+  function markOpts(panel) {
+    const pop = panel.querySelector('.popts');
+    if (!pop) return;
+    pop.querySelectorAll('[data-setw]').forEach(b =>
+      b.classList.toggle('on', +b.dataset.setw === +panel.dataset.w));
+    pop.querySelectorAll('[data-seth]').forEach(b =>
+      b.classList.toggle('on', +b.dataset.seth === (+panel.dataset.h || 0)));
+    pop.querySelectorAll('[data-setr]').forEach(b =>
+      b.classList.toggle('on', +b.dataset.setr === (+panel.dataset.r || 0)));
+  }
+
+  board.addEventListener('click', e => {
+    // the popover's own buttons, which are not .pbtn
+    const set = e.target.closest('[data-setw],[data-seth],[data-setr]');
+    if (set && editing) {
+      const panel = set.closest('.panel');
+      if (set.dataset.setw !== undefined) setW(panel, +set.dataset.setw);
+      else if (set.dataset.seth !== undefined) setH(panel, +set.dataset.seth);
+      else setRate(panel, +set.dataset.setr);
+      markOpts(panel);
+      persist();
+      return;
+    }
+    const btn = e.target.closest('.pbtn');
+    if (!btn || !editing) return;
+    const panel = btn.closest('.panel');
+    const act = btn.dataset.act;
+    if (act === 'remove') { panel.remove(); persist(); return; }
+    if (act === 'autoh') { setH(panel, 0); persist(); return; }
+    if (act === 'fold') {
+      setFolded(panel, panel.dataset.c !== '1');
+      persist();
+      return;
+    }
+    if (act === 'opts') {
+      const pop = panel.querySelector('.popts');
+      // one popover at a time: two open at once on a 12-column board pushes
+      // everything below them down twice
+      board.querySelectorAll('.popts').forEach(x => {
+        if (x !== pop) x.hidden = true;
+      });
+      pop.hidden = !pop.hidden;
+      if (!pop.hidden) markOpts(panel);
+      return;
+    }
+    const i = WIDTHS.indexOf(+panel.dataset.w);
+    setW(panel, WIDTHS[Math.min(WIDTHS.length - 1,
+      Math.max(0, i + (act === 'wider' ? 1 : -1)))]);
+    persist();
+  });
+
+  // ── per-panel clocks ────────────────────────────────────────────────────
+  // A panel with its own interval fetches only its own body, from the endpoint
+  // that builds only that panel's declared needs. This is the whole reason the
+  // rate is worth setting: a 15-second alerts panel costs the alerts roll every
+  // 15 seconds, and the expensive panels on the same board stay still.
+  const ticking = new Map();
+  async function pull(panel) {
+    const id = panel.dataset.id;
+    try {
+      const r = await fetch('/overview/panel/' + encodeURIComponent(id) +
+                            '?refresh=1', {headers: {'X-Panel': '1'}});
+      if (!r.ok) return;                  // a transient failure just waits
+      const body = panel.querySelector('.pbody');
+      if (!body) return;
+      body.innerHTML = await r.text();
+      panel.classList.add('selfrefresh');
+      setTimeout(() => panel.classList.remove('selfrefresh'), 520);
+    } catch (e) { /* offline for a moment; the next tick tries again */ }
+  }
+  function clocks(panel) {
+    const only = panel ? [panel] : Array.from(board.querySelectorAll('.panel'));
+    only.forEach(el => {
+      const had = ticking.get(el);
+      if (had) { clearInterval(had); ticking.delete(el); }
+      const secs = +el.dataset.r || 0;
+      // never while arranging: refetching a body under a drag replaces the
+      // element being dragged
+      if (!secs || editing) return;
+      ticking.set(el, setInterval(() => { if (!editing) pull(el); }, secs * 1000));
+    });
+  }
+  clocks();
+
+  // ── FLIP: let the board glide when panels change places ──
+  // Read every panel's position, let the DOM change, then play the difference
+  // back as a transform. Without it a reorder teleports, which reads as a
+  // glitch rather than as a move.
+  function flip(change) {
+    const before = new Map();
+    board.querySelectorAll('.panel').forEach(
+      el => before.set(el, el.getBoundingClientRect()));
+    change();
+    board.querySelectorAll('.panel').forEach(el => {
+      const was = before.get(el);
+      if (!was) return;
+      const now = el.getBoundingClientRect();
+      const dx = was.left - now.left, dy = was.top - now.top;
+      if (!dx && !dy) return;
+      el.classList.remove('flip');
+      el.style.transform = `translate(${dx}px, ${dy}px)`;
+      requestAnimationFrame(() => {
+        el.classList.add('flip');
+        el.style.transform = '';
+      });
+    });
+  }
+
+  // ── moving: a ghost under the cursor, a slot where it will land ──
+  board.addEventListener('pointerdown', e => {
+    const grip = e.target.closest('.grip');
+    if (!grip || !editing) return;
+    e.preventDefault();
+    const panel = grip.closest('.panel');
+    const rect = panel.getBoundingClientRect();
+    const home = panel.nextElementSibling;      // for Escape
+
+    const ghost = panel.cloneNode(true);
+    ghost.classList.add('drag-ghost');
+    ghost.classList.remove('moving');
+    ghost.style.width = rect.width + 'px';
+    ghost.style.height = Math.min(rect.height, 300) + 'px';
+    document.body.appendChild(ghost);
+
+    // the slot takes the panel's shape so the board does not jump when the
+    // panel is lifted out of it
+    const slot = document.createElement('div');
+    slot.className = 'dropslot panel w' + panel.dataset.w +
+                     (+panel.dataset.h ? ' hfix h' + panel.dataset.h : '');
+    panel.parentNode.insertBefore(slot, panel);
+    panel.classList.add('moving');
+    board.classList.add('gridon');
+    document.body.style.cursor = 'grabbing';
+
+    const dx = e.clientX - rect.left, dy = e.clientY - rect.top;
+    let lastAt = 0, last = null;
+
+    function place(ev) {
+      ghost.style.left = (ev.clientX - dx) + 'px';
+      ghost.style.top = (ev.clientY - Math.min(dy, 280)) + 'px';
+      // Throttled on the clock, not on requestAnimationFrame. rAF is paused
+      // whenever the tab is not painting, and a drag that silently stops
+      // deciding where to drop is worse than one that decides slightly less
+      // often. The animation still uses rAF; only the decision does not.
+      const now = performance.now();
+      if (now - lastAt < 40) return;
+      lastAt = now;
+      const over = [...board.querySelectorAll('.panel:not(.moving)')]
+        .find(el => {
+          const b = el.getBoundingClientRect();
+          return ev.clientX >= b.left && ev.clientX <= b.right
+              && ev.clientY >= b.top && ev.clientY <= b.bottom;
+        });
+      if (!over || over === slot) return;
+      const b = over.getBoundingClientRect();
+      // whichever axis the pointer is further along decides: sideways within
+      // a row, up and down between rows
+      const fx = (ev.clientX - b.left) / b.width;
+      const fy = (ev.clientY - b.top) / b.height;
+      const after = Math.abs(fy - .5) > Math.abs(fx - .5) ? fy > .5 : fx > .5;
+      const key = (over.dataset.id || '') + after;
+      if (last === key) return;                 // no oscillating on one target
+      last = key;
+      const target = after ? over.nextElementSibling : over;
+      if (target === slot) return;
+      flip(() => board.insertBefore(slot, target));
+    }
+
+    function finish(cancelled) {
+      window.removeEventListener('pointermove', place);
+      window.removeEventListener('pointerup', done);
+      window.removeEventListener('pointercancel', done);
+      window.removeEventListener('keydown', onkey);
+      ghost.remove();
+      document.body.style.cursor = '';
+      board.classList.remove('gridon');
+      flip(() => {
+        if (cancelled) board.insertBefore(panel, home);
+        else slot.parentNode.insertBefore(panel, slot);
+        slot.remove();
+        panel.classList.remove('moving');
+      });
+      if (!cancelled) persist();
+    }
+    const done = () => finish(false);
+    const onkey = ev => { if (ev.key === 'Escape') { ev.preventDefault(); finish(true); } };
+
+    window.addEventListener('pointermove', place);
+    window.addEventListener('pointerup', done);
+    window.addEventListener('pointercancel', done);
+    window.addEventListener('keydown', onkey);
+  });
+
+  // ── resizing: the corner handle sets width and height together ──
+  const ROWU = 96, GAP = 16;
+  board.addEventListener('pointerdown', e => {
+    const handle = e.target.closest('.rsz');
+    if (!handle || !editing) return;
+    e.preventDefault();
+    const panel = handle.closest('.panel');
+    const hint = panel.querySelector('.sizehint');
+    panel.classList.add('resizing');
+    board.classList.add('gridon');
+    const box = panel.getBoundingClientRect();
+    const cell = (board.getBoundingClientRect().width - 11 * GAP) / 12;
+
+    function at(ev) {
+      const cols = (ev.clientX - box.left + GAP / 2) / (cell + GAP);
+      const rows = (ev.clientY - box.top + GAP / 2) / (ROWU + GAP);
+      const w = snap(Math.max(1, Math.round(cols)), WIDTHS);
+      // dragging up past the first row means "back to automatic height"
+      const h = rows < 1.4 ? 0
+        : snap(Math.round(rows), HEIGHTS.filter(x => x));
+      if (+panel.dataset.w !== w || +panel.dataset.h !== h) {
+        flip(() => { setW(panel, w); setH(panel, h); });
+      }
+      hint.textContent = w + '/12 · ' + (h ? h + ' rows' : 'auto height');
+    }
+    function up() {
+      window.removeEventListener('pointermove', at);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
+      panel.classList.remove('resizing');
+      board.classList.remove('gridon');
+      persist();
+    }
+    window.addEventListener('pointermove', at);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
+  });
+
+  // ── the keyboard does everything the mouse does ──
+  // A board you can only arrange by dragging is one nobody can arrange on a
+  // trackpad on a train, and one a screen reader cannot touch at all.
+  let focused = null;
+  function focus(panel) {
+    board.querySelectorAll('.panel').forEach(p => p.classList.remove('keyfocus'));
+    focused = panel || null;
+    if (!panel) return;
+    panel.classList.add('keyfocus');
+    const hint = panel.querySelector('.sizehint');
+    if (hint) hint.textContent = panel.dataset.w + '/12 · ' +
+      (+panel.dataset.h ? panel.dataset.h + ' rows' : 'auto height');
+    panel.scrollIntoView({block: 'nearest'});
+  }
+  board.addEventListener('click', e => {
+    if (!editing) return;
+    const p = e.target.closest('.panel');
+    if (p && !e.target.closest('.pbtn')) focus(p);
+  });
+  window.addEventListener('keydown', e => {
+    if (!editing || e.metaKey || e.ctrlKey || e.altKey) return;
+    const panels = [...board.querySelectorAll('.panel')];
+    if (!panels.length) return;
+    if (e.key === 'Escape') { focus(null); return; }
+    if (e.key === 'Tab' && !focused) { focus(panels[0]); e.preventDefault(); return; }
+    if (!focused) return;
+    const i = panels.indexOf(focused);
+    const wi = WIDTHS.indexOf(+focused.dataset.w);
+    const key = e.key;
+    if (key === 'ArrowLeft' && e.shiftKey) {
+      e.preventDefault();
+      flip(() => setW(focused, WIDTHS[Math.max(0, wi - 1)])); persist();
+    } else if (key === 'ArrowRight' && e.shiftKey) {
+      e.preventDefault();
+      flip(() => setW(focused, WIDTHS[Math.min(WIDTHS.length - 1, wi + 1)]));
+      persist();
+    } else if (key === 'ArrowLeft' || key === 'ArrowUp') {
+      if (i > 0) { e.preventDefault();
+        flip(() => board.insertBefore(focused, panels[i - 1])); persist(); }
+    } else if (key === 'ArrowRight' || key === 'ArrowDown') {
+      if (i < panels.length - 1) { e.preventDefault();
+        flip(() => board.insertBefore(panels[i + 1], focused)); persist(); }
+    } else if (key === 'Delete' || key === 'Backspace') {
+      e.preventDefault();
+      const gone = focused; focus(null);
+      flip(() => gone.remove()); persist();
+    } else { return; }
+    if (focused) focus(focused);
+  });
+
+  document.getElementById('addgrid')?.addEventListener('click', async e => {
+    const a = e.target.closest('[data-add]');
+    if (!a) return;
+    e.preventDefault();
+    const panels = layout();
+    panels.push({id: a.dataset.add, w: 0});   // 0 → the catalogue default width
+    await fetch('/overview/layout', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({panels: panels})
+    });
+    // the new panel's content has to come from the server, so this one reloads
+    location.href = '/?arrange=1';
+  });
+
+  board.querySelectorAll('.panel').forEach(chrome);
+  setEditing(editing);
+})();
+
+// ── auto refresh, which never fires while the page is being arranged ──
+(function () {
+  const box = document.getElementById('autorefresh');
+  if (!box) return;
+  const out = document.getElementById('countdown');
+  const KEY = 'portal-fleet-autorefresh';
+  const EVERY = 60;
+  let left = EVERY, timer = null, fired = false;
+  function tick() {
+    // clamp: a throttled background tab used to keep counting past zero, which
+    // is where the negative numbers came from
+    left = Math.max(0, left - 1);
+    out.textContent = '(' + left + 's)';
+    if (left > 0 || fired) return;
+    // base.html owns the question — a drag in progress, a half-typed question,
+    // anything modal with a live connection behind it. This page keeps its own
+    // wording because it has somewhere to put it.
+    if (window.portalSafeToReload && !window.portalSafeToReload()) {
+      left = EVERY;
+      out.textContent = '(waiting)';
+      return;
+    }
+    fired = true;
+    stop();
+    // plain "/" — the snapshot refreshes itself in the background, so this does
+    // not need to force a full re-collect every minute
+    location.href = '/';
+  }
+  function stop() { clearInterval(timer); timer = null; }
+  function start() {
+    stop(); fired = false; left = EVERY;
+    out.textContent = '(' + EVERY + 's)';
+    timer = setInterval(tick, 1000);
+  }
+  box.checked = localStorage.getItem(KEY) === '1';
+  if (box.checked) start();
+  box.addEventListener('change', () => {
+    localStorage.setItem(KEY, box.checked ? '1' : '0');
+    if (box.checked) { start(); } else { stop(); out.textContent = ''; }
+  });
+  // a tab that comes back after being asleep should start its minute again
+  // rather than reload the instant it is looked at
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && box.checked) start();
+  });
+})();
+</script>
+{% endif %}
+{% endblock %}

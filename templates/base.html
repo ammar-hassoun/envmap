@@ -1,0 +1,1067 @@
+{% import "_mark.html" as mk %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ brand().name }}</title>
+  {#- The tab icon, and only when the install is not wearing somebody else's
+      name — the same rule the mark follows. A data URI because a strict CSP
+      allows no external host and nothing is served from /static. -#}
+  {% if not brand().branded %}
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%235b8def'/><stop offset='1' stop-color='%238b6cf5'/></linearGradient></defs><rect width='24' height='24' rx='6' fill='url(%23g)'/><path d='M12 3.4 21 7.6 12 11.8 3 7.6Z' fill='%23fff'/><path d='M12 12.4 21 16.6 12 20.8 3 16.6Z' fill='%23fff' opacity='.5'/></svg>">
+  {% endif %}
+  <script nonce="{{ csp_nonce() }}">
+  // Applied before the first paint so the page never flashes the wrong theme.
+  // An explicit choice wins; otherwise follow the operating system.
+  (function () {
+    try {
+      var saved = localStorage.getItem('portal-theme');
+      var os = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', saved || os);
+      if (localStorage.getItem('portal-nav') === 'collapsed')
+        document.documentElement.setAttribute('data-nav', 'collapsed');
+    } catch (e) { document.documentElement.setAttribute('data-theme', 'dark'); }
+  })();
+  </script>
+  {# The stylesheet is a file so the browser keeps it: inline, its 150kB
+     rode along on every page view and was most of the page. The version
+     busts the cache exactly once per release. #}
+  <link rel="stylesheet" href="/static/app.css?v={{ portal_version() }}">
+  <style>
+    /* The header quick-pills were inconsistent: kubectl/Troubleshoot are <button>
+       and inherited the global `button` glow + 600 weight, while "Provision a VM"
+       is an <a> and got neither — so it looked flat. Pin both on .qbtn itself so
+       the pill looks the same whatever element it is. Inline (not app.css) because
+       app.css is version-cached and this must show before the next release; the
+       canonical copy lives on .qbtn in app.css too. */
+    .quick .qbtn { box-shadow:0 4px 14px -6px rgba(91,141,239,.6); font-weight:600; }
+    .quick .qbtn:hover { box-shadow:0 6px 18px -6px rgba(91,141,239,.7); }
+    /* the shared typed-"Delete" confirmation (inline: must work before a release) */
+    .deldlg { width:min(420px,92vw); border:1px solid var(--line2); border-radius:14px;
+      background:var(--panel); color:var(--text); padding:20px 22px;
+      box-shadow:0 24px 70px -20px rgba(0,0,0,.6); }
+    .deldlg::backdrop { background:rgba(6,9,17,.55); backdrop-filter:blur(2px); }
+    .deldlg-h { display:flex; align-items:center; gap:9px; color:var(--danger-ink); font-size:15px; }
+    .deldlg-h b { color:var(--text); }
+    .deldlg-b { color:var(--muted); font-size:13px; margin:10px 0 14px; }
+    .deldlg-l { display:block; font-size:11px; text-transform:uppercase; letter-spacing:.4px;
+      color:var(--muted); }
+    .deldlg-l b { color:var(--danger-ink); }
+    .deldlg-l input { display:block; width:100%; box-sizing:border-box; margin-top:6px;
+      font:inherit; font-size:14px; color:var(--text); background:#0b1020;
+      border:1px solid var(--line2); border-radius:9px; padding:9px 11px; }
+    .deldlg-l input:focus { outline:none; border-color:var(--danger-ink); }
+    .deldlg-f { display:flex; justify-content:flex-end; gap:9px; margin-top:16px; }
+    .deldlg .btn-danger[disabled] { opacity:.45; cursor:not-allowed; }
+  </style>
+  <style>
+    /* themed dropdown (enhanceSelect) — GLOBAL, every page. Inline (not app.css)
+       because app.css is version-cached and this must reach every page now; the
+       native <select> stays as the hidden value source. See the script below. */
+    .dd { position:relative; width:100%; }
+    .dd > select { display:none !important; }
+    .dd-btn { display:flex; align-items:center; gap:8px; width:100%; cursor:pointer;
+      padding:7px 9px; border-radius:8px; border:1px solid var(--line);
+      background:var(--panel); color:var(--text); font-family:var(--mono); font-size:12.5px;
+      text-align:left; transition:border-color .15s, box-shadow .15s; }
+    .dd-btn .dd-cur { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .dd-btn.dd-empty .dd-cur { color:var(--faint); }
+    .dd-btn .dd-car { color:var(--muted); font-size:9px; transition:transform .15s; }
+    .dd-btn:hover:not(:disabled) { border-color:var(--line2); }
+    .dd-btn:disabled { opacity:.55; cursor:not-allowed; }
+    .dd.open .dd-btn { border-color:var(--accent-ink); box-shadow:0 0 0 3px rgba(91,141,239,.15); }
+    .dd.open .dd-btn .dd-car { transform:rotate(180deg); }
+    /* position:fixed (coordinates set by JS from the button) so the menu escapes
+       any ancestor overflow:hidden — a card, a filter bar, a modal body all clip
+       an absolutely-positioned menu, which read as "the dropdown shows nothing". */
+    .dd-menu { position:fixed; z-index:9999;
+      max-height:min(300px,46vh); overflow:auto; background:var(--panel);
+      border:1px solid var(--line); border-radius:10px; padding:5px; box-shadow:var(--shadow); }
+    .dd-opt { padding:8px 10px; border-radius:7px; font-family:var(--mono); font-size:12.5px;
+      color:var(--text); cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .dd-opt:hover:not(.dis), .dd-opt.hl:not(.dis) { background:var(--overlay); }
+    .dd-opt.on { background:var(--accent-wash); color:var(--accent); font-weight:600; }
+    .dd-opt.dis { color:var(--faint); cursor:not-allowed; }
+  </style>
+  <style>
+    /* Its own block: the one above sat at 3949 of the 4000 characters
+       tests/test_speed.py allows, and the house rule is to split rather than
+       let one grow past the cap. Kept adjacent in the source because these
+       rules reuse .dd-menu/.dd-opt from it. */
+    /* A COMBOBOX — a free-text input WITH suggestions. `<input list=…>` draws its
+       suggestion popup from the OS, the same unstyleable light popup over a dark
+       page that made every <select> need the treatment above; nine of them ship
+       across seven pages. The input stays free text (an environment is a
+       discovered folder name, not a fixed enum), so this adds the house menu
+       beside it rather than replacing it with a select. Menu classes are reused
+       from .dd-menu/.dd-opt — one look, one definition. */
+    .combo { position:relative; display:block; width:100%; }
+    .combo > input { width:100%; padding-right:26px; }
+    .combo-car { position:absolute; right:9px; top:50%; transform:translateY(-50%);
+      color:var(--muted); font-size:9px; cursor:pointer; background:none; border:0;
+      padding:2px 3px; line-height:1; transition:transform .15s; }
+    .combo.open .combo-car { transform:translateY(-50%) rotate(180deg); }
+    /* click-to-sort — GLOBAL, every standard table (table.jenkins). A header cell
+       becomes a sort button: first click ascending, second descending. The sticky
+       action column and any th.no-sort are skipped; grouped tables opt out. */
+    table.jenkins th.dsort { cursor:pointer; user-select:none; white-space:nowrap; }
+    table.jenkins th.dsort::after { content:"↕"; opacity:.3; font-size:9px; margin-left:5px; }
+    table.jenkins th.dsort.asc::after  { content:"↑"; opacity:.9; color:var(--accent); }
+    table.jenkins th.dsort.desc::after { content:"↓"; opacity:.9; color:var(--accent); }
+    table.jenkins th.dsort:hover { color:var(--text); }
+    /* warning banner — mirror of app.css .flash.warn so it reads correctly on
+       the cached instance before the next release (see app.css for the why). */
+    .flash.warn { background:rgba(245,196,81,.12); border-color:rgba(245,196,81,.42); }
+  </style>
+  <style>
+    /* GLOBAL overview chart panels — the shared "chart overview" (Ansible is the
+       reference) reused on every operational page via _bits.html's donut_panel /
+       bars_panel / kv_panel. The renderers + .facets/.hbars/.chart-donut CSS are
+       already global; only this layout was page-local, so it lives here now. */
+    .apanels { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-bottom:14px; }
+    @media (max-width:900px){ .apanels { grid-template-columns:1fr; } }
+    .amix { display:flex; gap:16px; align-items:center; flex-wrap:wrap; }
+    .amix .keys { flex:1 1 130px; min-width:0; }
+    .amix .akey { display:flex; align-items:center; gap:8px; font-size:12px;
+      padding:3px 7px; margin:0 -7px; border-radius:7px; color:var(--text2); text-decoration:none; }
+    .amix .akey:hover { background:var(--overlay); color:var(--text); }
+    .amix .akey i { width:9px; height:9px; border-radius:3px; flex:0 0 auto; }
+    .amix .akey .v { margin-left:auto; font-family:var(--mono); font-size:11.5px;
+      color:var(--muted); font-variant-numeric:tabular-nums; }
+  
+  /* ── A SECTION THAT ARRIVES SHUT, and a form that unfolds under its row ──
+     GLOBAL because two pages use it (the account page and Users & audit) and a
+     component written twice is one that drifts. Here rather than app.css
+     because that file is served with a year-long immutable cache keyed on the
+     release, so an edit to it is invisible until the next one — see CLAUDE.md.
+
+     A native disclosure element rather than JavaScript: keyboard-accessible,
+     and it remembers nothing, which is the point. Arriving at a page should
+     show the short version every time rather than whatever state it was left
+     in. (Written as prose deliberately — the literal open tag in a comment
+     here broke tests/test_ansible.py, which splits a page on that substring to
+     find where an "advanced" section starts.) */
+  .acc-sec { border:1px solid var(--line); border-radius:11px;
+    background:var(--panel); margin-bottom:9px; overflow:hidden; }
+  .acc-sec > summary { display:flex; align-items:center; gap:10px;
+    padding:12px 15px; cursor:pointer; list-style:none; font-size:13.5px; }
+  .acc-sec > summary::-webkit-details-marker { display:none; }
+  .acc-sec > summary:hover { background:var(--well); }
+  .acc-sec[open] > summary { border-bottom:1px solid var(--line); }
+  .acc-chev { display:inline-flex; color:var(--muted); flex:none;
+    transition:transform .13s ease; }
+  .acc-sec[open] .acc-chev { transform:rotate(90deg); }
+  .acc-secb { overflow-x:auto; }
+  .acc-secb > .card-b { padding:15px 16px 18px; }
+
+  /* A detail row: full-bleed inside the cell, with a rail down the left so it
+     reads as belonging to the row above rather than as a new section. Every
+     header of a table using these must carry `no-sort` — the house sorter is
+     flat and would scramble a form away from the row it belongs to. */
+  .acc-t tr.acc-form > td { padding:0; background:var(--well);
+    border-left:2px solid var(--accent); }
+  .acc-t tr.acc-form > td > * { padding:14px 16px 16px; }
+  .acc-t tr.acc-form form, .acc-t tr.acc-form .pk-list { margin:0; }
+  .acc-t tr.acc-form[hidden] { display:none; }
+  .acc-t td { vertical-align:middle; }
+  .acc-t td.wrap, .acc-t td .wrap { white-space:normal; }
+</style>
+  <script nonce="{{ csp_nonce() }}">
+  /* Themed dropdown — GLOBAL, every page. A native <select>'s OPEN option list is
+     drawn by the OS (a light popup in a system font over the dark UI) and cannot be
+     styled, so every <select> is replaced by a themed button + menu. The native
+     select is kept as the hidden value source: form submit, .value, .selectedOptions
+     and dispatched 'change' events all keep working. After you repopulate a select's
+     options or set .value in code, call window.ddRefresh(sel) so the button re-reads
+     it (no DOM observer — the refresh is explicit). Opt a select out with class
+     "no-dd"; multiple-selects stay native. Defined in <head> so page scripts that
+     call enhanceSelect/ddRefresh resolve to these globals; the initial sweep runs on
+     DOMContentLoaded. */
+  (function () {
+    function enhanceSelect(sel) {
+      if (!sel || sel.multiple || sel.dataset.dd || sel.classList.contains('no-dd')) return;
+      sel.dataset.dd = '1';
+      var wrap = document.createElement('div'); wrap.className = 'dd';
+      sel.parentNode.insertBefore(wrap, sel); wrap.appendChild(sel);
+      var btn = document.createElement('button'); btn.type = 'button'; btn.className = 'dd-btn';
+      btn.innerHTML = '<span class="dd-cur"></span><span class="dd-car">▾</span>';
+      var cur = btn.querySelector('.dd-cur');
+      var menu = document.createElement('div'); menu.className = 'dd-menu'; menu.hidden = true;
+      wrap.appendChild(btn); wrap.appendChild(menu);
+      var hi = -1;
+      var opts = function () { return Array.prototype.slice.call(sel.options || []); };
+      var sync = function () { var o = sel.options[sel.selectedIndex];
+        cur.textContent = o ? o.textContent : '';
+        btn.classList.toggle('dd-empty', !sel.value); btn.disabled = !!sel.disabled;
+        // a hidden <select> hides its themed wrapper too (a page toggles the
+        // select's `hidden`, then calls ddRefresh to reflect it); without this a
+        // hidden select left an empty full-width button on the page.
+        wrap.hidden = sel.hidden; };
+      var paintHi = function () { Array.prototype.forEach.call(menu.children, function (c) {
+        c.classList.toggle('hl', +c.dataset.i === hi); }); };
+      var build = function () { menu.innerHTML = '';
+        opts().forEach(function (o, i) { var it = document.createElement('div');
+          it.className = 'dd-opt' + (o.disabled ? ' dis' : '') + (i === sel.selectedIndex ? ' on' : '');
+          it.textContent = o.textContent; it.dataset.i = i;
+          if (!o.disabled) it.addEventListener('click', function (e) { e.stopPropagation(); pick(i); });
+          menu.appendChild(it); }); };
+      var pick = function (i) { sel.selectedIndex = i;
+        sel.dispatchEvent(new Event('change', {bubbles: true})); sync(); close(); btn.focus(); };
+      var scrollHi = function () { var el = menu.children[hi]; if (el && el.scrollIntoView) el.scrollIntoView({block: 'nearest'}); };
+      // The menu is position:fixed; anchor it to the button in viewport space and
+      // flip above when there is not enough room below.
+      var place = function () {
+        var r = btn.getBoundingClientRect();
+        menu.style.left = r.left + 'px'; menu.style.width = r.width + 'px';
+        menu.style.top = (r.bottom + 5) + 'px';
+        var mh = menu.offsetHeight, below = window.innerHeight - r.bottom - 8;
+        if (mh > below && r.top - 8 > below) menu.style.top = Math.max(8, r.top - mh - 5) + 'px';
+      };
+      var onWin = function () { if (!menu.hidden) place(); };
+      var open = function () { if (sel.disabled) return; build(); menu.hidden = false;
+        wrap.classList.add('open'); place(); hi = sel.selectedIndex; paintHi(); scrollHi();
+        window.addEventListener('scroll', onWin, true); window.addEventListener('resize', onWin); };
+      var close = function () { menu.hidden = true; wrap.classList.remove('open');
+        window.removeEventListener('scroll', onWin, true); window.removeEventListener('resize', onWin); };
+      var move = function (d) { var os = opts(); if (!os.length) return; var n = hi;
+        for (var k = 0; k < os.length; k++) { n = (n + d + os.length) % os.length; if (!os[n].disabled) break; }
+        hi = n; paintHi(); scrollHi(); };
+      btn.addEventListener('click', function (e) { e.stopPropagation(); menu.hidden ? open() : close(); });
+      btn.addEventListener('keydown', function (e) {
+        if (menu.hidden) {
+          if (['Enter', ' ', 'ArrowDown', 'ArrowUp'].indexOf(e.key) !== -1) { e.preventDefault(); open(); }
+          return; }
+        if (e.key === 'ArrowDown') { e.preventDefault(); move(1); }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); move(-1); }
+        else if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (hi >= 0) pick(hi); }
+        else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); }
+      });
+      document.addEventListener('click', function (e) { if (!wrap.contains(e.target)) close(); });
+      sel._ddRefresh = function () { sync(); if (!menu.hidden) build(); };
+      sync();
+    }
+    /* The same treatment for `<input list=…>`. The datalist stays in the DOM as
+       the option source; its `list` attribute is REMOVED so the browser's own
+       popup does not open alongside ours — two menus over one field was the
+       first thing this got wrong. Typing is never intercepted: the input is the
+       value, suggestions only narrow. */
+    function enhanceCombo(inp) {
+      if (!inp || inp.dataset.combo || inp.classList.contains('no-dd')) return;
+      var dl = inp.list || document.getElementById(inp.getAttribute('list') || '');
+      if (!dl) return;
+      inp.dataset.combo = '1';
+      inp.removeAttribute('list');
+      inp.setAttribute('autocomplete', 'off');
+      var wrap = document.createElement('div'); wrap.className = 'combo';
+      inp.parentNode.insertBefore(wrap, inp); wrap.appendChild(inp);
+      var car = document.createElement('button');
+      car.type = 'button'; car.className = 'combo-car'; car.textContent = '▾';
+      car.tabIndex = -1; car.setAttribute('aria-label', 'suggestions');
+      var menu = document.createElement('div'); menu.className = 'dd-menu'; menu.hidden = true;
+      wrap.appendChild(car); wrap.appendChild(menu);
+      var hi = -1, shown = [];
+      var all = function () {
+        return Array.prototype.map.call(dl.options || [], function (o) {
+          return o.value || o.textContent; }).filter(Boolean); };
+      var place = function () {
+        var r = inp.getBoundingClientRect();
+        menu.style.left = r.left + 'px'; menu.style.width = r.width + 'px';
+        menu.style.top = (r.bottom + 5) + 'px';
+        var mh = menu.offsetHeight, below = window.innerHeight - r.bottom - 8;
+        if (mh > below && r.top - 8 > below) menu.style.top = Math.max(8, r.top - mh - 5) + 'px';
+      };
+      var onWin = function () { if (!menu.hidden) place(); };
+      var close = function () { menu.hidden = true; wrap.classList.remove('open'); hi = -1;
+        window.removeEventListener('scroll', onWin, true);
+        window.removeEventListener('resize', onWin); };
+      var paintHi = function () { Array.prototype.forEach.call(menu.children, function (c, i) {
+        c.classList.toggle('hl', i === hi); }); };
+      var pick = function (v) { inp.value = v;
+        inp.dispatchEvent(new Event('input', {bubbles: true}));
+        inp.dispatchEvent(new Event('change', {bubbles: true})); close(); inp.focus(); };
+      var build = function (openIfEmpty) {
+        var typed = (inp.value || '').trim().toLowerCase();
+        shown = all().filter(function (v) {
+          return !typed || v.toLowerCase().indexOf(typed) !== -1; });
+        // An exact and only match is not a suggestion worth showing.
+        if (shown.length === 1 && shown[0].toLowerCase() === typed) shown = [];
+        menu.innerHTML = '';
+        shown.forEach(function (v) {
+          var it = document.createElement('div'); it.className = 'dd-opt';
+          it.textContent = v;
+          it.addEventListener('mousedown', function (e) { e.preventDefault(); pick(v); });
+          menu.appendChild(it); });
+        if (!shown.length) { close(); return; }
+        if (menu.hidden && !openIfEmpty) return;
+        menu.hidden = false; wrap.classList.add('open'); place();
+        hi = -1; paintHi();
+        window.addEventListener('scroll', onWin, true);
+        window.addEventListener('resize', onWin); };
+      var move = function (d) { if (!shown.length) return;
+        hi = (hi + d + shown.length) % shown.length; paintHi();
+        var el = menu.children[hi]; if (el && el.scrollIntoView) el.scrollIntoView({block: 'nearest'}); };
+      inp.addEventListener('input', function () { build(true); });
+      inp.addEventListener('focus', function () { build(true); });
+      inp.addEventListener('blur', function () { setTimeout(close, 120); });
+      car.addEventListener('mousedown', function (e) {
+        e.preventDefault();
+        if (!menu.hidden) { close(); return; }
+        inp.focus(); build(true); });
+      inp.addEventListener('keydown', function (e) {
+        if (e.key === 'ArrowDown') { e.preventDefault(); if (menu.hidden) build(true); else move(1); }
+        else if (e.key === 'ArrowUp') { if (!menu.hidden) { e.preventDefault(); move(-1); } }
+        else if (e.key === 'Enter') {
+          // Only steal Enter when a suggestion is HIGHLIGHTED — otherwise the
+          // form must submit as it always did.
+          if (!menu.hidden && hi >= 0) { e.preventDefault(); pick(shown[hi]); } }
+        else if (e.key === 'Escape') { if (!menu.hidden) { e.preventDefault();
+          e.stopPropagation(); close(); } }
+      });
+      document.addEventListener('click', function (e) { if (!wrap.contains(e.target)) close(); });
+    }
+
+    window.enhanceSelect = enhanceSelect;
+    window.enhanceCombo = enhanceCombo;
+    window.ddRefresh = function (sel) { if (sel && sel._ddRefresh) sel._ddRefresh(); };
+    window.ddSweep = function (root) {
+      var r = root || document;
+      r.querySelectorAll('select').forEach(enhanceSelect);
+      r.querySelectorAll('input[list]').forEach(enhanceCombo); };
+
+    /* A dependent select — a region list that narrows to the project beside
+       it. ONE definition: this was written inline twice and only one copy was
+       fixed when the bug was first reported, so the same fault came back
+       months later on the other page. Both halves of the house rule are here
+       and each was a real bug: options are REBUILT (never `hidden`, which the
+       themed dropdown ignores) and ddRefresh IS called (the visible control is
+       a button that re-reads `disabled` only when refreshed, so it stayed dead
+       after a project was chosen). Behaviour pinned by
+       tests/test_placesync_js.py; the reasoning is in CLAUDE.md. */
+    window.placeSync = function (proj, reg, note) {
+      if (!proj || !reg) return function () {};
+      var all = Array.prototype.map.call(reg.options,
+                                         function (o) { return o.cloneNode(true); });
+      function sync() {
+        var want = proj.value;
+        var had = reg.value;
+        var keep = all.filter(function (o) {
+          return !o.value || o.dataset.proj === want; });
+        reg.textContent = '';
+        keep.forEach(function (o) { reg.appendChild(o.cloneNode(true)); });
+        /* a region of the project we just left is not a choice any more */
+        reg.value = Array.prototype.some.call(reg.options, function (o) {
+          return o.value === had; }) ? had : '';
+        reg.disabled = !want;
+        if (window.ddRefresh) window.ddRefresh(reg);
+        /* Say WHY it is empty rather than offering an empty list: a project
+           with no regions yet is a normal state. */
+        if (note) note.textContent = !want
+          ? 'Choose a project first.'
+          : (keep.length > 1 ? '' : 'That project has no regions yet.');
+      }
+      proj.addEventListener('change', sync);
+      sync();
+      return sync;
+    };
+    if (document.readyState === 'loading')
+      document.addEventListener('DOMContentLoaded', function () { window.ddSweep(); });
+    else window.ddSweep();
+  })();
+  </script>
+  <script nonce="{{ csp_nonce() }}">
+  /* Click-to-sort on every standard table — GLOBAL. Any `table.jenkins` header
+     cell (except the sticky action column and th.no-sort) becomes a sort control:
+     first click ascending, second descending. Values are read from a cell's
+     data-sort attribute if present, else parsed from its text with unit awareness
+     (durations 139d/15h, sizes Mi/Gi, millicores, percents) so "Age" and "Memory"
+     sort by magnitude, not alphabetically; anything non-numeric sorts as text.
+     Grouped tables (a tr.grouphead inside) opt out so groups are not scrambled. */
+  (function () {
+    function cellText(td) {
+      var ds = td.getAttribute('data-sort');
+      return (ds != null ? ds : td.textContent).replace(/\s+/g, ' ').trim();
+    }
+    function toNum(s) {
+      if (!s) return null;
+      var d = s.match(/^([\d.]+)\s*(w|d|h|m|s)$/i);
+      if (d) { var u = {w:604800, d:86400, h:3600, m:60, s:1}; return parseFloat(d[1]) * u[d[2].toLowerCase()]; }
+      var z = s.match(/^([\d.]+)\s*(Ki|Mi|Gi|Ti)B?$/i);
+      if (z) { var b = {ki:1024, mi:1048576, gi:1073741824, ti:1099511627776}; return parseFloat(z[1]) * b[z[2].toLowerCase()]; }
+      if (/^[+-]?[\d.,]+\s*%?$/.test(s)) { var n = parseFloat(s.replace(/,/g, '')); return isNaN(n) ? null : n; }
+      var lead = s.match(/^[+-]?\d[\d.,]*/);           // "10.0.6.10", "1/1", "63m / 685Mi"
+      return lead ? parseFloat(lead[0].replace(/,/g, '')) : null;
+    }
+    function bodyRows(tbody) {
+      return Array.prototype.filter.call(tbody.children, function (r) {
+        return r.tagName === 'TR' && !r.classList.contains('grouphead'); });
+    }
+    function sortBy(table, idx, th) {
+      var tbody = table.tBodies[0]; if (!tbody) return;
+      var rows = bodyRows(tbody);
+      var dir = th.classList.contains('asc') ? -1 : 1;                 // toggle
+      Array.prototype.forEach.call(th.parentNode.children, function (h) {
+        h.classList.remove('asc', 'desc'); });
+      th.classList.add(dir === 1 ? 'asc' : 'desc');
+      var vals = rows.map(function (r) { var td = r.children[idx]; return td ? cellText(td) : ''; });
+      var blank = function (v) { return v === '' || v === '—' || v === '-'; };
+      var numeric = vals.some(function (v) { return !blank(v) && toNum(v) !== null; })
+                 && vals.every(function (v) { return blank(v) || toNum(v) !== null; });
+      var keyed = rows.map(function (r, i) {
+        var v = vals[i];
+        var k = numeric ? (blank(v) || toNum(v) === null ? -Infinity : toNum(v)) : v.toLowerCase();
+        return {r: r, k: k, i: i}; });
+      keyed.sort(function (a, b) {
+        if (a.k < b.k) return -dir;
+        if (a.k > b.k) return dir;
+        return a.i - b.i; });                                         // stable
+      var frag = document.createDocumentFragment();
+      keyed.forEach(function (o) { frag.appendChild(o.r); });
+      tbody.appendChild(frag);
+    }
+    function wire(table) {
+      if (table.dataset.dsort) return;
+      var head = table.tHead, tbody = table.tBodies[0];
+      if (!head || !tbody || tbody.querySelector('tr.grouphead')) return;
+      if (bodyRows(tbody).length < 2) return;
+      var hrow = head.rows[head.rows.length - 1]; if (!hrow) return;
+      table.dataset.dsort = '1';
+      Array.prototype.forEach.call(hrow.cells, function (th, idx) {
+        if (th.classList.contains('actcol') || th.classList.contains('no-sort')) return;
+        if (!th.textContent.trim()) return;
+        th.classList.add('dsort');
+        th.addEventListener('click', function () { sortBy(table, idx, th); });
+      });
+    }
+    window.ddSortSweep = function (root) { (root || document).querySelectorAll('table.jenkins').forEach(wire); };
+    if (document.readyState === 'loading')
+      document.addEventListener('DOMContentLoaded', function () { window.ddSortSweep(); });
+    else window.ddSortSweep();
+  })();
+  </script>
+</head>
+<body{% if bare %} class="bare"{% endif %}>
+{#- BARE: the page in its own window, with none of the portal around it. A
+    console opened as a window is a window onto ONE application -- a sidebar,
+    breadcrumbs and a top bar in it are the portal's furniture stealing pixels
+    from the thing being worked in, and there is nowhere to navigate TO from a
+    window that exists to hold one session. Everything else on the page is
+    unchanged; only the frame is dropped. -#}
+{% if not bare %}
+<div class="shell">
+  <aside class="sidenav">
+    <button type="button" class="navtoggle" data-call="portalToggleNav"
+            title="Collapse the sidebar"></button>
+    {#- One row, two targets: the name goes home, the version pill explains
+        itself. Its own strip under the brand read as an orphan — a second rule
+        under the rule that was already there. -#}
+    <div class="brand">
+      {#- Collapsed, this expands the rail instead of navigating: the mark is
+          the obvious thing to click to get the sidebar back, and people click
+          it expecting that rather than a trip to the landing page. Expanded, it
+          is an ordinary link home. -#}
+      <a class="brandmain" href="/" data-call="portalBrandClick" data-arg-event
+         title="Home — or click to expand the sidebar when it is collapsed">
+        {{ mk.tile(brand(), "logo", 18) }}
+        <div class="label"><b>{{ brand().name }}</b>{% if brand().org %}<small>{{ brand().org }}</small>{% endif %}</div>
+      </a>
+      <a class="brandver label" href="/about" title="About this installation"
+        >{{ portal_version() }}{% if update_ready() %}<span class="brandnew"
+        title="A newer release is available"></span>{% endif %}</a>
+    </div>
+    <div class="sidescroll">
+    <nav>
+      {# One macro, one source of truth: a link appears only when the signed-in
+         person's roles grant its area, and the same may() decides the request
+         itself in the middleware — so nothing is shown that would then refuse. #}
+      {% macro link(href, area, icon, label, prefix=none) %}
+        {% if may(area) %}
+        <a href="{{ href }}" title="{{ label }}"
+           class="sidelink {% if (prefix and request.url.path.startswith(prefix))
+                              or request.url.path == href %}on{% endif %}">
+          <span class="ico">{{ icon }}</span><span class="label">{{ label }}</span></a>
+        {% endif %}
+      {% endmacro %}
+
+      {{ link('/', 'overview', glyph('layout-grid'), 'Overview') }}
+      {{ link('/timeline', 'timeline', glyph('history'), 'Timeline') }}
+      {{ link('/expiry', 'expiry', glyph('hourglass'), 'Expiry radar', '/expiry') }}
+      {{ link('/compare', 'config', glyph('git-compare-arrows'), 'Compare') }}
+      {{ link('/clusters', 'clusters', glyph('hexagon'), 'Clusters', '/clusters') }}
+      {{ link('/repos', 'config', glyph('git-branch'), 'GitOps repos') }}
+      {{ link('/pipelines', 'pipelines', glyph('zap'), 'Pipelines') }}
+      {{ link('/edge', 'edge', glyph('globe'), 'Edge & DNS', '/edge') }}
+      {{ link('/certs', 'certs', glyph('shield-check'), 'Certificates', '/certs') }}
+      {{ link('/gitops', 'gitops', glyph('git-merge'), 'GitOps', '/gitops') }}
+      {{ link('/workflows', 'workflows', glyph('workflow'), 'Workflows', '/workflows') }}
+      {{ link('/security', 'security', glyph('shield'), 'Security') }}
+      {{ link('/logs', 'logs', glyph('scroll-text'), 'Logs') }}
+      {{ link('/monitoring', 'monitoring', glyph('chart-line'), 'Monitoring') }}
+
+      {{ link('/ansible', 'ansible', glyph('wrench'), 'Ansible', '/ansible') }}
+      {{ link('/terraform', 'terraform', glyph('boxes'), 'Infrastructure Provisioning', '/terraform') }}
+      {{ link('/db', 'db', glyph('database'), 'Databases', '/db') }}
+      {{ link('/vpn', 'vpn', glyph('lock'), 'VPN', '/vpn') }}
+
+      {% if may('assets') or may('bmc') or may('virt') or may('clouds')
+            or may('storage') or may('spend') %}
+      <div class="sidesep"></div>
+      <div class="sidetitle label">Infrastructure</div>
+      {{ link('/assets', 'assets', glyph('server'), 'Server Assets', '/assets') }}
+      {{ link('/bmc', 'bmc', glyph('cpu'), 'Server hardware', '/bmc') }}
+      {{ link('/virt', 'virt', glyph('layers'), 'Hypervisors', '/virt') }}
+      {{ link('/clouds', 'clouds', glyph('cloud'), 'Clouds', '/clouds') }}
+      {{ link('/storage', 'storage', glyph('hard-drive'), 'Storage', '/storage') }}
+      {{ link('/spend', 'spend', glyph('receipt'), 'IT spend', '/spend') }}
+      {% endif %}
+
+      <div class="sidesep"></div>
+      {{ link('/settings/projects', 'settings', glyph('plus'), 'New project') }}
+      {{ link('/settings', 'settings', glyph('settings'), 'Settings', '/settings') }}
+      {# Users and the audit log are areas now, so a role can carry either
+         without carrying everything. Roles stays with administrators: whoever
+         may edit a role definition may add Settings to their own, which is
+         the same permission under a friendlier name. #}
+      {% set is_admin = me and me.role == 'admin' %}
+      {% if is_admin or may('users') or may('audit') or (may('pam') and pam_enabled()) %}
+      <div class="sidetitle label">Administration</div>
+      {# Privileged Access is archived behind PORTAL_PAM — hidden unless switched on. #}
+      {% if pam_enabled() %}
+      {{ link('/pam', 'pam', glyph('shield-check'), 'Privileged Access', '/pam') }}
+      {% endif %}
+      {{ link('/admin/users', 'users', glyph('users'), 'Users', '/admin/users') }}
+      {% if is_admin %}
+      <a href="/admin/roles" title="Roles"
+         class="sidelink {% if request.url.path.startswith('/admin/roles') %}on{% endif %}">
+        <span class="ico">{{ glyph('user-cog') }}</span><span class="label">Roles</span></a>
+      {% endif %}
+      {{ link('/admin/audit', 'audit', glyph('clipboard-list'), 'Audit log', '/admin/audit') }}
+      {% endif %}
+    </nav>
+    {% set navp = nav_projects() %}{% if navp %}
+    <div class="sidetitle label">Projects</div>
+    <div class="projnav">
+      {% for np in navp %}
+      <a href="/p/{{ np.id }}" title="{{ np.name }}"
+         class="sidelink proj {% if pid == np.id %}on{% endif %}">
+        <span class="ico">{{ project_icon(np.icon, 15) }}</span>
+        <span class="pname label">{{ np.name }}</span></a>
+      {% endfor %}
+    </div>
+    {% endif %}
+    </div><!-- /sidescroll -->
+
+    {% set who = request.state.user %}
+    {% if who %}
+    <div class="account{% if request.url.path == '/me' %} on{% endif %}">
+      {# the avatar and name are the way into your own account — clicking them
+         did nothing before, which read as a broken control #}
+      <a href="/me" class="acc-who" title="Your account">
+        <div class="acc-av">{{ (who.name or who.email)[:1]|upper }}</div>
+        <div style="min-width:0;">
+          <div class="acc-name label">{{ who.name }}</div>
+          <div class="acc-mail label">{{ who.email }}</div>
+        </div>
+      </a>
+      <div class="acc-actions">
+        <button type="button" class="themebtn" data-call="portalToggleTheme"></button>
+        <a href="/logout" class="acc-out" title="Sign out">⏻<span class="label"> Sign out</span></a>
+      </div>
+    </div>
+    {% endif %}
+  </aside>
+
+  <div class="maincol">
+  <div class="topbar">
+    <div class="crumbs">{% block crumbs %}{% endblock %}</div>
+    <div class="spacer"></div>
+    {# Both shortcuts end in an audited action on somebody's cluster, so they
+       are drawn only for a role that holds Cluster management — the same area
+       that governs the pages they lead to, rather than a second opinion about
+       who may do this. #}
+    {# kubectl / Troubleshoot / Provision a VM are one pill group so they share a
+       single 8px gap. quick_clusters() is only called when the viewer may manage;
+       the group still renders for a terraform-only viewer (Provision alone). #}
+    {% set qc = quick_clusters() if may('manage') else [] %}
+    {% set qc_rw = qc | selectattr('manage') | list %}
+    {% if qc or may('terraform') %}
+    <div class="quick">
+      {% if qc %}
+      <button type="button" class="qbtn" data-quick="shell"
+              title="Open a kubectl console on a cluster">
+        {{ glyph('square-terminal', 15) }}<span class="qlabel">kubectl</span></button>
+      {# Only when at least one cluster can actually take one. A button that is
+         refused everywhere it points is worse than no button. #}
+      {% if qc_rw %}
+      <button type="button" class="qbtn" data-quick="ts"
+              title="Start a pod with dig, curl, nc and traceroute, and open a shell on it">
+        {# Not `activity`: that is the Overview tab's own icon, so the two
+           most-clicked things on the page wore the same mark. And not
+           `life-buoy`, which at 15px is a ring that reads as nothing — measured
+           against every other candidate at the size it actually renders. #}
+        {{ glyph('flask-conical', 15) }}<span class="qlabel">Troubleshoot</span></button>
+      {% endif %}
+      <div class="qpop" id="qpop" hidden>
+        <div class="qpop-h"><b id="qpopTitle">Pick a cluster</b>
+          <span id="qpopNote"></span></div>
+        {# The filter earns its place only on an estate too long to scan. #}
+        {% if qc | length > 6 %}
+        <div class="qpop-f"><input type="search" id="qfilter" autocomplete="off"
+             placeholder="filter clusters…"></div>
+        {% endif %}
+        <div class="qpop-list">
+          {# loop.changed(), not a namespace() accumulator, and not a {% set %}
+             of my own. base.html is the parent of nearly every page, so both of
+             those bite from opposite directions: a top-level {% set %} here
+             shadows a context key of the same name inside every child block
+             (calling one `ns` broke the cluster page), and calling the global
+             `namespace()` breaks the moment a route passes its own `namespace`
+             — which the pod-log page does, and it took this template down with
+             "'str' object is not callable". loop.changed() needs neither. #}
+          {% for c in qc %}
+          {% if loop.changed(c.project) %}
+          <div class="qgroup" data-group="{{ c.project }}">{{ c.project }}</div>
+          {% endif %}
+          {# `data-down` and not simply hidden: a cluster the portal cannot reach
+             is the one an operator most wants to know about, and a picker that
+             quietly gets shorter reads as clusters having been deleted. It is
+             shown, marked, and not selectable — a console on a cluster that does
+             not answer is a window that opens and dies. #}
+          <a class="qrow" href="{{ c.url }}" data-group="{{ c.project }}"
+             data-shell="{{ c.url }}" data-ts="{{ c.ts_url }}"
+             data-manage="{{ 1 if c.manage else 0 }}"
+             data-down="{{ 1 if c.down else 0 }}"
+             data-find="{{ (c.name ~ ' ' ~ c.project ~ ' ' ~ c.context) | lower }}">
+            <span class="qname">{{ c.name }}
+              <span class="qctx">{{ c.context }}</span></span>
+            {% if c.down %}<span class="qtag down">unreachable</span>{% endif %}
+            {% if c.prod %}<span class="qtag prod">prod</span>{% endif %}
+            {% if not c.manage %}<span class="qtag ro">read-only</span>{% endif %}
+          </a>
+          {% endfor %}
+        </div>
+        <div class="qpop-empty" id="qpopEmpty" hidden>Nothing matches that.</div>
+      </div>
+      {% endif %}
+      {# The "Provision a VM" chooser lives on /terraform (that modal and all its
+         machinery), so this opens it there via ?provision=1 rather than copying it
+         onto every page. Kept in the same .quick group as kubectl/Troubleshoot so
+         the three share one 8px gap instead of the anchor sitting 18px adrift. #}
+      {% if may('terraform') %}
+      <a class="qbtn" href="/terraform?provision=1" title="Provision a VM — Linux or a cluster">
+        {{ glyph('server', 15) }}<span class="qlabel">Provision a VM</span></a>
+      {% endif %}
+    </div>
+    {% if qc %}
+    <script nonce="{{ csp_nonce() }}">
+    (function () {
+      const wrap = document.querySelector('.quick');
+      if (!wrap) return;
+      const pop = document.getElementById('qpop');
+      const rows = [...pop.querySelectorAll('.qrow')];
+      const groups = [...pop.querySelectorAll('.qgroup')];
+      const filter = document.getElementById('qfilter');
+      const note = document.getElementById('qpopNote');
+      const empty = document.getElementById('qpopEmpty');
+      let mode = null;
+
+      // Unreachable is disqualifying for both: the console and the
+      // troubleshooting pod both need the API server to answer.
+      const allowed = (r, m) => r.dataset.down !== '1'
+                                && (m !== 'ts' || r.dataset.manage === '1');
+      const target = (r, m) => m === 'ts' ? r.dataset.ts : r.dataset.shell;
+
+      function shut() {
+        mode = null; pop.hidden = true;
+        wrap.querySelectorAll('.qbtn').forEach(b => b.classList.remove('on'));
+      }
+
+      function paint() {
+        const q = (filter && filter.value.trim().toLowerCase()) || '';
+        let shown = 0;
+        rows.forEach(r => {
+          const hit = !q || r.dataset.find.includes(q);
+          r.hidden = !hit;
+          if (hit) shown++;
+          // The row keeps its href so the whole thing stays a real link:
+          // middle-click and "open in new tab" work, which they would not if
+          // this were a click handler calling location.href.
+          r.href = target(r, mode);
+          r.classList.toggle('off', !allowed(r, mode));
+          r.title = allowed(r, mode) ? ''
+            : r.dataset.down === '1'
+              ? 'This cluster is not answering — nothing can be opened on it'
+              : 'Management is off for this cluster — turn it on in its settings';
+        });
+        // A group heading with nothing under it reads as an empty project.
+        groups.forEach(g => {
+          g.hidden = !rows.some(r => !r.hidden && r.dataset.group === g.dataset.group);
+        });
+        empty.hidden = shown > 0;
+      }
+
+      function open(btn, m) {
+        const eligible = rows.filter(r => allowed(r, m));
+        // One cluster is not a choice. Skipping the list here is the whole
+        // difference between a shortcut and another page to click through.
+        if (eligible.length === 1) { location.href = target(eligible[0], m); return; }
+        mode = m;
+        note.textContent = m === 'ts' ? 'to start a troubleshooting pod on'
+                                      : 'to open a console on';
+        wrap.querySelectorAll('.qbtn').forEach(b => b.classList.remove('on'));
+        btn.classList.add('on');
+        pop.hidden = false;
+        paint();
+        if (filter) { filter.value = ''; filter.focus(); }
+      }
+
+      wrap.querySelectorAll('.qbtn[data-quick]').forEach(btn => {
+        btn.addEventListener('click', e => {
+          e.stopPropagation();
+          const m = btn.dataset.quick;
+          if (mode === m) { shut(); return; }
+          open(btn, m);
+        });
+      });
+      if (filter) filter.addEventListener('input', paint);
+      document.addEventListener('click', e => {
+        if (!pop.hidden && !wrap.contains(e.target)) shut();
+      });
+      document.addEventListener('keydown', e => {
+        if (e.key === 'Escape' && !pop.hidden) shut();
+      });
+    })();
+    </script>
+    {% endif %}
+    {% endif %}
+    {# /search is governed by the `config` area; hide the box for a role that
+       lacks it so it is never a control that only ever answers "denied". #}
+    {% if may('config') %}
+    <form action="/search" method="get" class="searchbox">
+      <span class="mag">⌕</span>
+      <input type="search" name="q" id="globalsearch" value="{{ q or '' }}"
+             placeholder="Search services, config, secrets…  /"
+             autocomplete="off">
+    </form>
+    {% endif %}
+    {% if status %}
+      {% if status.stale %}
+      <form method="post" action="/settings/project/{{ pid }}/region/{{ rgid }}/sync"
+            style="display:flex;">
+        <input type="hidden" name="next" value="{{ request.url.path }}">
+        {# Three different situations wore one label. "out of date · Sync now"
+           said nothing about whether anything was coming, so a region the timer
+           was about to fetch looked identical to one it cannot fetch — and the
+           reader's fair conclusion was that the automatic sync does not work. #}
+        <button type="submit" class="repo-chip stale-chip"
+                title="{% if status.dirty %}The remote has moved on, but this
+                working copy has uncommitted changes — the automatic sync will
+                not overwrite them. Commit or discard, then sync.{% elif
+                status.auto.outcome == 'failed' %}The last automatic sync failed:
+                {{ status.auto.detail }}{% else %}The remote has changes this
+                portal has not pulled yet. A sync is queued; click to do it
+                now.{% endif %}">
+          <span class="dot dirty"></span>
+          out of date{% if status.remote_sha %} · remote {{ status.remote_sha }}{% endif %}
+          {%- if status.dirty %} · held, uncommitted changes
+          {%- elif status.auto.outcome == 'failed' %} · auto-sync failed
+          {%- elif status.syncing %} · syncing…
+          {%- else %} · Sync now{% endif %}
+        </button>
+      </form>
+      {% else %}
+      <div class="repo-chip" title="{{ status.head }}">
+        <span class="dot {% if status.dirty %}dirty{% endif %}"></span>
+        {{ status.branch }} · {{ status.head[:24] }}{% if status.dirty %} · uncommitted{% endif %}
+      </div>
+      {% endif %}
+    {% endif %}
+  </div>
+  <script nonce="{{ csp_nonce() }}">
+  document.addEventListener('keydown', e => {
+    if (e.key === '/' && !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) {
+      e.preventDefault(); document.getElementById('globalsearch').focus();
+    }
+  });
+  </script>
+  <div class="content">{% block content %}{% endblock %}</div>
+  </div><!-- /maincol -->
+</div><!-- /shell -->
+{% else %}
+<div class="content bare-content">{{ self.content() }}</div>
+{% endif %}
+<script nonce="{{ csp_nonce() }}">
+// Theme switch. Stores an explicit choice, so it stops following the OS once the
+// user has expressed a preference.
+(function () {
+  function paint() {
+    var light = document.documentElement.getAttribute('data-theme') === 'light';
+    document.querySelectorAll('.themebtn').forEach(function (b) {
+      // THE ICON IS THE DESTINATION, NOT THE CURRENT STATE.
+      //
+      // It was the other way round: a dark page showed a MOON, and clicking it
+      // went to light. A moon on a dark page reads as a badge saying "dark
+      // mode is on", so pressing it feels like confirming what you already
+      // have — and the next page you load is white. Reported exactly that way:
+      // sign-in was dark, the page after it came up light.
+      //
+      // Showing where the button TAKES you is both the convention and the only
+      // reading that agrees with the title beside it.
+      b.textContent = light ? '\u263D' : '\u263C';
+      b.title = light ? 'Switch to the dark theme' : 'Switch to the light theme';
+      b.setAttribute('aria-label', b.title);
+    });
+  }
+  function paintNav() {
+    var off = document.documentElement.getAttribute('data-nav') === 'collapsed';
+    document.querySelectorAll('.navtoggle').forEach(function (b) {
+      b.textContent = off ? '\u00BB' : '\u00AB';
+      b.title = off ? 'Expand the sidebar' : 'Collapse the sidebar';
+      b.setAttribute('aria-label', b.title);
+      b.setAttribute('aria-expanded', off ? 'false' : 'true');
+    });
+  }
+  // ── is it safe to reload the page right now? ──────────────────────────
+  // Four things reload themselves on a timer — the collecting notice, the
+  // Overview, the environment page and the certificate order — and each had its
+  // own idea of what to wait for. The collecting notice learned about open
+  // dialogs the hard way (a reload over a live terminal); home.html already knew
+  // about a question being typed and about a panel being dragged. Neither knew
+  // the other's half, so the fix never travelled: env.html reloads every 30s and
+  // includes the live log window.
+  //
+  // So the question is asked once, here, and every timer consults it.
+  window.portalSafeToReload = function () {
+    // Anything modal has a live connection behind it — the kubectl console, a
+    // pod shell, the troubleshooting window, the log stream. A reload is a
+    // navigation and takes it with it.
+    if (document.querySelector('dialog[open]')) return false;
+    if (document.body.classList.contains('arranging')) return false;
+    try {
+      if (window.portalAssistantBusy && window.portalAssistantBusy()) return false;
+    } catch (e) { /* the rail may not be on this page */ }
+    return true;
+  };
+
+  window.portalBrandClick = function (e) {
+    if (document.documentElement.getAttribute('data-nav') !== 'collapsed')
+      return true;                       // expanded: an ordinary link home
+    e.preventDefault();
+    window.portalToggleNav();
+    return false;
+  };
+  window.portalToggleNav = function () {
+    var off = document.documentElement.getAttribute('data-nav') === 'collapsed';
+    if (off) document.documentElement.removeAttribute('data-nav');
+    else document.documentElement.setAttribute('data-nav', 'collapsed');
+    try { localStorage.setItem('portal-nav', off ? 'expanded' : 'collapsed'); } catch (e) {}
+    paintNav();
+  };
+  paintNav();
+  window.portalToggleTheme = function () {
+    var now = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+    document.documentElement.setAttribute('data-theme', now);
+    try { localStorage.setItem('portal-theme', now); } catch (e) {}
+    paint();
+  };
+  paint();
+})();
+
+// Carry this reader's theme to a page we send them to. The theme is a toggle
+// stored in their browser, so the server cannot know it at render time — a dark
+// portal was handing people a light renewal page because the other end could
+// only see the operating system's preference.
+(function () {
+  const theme = document.documentElement.getAttribute('data-theme');
+  if (theme !== 'dark' && theme !== 'light') return;
+  for (const a of document.querySelectorAll('a[data-carry-theme]')) {
+    try {
+      const u = new URL(a.href, location.href);
+      u.searchParams.set('theme', theme);
+      a.href = u.toString();
+    } catch (e) { /* not a URL we can amend; leave it exactly as it was */ }
+  }
+})();
+
+// Copy the text of the element before the button. The clipboard needs a secure
+// context, so over plain http on a LAN address it throws — select the text
+// instead, so ⌘C still works rather than leaving a button that does nothing.
+window.portalCopy = async function (btn) {
+  const src = btn.parentElement.querySelector('code, pre, input');
+  if (!src) return;
+  const text = src.value !== undefined ? src.value : src.textContent;
+  const said = btn.textContent;
+  try {
+    await navigator.clipboard.writeText(text.trim());
+    btn.textContent = 'copied';
+  } catch (e) {
+    const r = document.createRange();
+    r.selectNodeContents(src);
+    window.getSelection().removeAllRanges();
+    window.getSelection().addRange(r);
+    btn.textContent = 'press ⌘C';
+  }
+  setTimeout(() => { btn.textContent = said; }, 1400);
+};
+
+// The three buttons on a terminal window. Written once here rather than in each
+// dialog: there are three of those already, and each copy is a chance for one
+// of them to behave differently from the others.
+//   close    — where the dialog's own `close` link goes, veil and all
+//   minimise — the title bar alone; the session stays connected behind it
+//   maximise — as much of the window as the page can give
+document.addEventListener('click', function (e) {
+  const dot = e.target.closest('.psh-dots b[data-dot]');
+  if (!dot) return;
+  const dlg = dot.closest('dialog.psh');
+  if (!dlg) return;
+  e.preventDefault();
+  const how = dot.dataset.dot;
+  if (how === 'close') {
+    const leave = dlg.querySelector('a.psh-x[href]');
+    if (leave) { leave.click(); }
+    return;
+  }
+  if (how === 'mini') { dlg.classList.toggle('mini'); dlg.classList.remove('maxi'); }
+  else { dlg.classList.toggle('maxi'); dlg.classList.remove('mini'); }
+  // the terminal has to be told its new size; nothing else cares
+  window.dispatchEvent(new Event('resize'));
+});
+</script>
+{% if may('assistant') %}{% include "_assistant_widget.html" %}{% endif %}
+<script nonce="{{ csp_nonce() }}">
+// Hover prefetch: start fetching a page the moment the cursor commits to its
+// link, so the click lands on a warm cache. Every portal GET is a read by
+// design — writes are POSTs — with two carve-outs a prefetch must never touch:
+// /logout (a GET that ends the session), and ?refresh= links (they invalidate
+// caches, which is work, not a read). data-nopf opts any other link out.
+(function () {
+  const seen = new Set();
+  document.addEventListener('pointerenter', (e) => {
+    const a = e.target.closest && e.target.closest('a[href]');
+    if (!a || a.dataset.nopf !== undefined) return;
+    const href = a.getAttribute('href') || '';
+    if (!href.startsWith('/') || href.startsWith('//')) return;
+    if (href.includes('refresh=') || href.startsWith('/logout')
+        || href.includes('export') || href.startsWith('#') || seen.has(href)) return;
+    seen.add(href);
+    const l = document.createElement('link');
+    l.rel = 'prefetch';
+    l.href = href;
+    document.head.appendChild(l);
+  }, {capture: true, passive: true});
+})();
+</script>
+
+{# ── one typed-"Delete" confirmation for every destructive control ──────────
+   A control opts in with data-del="<what>" — a form, a link, or a fetch
+   handler that awaits window.confirmDelete with a label. No plain confirm
+   dialog on a delete anywhere: this is the house dialog, and it will not enable
+   its button until the word Delete is typed, so a destructive click is never
+   one slip. #}
+<dialog id="delDlg" class="deldlg">
+  <div class="deldlg-h">{{ glyph('triangle-alert', 18) }} <b id="delTitle">Delete?</b></div>
+  <p class="deldlg-b" id="delBody">This cannot be undone.</p>
+  <label class="deldlg-l">Type <b>Delete</b> to confirm
+    <input type="text" id="delInput" autocomplete="off" spellcheck="false" placeholder="Delete"></label>
+  <div class="deldlg-f">
+    <button type="button" class="btn btn-ghost" id="delCancel">Cancel</button>
+    <button type="button" class="btn btn-danger" id="delGo" disabled>Delete</button>
+  </div>
+</dialog>
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  var dlg = document.getElementById('delDlg');
+  if (!dlg) return;
+  var input = document.getElementById('delInput'), go = document.getElementById('delGo');
+  var title = document.getElementById('delTitle'), body = document.getElementById('delBody');
+  var resolver = null;
+  function finish(ok) {
+    var r = resolver; resolver = null;
+    if (dlg.open) dlg.close();
+    if (r) r(ok);
+  }
+  // returns a Promise<bool>; only resolves true once the word "delete" is typed
+  window.confirmDelete = function (label) {
+    return new Promise(function (resolve) {
+      finish(false);                              // never stack two dialogs
+      resolver = resolve;
+      title.textContent = label ? 'Delete ' + label + '?' : 'Delete this?';
+      body.textContent = 'This cannot be undone. Type Delete to confirm.';
+      input.value = ''; go.disabled = true;
+      dlg.showModal(); setTimeout(function () { input.focus(); }, 30);
+    });
+  };
+  input.addEventListener('input', function () {
+    go.disabled = input.value.trim().toLowerCase() !== 'delete';
+  });
+  input.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && !go.disabled) { e.preventDefault(); finish(true); }
+  });
+  go.addEventListener('click', function () { if (!go.disabled) finish(true); });
+  document.getElementById('delCancel').addEventListener('click', function () { finish(false); });
+  dlg.addEventListener('cancel', function (e) { e.preventDefault(); finish(false); });  // Esc
+  dlg.addEventListener('click', function (e) { if (e.target === dlg) finish(false); }); // backdrop
+
+  // Decide whether a submission is a delete, and with what label. A control opts
+  // in with data-del, OR the form POSTs to a delete/remove/destroy route (caught
+  // automatically so a new delete route is covered without remembering to tag
+  // it). A submitter's formaction overrides the form's action — an Export button
+  // living inside a delete form (assets bulk bar) must NOT be gated as a delete —
+  // and a submitter's own data-del wins over everything. Returns the label
+  // string when it IS a delete (may be ''), or null when it is not.
+  function delLabel(form, submitter) {
+    if (!form || !form.matches) return null;
+    if (form.matches('[data-del-skip]')) return null;   // owns its own typed confirm
+    if (submitter && submitter.matches && submitter.matches('[data-del]'))
+      return submitter.getAttribute('data-del') || '';
+    var override = submitter && submitter.getAttribute && submitter.getAttribute('formaction');
+    if (form.matches('[data-del]') && !override) return form.getAttribute('data-del') || '';
+    var action = override || form.getAttribute('action') || '';
+    return /(delete|remove|destroy)/i.test(action) ? (form.getAttribute('data-del') || '') : null;
+  }
+  // The delete FORM. Capture-phase + stopPropagation so any old inline onsubmit
+  // never runs; form.submit() bypasses it too — so there is never a double prompt.
+  document.addEventListener('submit', function (e) {
+    var form = e.target;
+    if (form.__delok) return;
+    var label = delLabel(form, e.submitter);
+    if (label === null) return;
+    e.preventDefault(); e.stopPropagation();
+    window.confirmDelete(label).then(function (ok) {
+      if (ok) { form.__delok = true; form.submit(); }
+    });
+  }, true);
+  // Capture-phase click: a delete LINK confirms then navigates; a submit button
+  // that will trigger the delete has its old inline confirm dialog suppressed
+  // so only the typed dialog, fired by the submit handler above, is shown.
+  document.addEventListener('click', function (e) {
+    var a = e.target.closest && e.target.closest('a[data-del]');
+    if (a && !a.__delok) {
+      e.preventDefault(); e.stopPropagation();
+      window.confirmDelete(a.getAttribute('data-del') || '').then(function (ok) {
+        if (ok) { a.__delok = true; location.href = a.getAttribute('href'); }
+      });
+      return;
+    }
+    var btn = e.target.closest && e.target.closest(
+      'button[data-del], button[type=submit], button:not([type]), input[type=submit]');
+    if (btn && btn.form && delLabel(btn.form, btn) !== null) {
+      e.stopPropagation();                       // kill the old inline confirm; let the submit run
+    }
+  }, true);
+})();
+</script>
+
+{#- The delegated listener that replaces every inline on* handler. Served
+    from /static for the same reason retry.js is: inlined here it put /ansible
+    straight over the page-weight budget in tests/test_speed.py. -#}
+<script nonce="{{ csp_nonce() }}" src="/static/csp-actions.js?v={{ portal_version() }}" defer></script>
+
+{#- Served from /static so it is fetched once and cached for a year,
+    rather than five kilobytes on every page -- the page-weight budget in
+    tests/test_speed.py caught exactly that. Versioned like app.css, so a
+    release invalidates it. -#}
+<script nonce="{{ csp_nonce() }}" src="/static/retry.js?v={{ portal_version() }}" defer></script>
+</body>
+</html>

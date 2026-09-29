@@ -1,0 +1,74 @@
+{% extends "_auth_shell.html" %}
+{% set title = 'Accept your invitation' %}
+{% set width = 460 %}
+{% block body %}
+
+{% if not ok %}
+<h1>This link cannot be used</h1>
+<p class="sub">{{ why }}</p>
+<div class="note"><a href="/login">Go to sign in</a></div>
+
+{% else %}
+<h1>Set up your account</h1>
+<p class="sub">You have been invited to {{ brand().name }}. Choose a password,
+  then add an authenticator app — two steps and you are in.</p>
+
+{% if err %}<div class="err">{{ err }}</div>{% endif %}
+
+<ol class="steps">
+  <li><b>Confirm your email and choose a password</b> — you are on this step.</li>
+  <li><b>Add an authenticator app</b> — next, on the following page.</li>
+</ol>
+
+{# The address is shown, not typed. Opening this link is what proves the person
+   holds it, so offering a field to change it would throw that proof away. #}
+<label class="f">Your email</label>
+<div class="secret" style="letter-spacing:0;color:var(--text);
+     margin-bottom:6px;">{{ who.email }}</div>
+<p class="sub" style="margin:0 0 18px;font-size:12px;">Opening this link is how
+  we verify this address. If it is wrong, ask whoever invited you for a new
+  link rather than continuing.</p>
+
+{% if roles %}
+<label class="f">You will have</label>
+<div class="sub" style="margin:0 0 18px;">
+  {% for r in roles %}<b>{{ r.name }}</b>{{ ', ' if not loop.last }}{% endfor %}
+</div>
+{% endif %}
+
+<form method="post" action="/invite/{{ token }}" id="acceptform">
+  <label class="f" for="pw">Choose a password</label>
+  <input id="pw" type="password" name="password" required autofocus
+         autocomplete="new-password" minlength="10"
+         aria-describedby="pwrule">
+  <div id="pwrule" class="sub" style="margin:-10px 0 16px;font-size:12px;">
+    At least 10 characters, mixing upper and lower case, with a digit.</div>
+
+  <label class="f" for="pw2">Type it again</label>
+  <input id="pw2" type="password" name="confirm" required
+         autocomplete="new-password" minlength="10">
+
+  <button type="submit">Continue to the authenticator step</button>
+</form>
+
+<div class="note">Nobody else has seen this password — not even whoever
+  invited you.</div>
+
+<script nonce="{{ csp_nonce() }}">
+// Checked here so a mistyped confirmation is caught before a round trip; the
+// server checks it again, because this is convenience and that is the rule.
+(function () {
+  var f = document.getElementById('acceptform');
+  var a = document.getElementById('pw'), b = document.getElementById('pw2');
+  function match() {
+    b.setCustomValidity(b.value && a.value !== b.value
+                        ? 'The two passwords do not match.' : '');
+  }
+  a.addEventListener('input', match);
+  b.addEventListener('input', match);
+  f.addEventListener('submit', match);
+})();
+</script>
+{% endif %}
+
+{% endblock %}

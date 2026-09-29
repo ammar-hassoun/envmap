@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block crumbs %}<b>Not permitted</b>{% endblock %}
+{% block content %}
+<div class="empty">
+  <div class="big">{{ glyph("lock", 40) }}</div>
+  <h2>{{ area ~ ' is not in your roles' if area else 'Administrators only' }}</h2>
+  <p>{% if area %}Your account ({{ me.email if me else 'unknown' }}) holds no role
+     granting <b>{{ area }}</b>. An administrator can add one under
+     Administration → Roles.
+     {% else %}Your account ({{ me.email if me else 'unknown' }}) does not have
+     admin access. Ask an administrator if you need it.{% endif %}</p>
+  <a class="btn btn-ghost" href="/">← Back to overview</a>
+</div>
+{% endblock %}

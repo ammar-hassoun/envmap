@@ -1,0 +1,330 @@
+{#- Small pieces shared by the pages that collect from several sources.
+
+    Three copies of the tab bar and two of the "still collecting" banner had
+    already appeared, and they had drifted: one said "Still collecting", the
+    other "Still checking", and the two spinners were the same eight lines of
+    CSS under different class names. One definition, so the pages that behave
+    alike also look alike.
+
+    The styling lives in base.html as `.tabbar` and `.spin`, because it is now
+    a component rather than one page's decoration. -#}
+
+{#- WHY THESE CARRY IDENTIFIERS AND NOT URLS
+    They used to emit whole URLs — data-stream, data-meta, data-dsurl — which
+    meant the same project, cluster, namespace and pod were serialised about
+    five times per row, once per URL plus the href. On the fleet pods table
+    that made the ACTION CELL 72% of every row and the page 1.4MB of HTML;
+    150kB re-parsed per navigation was once the entire perceived lag here, so
+    ten times that is not a detail. The four identifiers are the information;
+    the URL is a template, and a template belongs in one place rather than
+    stamped into every row. The two dialogs build it from these (and still
+    accept a full data-stream/data-dsurl, so a caller that has a genuinely
+    different endpoint can pass one).
+
+    What a row has to carry for the live log window to open from it.
+
+   Written out by hand in three templates, which is three chances to get one
+   attribute wrong — and it had already happened: the window reads
+   `data-container` and no site supplied it, so a row could never open on a
+   specific container. The window's contract lives here now, once. -#}
+{%- macro podlog_attrs(stream, meta, ns, pod, container="") -%}
+data-podlog data-stream="{{ stream }}" data-meta="{{ meta }}"
+data-ns="{{ ns }}" data-pod="{{ pod }}" data-container="{{ container }}"
+{%- endmacro %}
+
+{#- What a row carries for the describe window to open from it. Same shape as
+   podlog_attrs above, and for the same reason: written out per template is a
+   chance to get one attribute wrong, and the window reads them all. -#}
+{%- macro describe_attrs(pid, cid, ns, name, kind="pod") -%}
+data-poddesc data-pid="{{ pid }}" data-cid="{{ cid }}"
+data-dskind="{{ kind }}" data-ns="{{ ns }}" data-pod="{{ name }}"
+{%- endmacro %}
+
+{#- What a row carries for the YAML editor to open from it. Third of the same
+   shape — podlog_attrs, describe_attrs, yaml_attrs — because the alternative is
+   writing five data- attributes out per table and getting one wrong somewhere.
+   The project and cluster travel with it: applying needs to name them, and a
+   window that reads them out of the page's URL breaks the moment it is opened
+   from a page whose URL is a different cluster. -#}
+{%- macro yaml_attrs(pid, cid, ns, name, kind="pod") -%}
+data-podyaml data-ymproject="{{ pid }}" data-ymcluster="{{ cid }}"
+data-ymkind="{{ kind }}" data-ns="{{ ns }}" data-pod="{{ name }}"
+{%- endmacro %}
+
+{#- The same, for the cluster routes, which two of the three sites use with
+    identical URLs and different variable names. -#}
+{%- macro cluster_podlog_attrs(pid, cid, ns, pod, container="") -%}
+data-podlog data-pid="{{ pid }}" data-cid="{{ cid }}"
+data-ns="{{ ns }}" data-pod="{{ pod }}" data-container="{{ container }}"
+{%- endmacro %}
+
+{%- macro tabbar(items) -%}
+<nav class="tabbar">
+  {%- for t in items %}
+  <a href="{{ t.href }}"
+     class="{{ 'on' if t.active }}{{ ' off' if t.idle }}"
+     {%- if t.idle %} title="Nothing of this kind is connected yet"{% endif %}>
+    <span>{{ t.icon }}</span><span>{{ t.label }}</span>
+    {%- if t.idle %} <span class="n">—</span>
+    {%- elif t.count is not none %} <span class="n">{{ t.count }}</span>{% endif -%}
+  </a>
+  {%- endfor %}
+</nav>
+{%- endmacro -%}
+
+{#- How a playbook run turned out, in one pill.
+
+   Named here rather than written out on each of the three pages that show it,
+   because the mapping from ansible's exit code to a colour is a decision: 2 is
+   "a task failed", 4 is "a host could not be reached", and those are different
+   problems that a single red pill would flatten into one. -#}
+{%- macro runpill(r) -%}
+{%- set tone = {'ok': 'sv-clean', 'running': 'sv-info', 'failed': 'sv-high',
+                'unreachable': 'sv-critical'}.get(r.status, 'sv-medium') -%}
+<span class="sv {{ tone }}">{{ 'running…' if r.status == 'running' else r.status }}</span>
+{%- if r.rc is not none and r.rc not in (0, none) %} <span class="hint">rc {{ r.rc }}</span>
+{%- endif -%}
+{%- endmacro %}
+
+{#- What a button carries for the run window to open on a playbook. Same contract
+   as podlog_attrs and its siblings, and here for the same reason: five data-
+   attributes written out per page is five chances to get one wrong. -#}
+{%- macro ansrun_attrs(pb_id, pb_name, group_id="", auto="") -%}
+data-ansrun="{{ pb_id }}" data-ansname="{{ pb_name }}"
+data-ansgroup="{{ group_id or '' }}"
+{%- if auto %} data-ansauto="{{ auto }}"{% endif %}
+{%- endmacro %}
+
+{#- Sub-tabs: the sections inside one view, or one kind out of the many in it.
+
+    Links rather than a script, for the reason the strip above them is: the count
+    on each tab is the server's own, the back button works, and a sub-tab
+    somebody pastes into a message opens where they were looking.
+
+    This replaced a `<select>` and an Apply button on Workloads. That cost two
+    clicks to do what a tab does in one, and it hid every other kind's count
+    inside a closed dropdown — so the page could not answer "how many
+    StatefulSets are there" without being changed first.
+
+    `items` is a list of {key, label, count, icon}. An empty key means "all of
+    them" and carries no parameter, so the tab everybody lands on is also the
+    page's plain URL. Fewer than two items is not a choice and draws nothing.
+
+    `base` may or may not already carry a query string, and the separator is
+    worked out here rather than assumed. It was assumed, and it was `&`: right for
+    the cluster page, whose base is `/clusters?project=…`, and wrong for every
+    page whose base is a bare path — `/ansible` became `/ansible&sec=inventory`,
+    which is a path nothing serves, so two of the three tabs 404'd. -#}
+{%- macro subtabs(base, param, current, items, wide=false) -%}
+{#- `wide` spreads the strip across the measure and gives every tab an equal
+    share of it. Off by default: the cluster page has twelve of these and they
+    read better as a compact pill, while a page with four wants them to line up
+    with the cards underneath. -#}
+{%- if items|length > 1 %}
+{%- set sep = '&' if '?' in base else '?' %}
+<nav class="subtabs{{ ' wide' if wide }}">
+  {%- for t in items %}
+  {%- set on = t.key == current %}
+  <a class="stab{{ ' on' if on }}{{ ' quiet' if t.count == 0 and not on }}"
+     href="{{ base }}{{ (sep ~ param ~ '=' ~ t.key|urlencode) if t.key }}"
+     {%- if on %} aria-current="page"{% endif %}>
+    {%- if t.icon %}{{ glyph(t.icon, 14) }}{% endif %}
+    <span>{{ t.label }}</span>
+    {%- if t.count is not none %}<span class="n">{{ t.count }}</span>{% endif -%}
+  </a>
+  {%- endfor %}
+</nav>
+{%- endif %}
+{%- endmacro -%}
+
+{#- What is still being read. Named rather than waited for: the slow sources
+    can take fifteen seconds and a page that silently omitted them would look
+    like a quiet estate. `after` is where the counts live, so the wording can
+    say what is not included yet. -#}
+{%- macro collecting(pending, after="Everything else is below.") -%}
+{%- if pending %}
+<div class="card" style="border-color:var(--accent);margin-bottom:14px;">
+  <div class="card-b" style="display:flex;gap:11px;align-items:center;font-size:12.5px;">
+    {# `.spin` only shows once something adds `.on` to it — it belongs to the
+       kubectl console's input row. This one has to spin on its own. #}
+    <span class="opspin"></span>
+    <div style="flex:1;">
+      <b>Still collecting {{ pending|join(', ') }}</b>
+      <div class="hint" style="font-size:11.5px;">{{ after }}
+        This page will fill in on its own in a moment.</div>
+    </div>
+  </div>
+</div>
+<script nonce="{{ csp_nonce() }}">
+// Reload while something is still coming — but a BOUNDED number of times.
+//
+// This used to reload every four seconds for as long as anything was pending,
+// on the reasoning that it "stops the instant the page is complete". It does
+// not stop if the page is never complete, and a cluster the portal cannot
+// reach is never complete: its parts stay pending for ever. On an estate with
+// one unreachable cluster that is a page reloading every few seconds all day —
+// which also destroyed the kubectl console and the log window, because a reload
+// is a navigation and both are recreated empty on the other side of it.
+//
+// So: a few tries, then stop and say so. Retrying is for a collection that is
+// slow; it cannot fix one that is refused.
+(function () {
+  var TRIES = 3;
+  var key = 'collecting.tries:' + location.pathname + location.search;
+  var n = parseInt(sessionStorage.getItem(key) || '0', 10);
+  var note = document.currentScript.previousElementSibling;
+  if (n >= TRIES) {
+    sessionStorage.removeItem(key);
+    var hint = note && note.querySelector('.hint');
+    if (hint) {
+      hint.textContent = 'Still not answering after ' + TRIES + ' tries — it '
+        + 'may be unreachable. Use Refresh to try again.';
+    }
+    var spin = note && note.querySelector('.opspin');
+    if (spin) spin.remove();
+    return;
+  }
+  // Never reload over something open on top of the page. The kubectl console,
+  // the pod shell, the troubleshooting window and the live log window are all
+  // <dialog>s with a live connection behind them, and a reload is a navigation:
+  // it takes the terminal with it and reopens it empty.
+  //
+  // Checked when the timer FIRES, not when it is set. Checking at set time was
+  // the obvious placement and the wrong one: this script runs while the document
+  // is still parsing, and the dialogs are opened by scripts further down the
+  // page — so nothing is open yet, the timer is armed, and four seconds later it
+  // reloads over a terminal somebody is already typing in. Exactly one reload,
+  // which is the whole complaint.
+  //
+  // And it does not reschedule. Closing a dialog navigates, which is a fresh
+  // page load and a fresh chance to collect; sitting behind an open one waiting
+  // to pounce is not a service to anybody.
+  setTimeout(function () {
+    // Asked when the timer FIRES, not when it is set: this script runs while
+    // the document is still parsing and the dialogs are opened further down the
+    // page, so at schedule time nothing is open yet and the timer gets armed
+    // anyway. base.html owns the question; every timer asks the same one.
+    if (window.portalSafeToReload && !window.portalSafeToReload()) return;
+    sessionStorage.setItem(key, String(n + 1));
+    window.location.reload();
+  }, 4000);
+})();
+</script>
+{%- endif %}
+{%- endmacro -%}
+
+{#- Project and region, as one control. The region list follows the chosen
+    project — a region of another project is a choice that can only be wrong —
+    and the whole thing renders only when the portal has projects at all. -#}
+{%- macro place_fields(pid, rgid, options, env='', env_suggest=None) -%}
+{%- if options %}
+<div class="field-row"><label>project</label>
+  <div><select name="pid" id="plcProj" style="min-width:0;">
+      <option value="">— none —</option>
+      {% for po in options %}
+      <option value="{{ po.id }}" {% if pid == po.id %}selected{% endif %}>{{ po.name }}</option>
+      {% endfor %}
+    </select>
+    <div class="sec-note">The same projects as the rest of the portal, so the
+      Ansible pages filter the way every other page does.</div>
+  </div></div>
+<div class="field-row"><label>region</label>
+  <div><select name="rgid" id="plcReg" style="min-width:0;">
+      <option value="">— whole project —</option>
+      {% for po in options %}{% for r in po.regions %}
+      <option value="{{ r.id }}" data-proj="{{ po.id }}"
+              {% if rgid == r.id %}selected{% endif %}>{{ r.name }}</option>
+      {% endfor %}{% endfor %}
+    </select>
+    <div class="sec-note" id="plcRegNote"></div></div></div>
+<script nonce="{{ csp_nonce() }}">
+/* The behaviour is base.html's `placeSync` — ONE definition, because this was
+   written twice (here and the Privileged Access target form) and only this
+   copy was fixed when the bug was first reported. The other was reported
+   again months later, against the PAM page. */
+document.addEventListener('DOMContentLoaded', function () {
+  window.placeSync(document.getElementById('plcProj'),
+                   document.getElementById('plcReg'),
+                   document.getElementById('plcRegNote'));
+});
+</script>
+{%- endif %}
+{#- Environment is the third part of "place", and unlike project/region it is
+    useful even before any project exists — so it renders regardless. It flows
+    to Privileged Access as a colour-coded, filterable badge. -#}
+<div class="field-row"><label>environment</label>
+  <div><input type="text" name="env" list="placeEnvs" value="{{ env or '' }}"
+         placeholder="production, staging, dev…" autocomplete="off"
+         spellcheck="false" style="min-width:0;max-width:260px;">
+    <datalist id="placeEnvs">
+      {% for e in (env_suggest or []) %}<option value="{{ e }}">{% endfor %}
+    </datalist>
+    <div class="sec-note">The environment this belongs to — shown as a
+      colour-coded badge wherever it appears. A production environment turns on
+      the typed-name confirm by itself.</div>
+  </div></div>
+{%- endmacro -%}
+
+{# ── reusable OVERVIEW chart panels ──────────────────────────────────────────
+   The shared "chart overview" used on every operational page (Ansible is the
+   reference). Renderers (ring/hbars) are global charts.py functions; the panel
+   layout (.apanels/.amix/.akey) is globalised in base.html. Feed each with the
+   page's own data:
+     donut_panel  — a status ring + clickable legend. segments = list of
+                    {label,value,color,href}; centre/sub label the hole.
+     bars_panel   — a ranked bar list. items = list of {label,n,href,note}.
+     kv_panel     — a "what is set up" summary. items = list of {label,value,href}.
+   Wrap two in <div class="apanels"> … </div> for the two-column row. #}
+{%- macro donut_panel(title, segments, centre='', sub='', hint='', icon='activity') -%}
+{%- set segs = [] -%}
+{%- for s in segments -%}{{ segs.append((s.label, s.value, s.color)) or '' }}{%- endfor -%}
+<div class="card" style="margin:0;">
+  <div class="card-h">{{ glyph(icon, 15) }} {{ title }}{% if hint %} <span class="hint">{{ hint }}</span>{% endif %}</div>
+  <div class="card-b amix">
+    {{ ring(segs, centre=centre, sub=sub, size=118) }}
+    <div class="keys">
+      {%- for s in segments -%}
+      {%- set tag = 'a' if s.href else 'span' -%}
+      <{{ tag }} class="akey"{% if s.href %} href="{{ s.href }}"{% endif %}>
+        <i style="background:{{ s.color }};"></i><span>{{ s.label }}</span>
+        <span class="v">{{ s.value }}</span></{{ tag }}>
+      {%- endfor -%}
+    </div>
+  </div>
+</div>
+{%- endmacro -%}
+
+{%- macro bars_panel(title, items, hint='', icon='boxes', empty='nothing to show') -%}
+<div class="card" style="margin:0;">
+  <div class="card-h">{{ glyph(icon, 15) }} {{ title }}{% if hint %} <span class="hint">{{ hint }}</span>{% endif %}</div>
+  <div class="card-b">
+    {% if items %}
+    {%- set mx = (items | map(attribute='n') | max) or 1 -%}
+    <div class="facets"><div class="facet">
+      {%- for it in items -%}
+      {%- set tag = 'a' if it.href else 'span' -%}
+      <{{ tag }} class="fval"{% if it.href %} href="{{ it.href }}"{% endif %} title="{{ it.label }} — {{ it.n }}">
+        <span class="bar" style="width:{{ (it.n / mx * 100)|round }}%"></span>
+        <span class="t"><span class="v">{{ it.label }}</span>
+          <span class="n">{{ it.n }}{% if it.note %} · {{ it.note }}{% endif %}</span></span></{{ tag }}>
+      {%- endfor -%}
+    </div></div>
+    {% else %}<div class="chart-empty">{{ empty }}</div>{% endif %}
+  </div>
+</div>
+{%- endmacro -%}
+
+{%- macro kv_panel(title, items, hint='', icon='settings') -%}
+<div class="card" style="margin:0;">
+  <div class="card-h">{{ glyph(icon, 15) }} {{ title }}{% if hint %} <span class="hint">{{ hint }}</span>{% endif %}</div>
+  <div class="card-b">
+    <div class="facets"><div class="facet">
+      {%- for it in items -%}
+      {%- set tag = 'a' if it.href else 'span' -%}
+      <{{ tag }} class="fval"{% if it.href %} href="{{ it.href }}"{% endif %}><span class="t">
+        <span class="v">{{ it.label }}</span><span class="n">{{ it.value }}</span></span></{{ tag }}>
+      {%- endfor -%}
+    </div></div>
+  </div>
+</div>
+{%- endmacro -%}

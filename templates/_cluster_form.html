@@ -1,0 +1,274 @@
+{#- One cluster's whole form, fetched into the house window.
+
+    WHY IT IS A FRAGMENT AND NOT PART OF THE PAGE
+        It used to be rendered inline under every row — twenty-four full forms,
+        two textareas each, expanded in the HTML whether or not anybody opened
+        one. That was 463K of settings page and the single biggest document the
+        portal served. Now the list ships rows only and this arrives by fetch
+        when somebody presses `edit`, so the page is a fraction of the size and
+        the form is the same shape whether you are adding a cluster or changing
+        one.
+
+    WHY A WINDOW
+        Same reason as the values-file editor: you are looking at one of
+        twenty-four, and unfolding a tall form inside a sortable table would
+        either push every row below it down the screen or — worse — let a sort
+        separate a row from its own open form. The window floats over the list
+        instead, so the list can be a real table.
+
+    It renders the SAME markup for both cases; `c` is the cluster being edited,
+    or none when adding. `unmap_forms` is emitted after the main form because
+    HTML has no nested forms — the chips reach it through the `form=` attribute.
+-#}
+{#- Which project the cluster belongs to — a real field, not "whichever ＋ add
+    a cluster button you happened to press".
+
+    A cluster's project was implicit in the form's action URL, so on the add
+    form the only way to choose it was to find the right project's button, and
+    on the edit form it could not be changed at all. Both were wrong: it was in
+    the original spec for this form, and moving a cluster between projects is
+    an ordinary thing to need.
+
+    On the edit form this MOVES the cluster (`store.move_cluster`) — row,
+    secret files and the mappings it leaves behind. See that function for why
+    all three have to go together. -#}
+{% macro project_field(projects, uid, cur='') %}
+<div class="field-row"><label>project</label>
+  <div>
+    <select name="project" class="clproj" data-uid="{{ uid }}">
+      {% for opid, op in projects.items() %}
+      <option value="{{ opid }}" {% if opid == cur %}selected{% endif %}
+        >{{ op.name }}</option>
+      {% endfor %}
+      {#- a sentinel, not a value: choosing it opens the inline row below and
+          the select snaps back to what it was — it can never be submitted -#}
+      <option value="__new__">＋ add a project…</option>
+    </select>
+    <div class="cl-inlinenew clnewproj-{{ uid }}" hidden>
+      <input type="text" maxlength="60" placeholder="new project name">
+      <button type="button" class="abtn go clnewgo" data-kind="proj"
+              data-uid="{{ uid }}">create</button>
+      <button type="button" class="abtn clnewno">cancel</button>
+      <span class="cl-inlineerr"></span>
+    </div>
+    <p class="cl-note" style="margin-top:7px;">Which project this cluster
+      belongs to. Changing it on an existing cluster MOVES it — its kubeconfig
+      and sealing key move with it, and any environment in the old project that
+      pointed at it stops doing so, because an environment in one project
+      cannot serve from a cluster in another.</p>
+  </div></div>
+{% endmacro %}
+
+{#- The unmap forms for one cluster's chips. Rendered AFTER the edit form
+    closes; the chips reach them by id through the `form` attribute, which is
+    what HTML provides precisely so a control does not have to sit inside the
+    form it submits. -#}
+{% macro unmap_forms(pid, serves=[], uid='') %}
+  {% for s in serves %}
+  <form method="post" id="unmap-{{ uid }}-{{ loop.index }}" hidden
+        action="/settings/project/{{ pid }}/cluster/{{ s.cid }}/unmap">
+    <input type="hidden" name="region" value="{{ s.rgid }}">
+    <input type="hidden" name="env" value="{{ s.env }}">
+  </form>
+  {% endfor %}
+{% endmacro %}
+
+{#- ONE BLOCK PER ENVIRONMENT, because a cluster serves as many as it serves.
+
+    This rendered a single block and a footnote saying the other environments
+    were "edited on their rows in regions & environments above". Two things were
+    wrong with that. It made the form disagree with the truth — the dev cluster
+    serves UAE/dev, CR/dev and KE/dev, each with its OWN path in the repository,
+    and showing only the first one made the other two look unconfigured, which
+    is why their values appearing elsewhere in the portal read as a bug. And it
+    sent somebody to a different panel to finish a job this form had started.
+
+    Every block posts the SAME field names, so the server reads them as the
+    positional zip of getlist() — which is also what lets `＋ serve another`
+    clone a blank block with nothing to renumber.
+
+    Field scoping is per BLOCK (`.cl-envblock`), not per panel: the region
+    select, the protocol switch and the inline "add a region" row all exist
+    once per block now, so a `data-uid` lookup that returns the first match
+    would drive the wrong one. -#}
+{% macro env_block(pid, p, projects, uid, s=none, idx=0, blank=false) %}
+{% set b = (s.bind if s else {}) or {} %}
+<div class="cl-envblock{{ ' tpl' if blank }}">
+  <div class="cl-envblock-h">
+    {% if s %}
+    <b>{{ s.flag }} {{ s.region }} · {{ s.env }}</b>
+    {%- if b.url %}<span class="cl-mini">bound</span>
+    {%- else %}<span class="cl-mini no">no repo</span>{% endif %}
+    <span style="flex:1"></span>
+    {#- Posts to the unmap form emitted AFTER the cluster form (HTML has no
+        nested forms — see unmap_forms). -#}
+    <button type="submit" class="cl-x" form="unmap-{{ uid }}-{{ idx }}"
+            title="stop serving {{ s.region }}/{{ s.env }}">stop serving ✕</button>
+    {% else %}
+    <b class="cl-envblock-new">another environment</b>
+    <span style="flex:1"></span>
+    <button type="button" class="cl-x cl-envdrop" title="remove this row">✕</button>
+    {% endif %}
+  </div>
+
+  <div class="kv" style="gap:8px;flex-wrap:wrap;">
+    <select name="region" class="clregion" data-uid="{{ uid }}"
+            style="flex:0 1 170px;">
+      <option value="">— region —</option>
+      {% for opid, op in projects.items() %}{% for rgid, rg in op.regions.items() %}
+      <option value="{{ rgid }}" data-pid="{{ opid }}"
+        {% if s and rgid == s.rgid %}selected{% endif %}
+        >{{ rg.flag or flag_for(rg.name) }} {{ rg.name }}</option>
+      {% endfor %}{% endfor %}
+      {#- no data-pid, so it survives the per-project filter on purpose -#}
+      <option value="__newrg__">＋ add a region…</option>
+    </select>
+    <input type="text" name="env" class="clenv" data-uid="{{ uid }}"
+           list="envs-{{ pid }}" style="flex:0 1 190px;"
+           value="{{ s.env if s }}"
+           placeholder="environment — dev, uat, prod…" autocomplete="off">
+  </div>
+  <div class="cl-inlinenew clnewrg" hidden>
+    <input type="text" maxlength="60" placeholder="new region name — e.g. TZ">
+    <button type="button" class="abtn go clnewgo" data-kind="rg"
+            data-uid="{{ uid }}">create</button>
+    <button type="button" class="abtn clnewno">cancel</button>
+    <span class="cl-inlineerr"></span>
+  </div>
+
+  <div class="cl-gitops">
+    <div class="mcp-lbl">where its values live
+      <span style="font-weight:400;text-transform:none;letter-spacing:0;
+                   color:var(--faint);">— what is stored, shown whole</span></div>
+    <div class="kv" style="gap:8px;flex-wrap:wrap;">
+      <input type="text" name="gitops_url" style="flex:1 1 250px;"
+             value="{{ b.url or '' }}"
+             placeholder="GitOps repo — blank copies the region's shared one">
+      <input type="text" name="gitops_branch" style="flex:0 1 130px;"
+             value="{{ b.branch or '' }}"
+             placeholder="branch">
+      <input type="text" name="gitops_path" style="flex:1 1 210px;"
+             value="{{ b.path or '' }}"
+             placeholder="path in the repo — deploy/ke/preprod">
+    </div>
+    {#- Write-only credentials, closed unless this environment has its own.
+        `gitops_secret`/`gitops_ssh_key` blank means "unchanged", never
+        "cleared" — a browser cannot re-populate a secret it was never shown. -#}
+    <details class="cl-ownrepo" {% if b.has_own_auth %}open{% endif %}>
+      <summary>how it authenticates
+        {%- if b.has_secret %} <span class="cl-mini">token stored</span>
+        {%- endif %}{% if b.has_ssh_key %} <span class="cl-mini">key stored</span>
+        {%- endif %}</summary>
+      <div class="kv" style="gap:8px;flex-wrap:wrap;margin-top:9px;">
+        <select name="gitops_protocol" class="clproto" style="flex:0 1 100px;">
+          <option value="https" {% if b.protocol != 'ssh' %}selected{% endif %}>HTTPS</option>
+          <option value="ssh" {% if b.protocol == 'ssh' %}selected{% endif %}>SSH</option>
+        </select>
+        <input type="text" name="gitops_username" class="clhttps"
+               style="flex:1 1 170px;" value="{{ b.username or '' }}"
+               placeholder="username — e.g. x-token-auth">
+        <input type="password" name="gitops_secret" class="clhttps"
+               autocomplete="new-password" style="flex:1 1 170px;"
+               placeholder="{% if b.has_secret %}•••••• stored — type to replace{% else %}password / token{% endif %}">
+      </div>
+      <textarea name="gitops_ssh_key" class="clssh" rows="3" data-nosave
+                style="display:none;margin-top:8px;"
+                placeholder="{% if b.has_ssh_key %}•••••• key stored — paste to replace{% else %}-----BEGIN OPENSSH PRIVATE KEY-----&#10;…{% endif %}"></textarea>
+      <p class="cl-note" style="margin-top:7px;">A token typed here applies to
+        every environment in this region on the same repository — one rotation
+        reaches all of them. The key applies to this environment only.</p>
+    </details>
+  </div>
+</div>
+{% endmacro %}
+
+{% macro env_field(pid, p, projects, serves=[], uid='') %}
+<div class="field-row"><label>serves environments
+    <span style="font-weight:400;color:var(--faint);">optional</span></label>
+  <div>
+    {% set anyreg = projects.values()|map(attribute='regions')|select|list %}
+    {% if not anyreg %}
+    <p class="cl-note">No project has a region yet — add one in the
+      <b>regions &amp; environments</b> panel above and it can be assigned
+      here.</p>
+    {% else %}
+    <div class="cl-envblocks" data-uid="{{ uid }}">
+      {% for s in serves %}
+        {{ env_block(pid, p, projects, uid, s=s, idx=loop.index) }}
+      {% endfor %}
+      {#- A blank slot only when nothing is served yet. With environments
+          already listed, an always-open empty block reads as a fourth
+          half-configured one; `＋ serve another` asks for it instead. -#}
+      {% if not serves %}
+        {{ env_block(pid, p, projects, uid) }}
+      {% endif %}
+    </div>
+    <template class="cl-envtpl">{{ env_block(pid, p, projects, uid, blank=true) }}</template>
+    <button type="button" class="abtn cl-envadd" data-uid="{{ uid }}"
+            style="margin-top:9px;">＋ serve another environment</button>
+    <p class="cl-note clnoreg-{{ uid }}" style="display:none;margin-top:7px;">
+      That project has no regions yet — pick <b>＋ add a region…</b> in the
+      dropdown and it is created right here.</p>
+    <p class="cl-note" style="margin-top:9px;">One block per environment this
+      cluster serves. Each carries its own repository, branch and path, which is
+      the normal shape: one GitOps repo, a different folder per environment.
+      Leave the repository blank to copy the one this region's other
+      environments share. Any name works — an environment nobody has committed
+      values for yet can still be assigned.</p>
+    {% endif %}
+  </div></div>
+{% endmacro %}
+
+{#- ── the form itself ────────────────────────────────────────── #}
+{% set uid = ('ed-' ~ cid) if cid else ('add-' ~ pid) %}
+{% set serves = used.get(cid) or [] if cid else [] %}
+<form method="post" class="cl-form" action="/settings/project/{{ pid }}/cluster/{% if cid %}{{ cid }}/update{% else %}new{% endif %}">
+  {{ project_field(projects, uid, pid) }}
+  <div class="field-row"><label>name</label>
+    <input type="text" name="name" value="{{ c.name if c else '' }}"
+           {% if not cid %}placeholder="what to call it here — e.g. ke-preprod"{% endif %}></div>
+  <div class="field-row"><label>kubeconfig</label>
+    <textarea name="kubeconfig" rows="4" data-nosave
+      placeholder="{% if c and c.kubeconfig_file %}•••••• stored — paste to replace{% else %}paste the read-only kubeconfig for this cluster{% endif %}"></textarea></div>
+  {# context comes from the kubeconfig's current-context; this is only an
+     override — blank keeps whatever is stored, and it is NOT pre-filled so
+     pasting a new kubeconfig re-detects it #}
+  <div class="field-row"><label>context</label>
+    <input type="text" name="context"
+      placeholder="{% if c %}{{ c.context or 'detected from the kubeconfig' }} — type only to override{% else %}optional — detected from the kubeconfig's current-context{% endif %}"></div>
+  <div class="field-row"><label>sealing certificate</label>
+    <textarea name="sealing_cert" rows="3"
+      placeholder="{% if c and c.cert_file %}•••••• stored — paste to replace{% else %}-----BEGIN CERTIFICATE----- …   (optional — can be fetched from the cluster later){% endif %}"></textarea></div>
+  {# the switch between "a dashboard" and "a tool that can change this
+     cluster". Off unless ticked on this save, so it is never left on by
+     accident from an earlier edit. #}
+  <div class="field-row"><label>allow management</label>
+    <div>
+      <label class="cl-chip" style="cursor:pointer;display:inline-flex;
+             gap:8px;align-items:center;border-radius:9px;">
+        <input type="checkbox" name="manage" value="1"
+               style="width:auto;margin:0;"
+               {% if c and c.manage %}checked{% endif %}>
+        permit commands that change this cluster</label>
+      <p class="cl-note" style="margin-top:7px;">Restart, scale, cordon, drain,
+        delete a pod, and mutating kubectl in the console. Off by default. The
+        kubeconfig also has to carry the permission: this flag only decides
+        whether the portal is willing to try. Everything it runs is audited.</p>
+    </div></div>
+  {{ env_field(pid, p, projects, serves, uid=uid) }}
+  {% if not cid %}
+  <p class="cl-note">Use credentials bound to a read-only ClusterRole — the
+    portal only issues get/list. Stored 0600 under the portal's data directory.
+    The connection is tested as soon as you save.</p>
+  {% endif %}
+  <div class="cl-foot">
+    <button class="btn" type="submit">{{ 'Save cluster' if cid else 'Add & test cluster' }}</button>
+    {% if cid %}
+    <button class="btn btn-ghost" type="submit"
+            formaction="/settings/project/{{ pid }}/cluster/{{ cid }}/fetch-cert"
+            >Fetch sealing key from cluster</button>
+    {% endif %}
+    <button type="button" class="btn btn-ghost cl-cancel">Cancel</button>
+  </div>
+</form>
+{% if cid %}{{ unmap_forms(pid, serves, uid=uid) }}{% endif %}

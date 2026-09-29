@@ -1,0 +1,527 @@
+{% extends "base.html" %}
+{% block crumbs %}<a href="/workflows">Workflows</a> <span class="sep">/</span>
+  <a href="/workflows/{{ conn.id }}/{{ ns }}">{{ ns }}</a> <span class="sep">/</span>
+  <b>{{ detail.type if detail else 'execution' }}</b>{% endblock %}
+{% block content %}
+
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+{% if detail %}
+{% set d = detail %}
+{% set SC = {'Running':   ('#4f7dff', 'rgba(79,125,255,.14)'),
+             'Completed': ('#12b76a', 'rgba(18,183,106,.14)'),
+             'Failed':    ('#f04438', 'rgba(240,68,56,.14)'),
+             'TimedOut':  ('#f79009', 'rgba(247,144,9,.16)'),
+             'Canceled':  ('#8098b8', 'rgba(128,152,184,.16)'),
+             'Terminated':('#eaaa08', 'rgba(234,170,8,.18)'),
+             'ContinuedAsNew': ('#8098b8', 'rgba(128,152,184,.16)')} %}
+{% set c = SC.get(d.status, ('#8098b8', 'rgba(128,152,184,.16)')) %}
+
+<style>
+  .wfmeta { display:grid; gap:10px 26px; margin:14px 0 16px;
+    grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); }
+  .wfmeta .k { font-size:11px; color:var(--muted); }
+  .wfmeta .v { font-size:12.5px; overflow-wrap:anywhere; }
+  .wfmeta .m { font-family:var(--mono); font-size:11.5px; }
+  /* the tab strip, underlined like Temporal's rather than pill buttons */
+  .wftabs { display:flex; gap:2px; flex-wrap:wrap;
+    border-bottom:1px solid var(--line2); margin-bottom:14px; }
+  .wftabs button { background:none; border:0; padding:9px 13px;
+    font-size:12.5px; color:var(--text2); cursor:pointer;
+    border-bottom:2px solid transparent; font-family:inherit; }
+  .wftabs button.on { color:var(--text); font-weight:600;
+    border-bottom-color:var(--accent); }
+  .wftabs button:hover { color:var(--text); }
+  .wftabs .n { display:inline-block; margin-left:6px; padding:1px 6px;
+    border-radius:5px; background:var(--well); font-size:10.5px;
+    font-variant-numeric:tabular-nums; }
+  .wfev { width:100%; border-collapse:collapse; }
+  .wfev th { text-align:left; font-size:11px; text-transform:uppercase;
+    letter-spacing:.04em; color:var(--muted); font-weight:600; padding:8px 10px;
+    border-bottom:1px solid var(--line2); }
+  .wfev td { padding:8px 10px; border-bottom:1px solid var(--line);
+    font-size:12px; vertical-align:top; }
+  .wfev tr.bad td { background:rgba(240,68,56,.09); }
+  .wfch { display:inline-block; padding:2px 7px; border-radius:5px;
+    background:var(--well); font-size:11px; margin:0 4px 3px 0; }
+  .wfch b { font-family:var(--mono); font-weight:500; }
+  .wfio pre { margin:0; font-size:11px; overflow:auto; max-height:300px;
+    background:var(--well); border-radius:8px; padding:11px; }
+</style>
+
+<div class="kv" style="gap:11px;flex-wrap:wrap;">
+  <span style="display:inline-block;padding:5px 13px;border-radius:7px;
+        font-size:13px;font-weight:600;color:{{ c[0] }};background:{{ c[1] }};">{{
+    d.status }}</span>
+  <h1 style="margin:0;font-size:19px;font-family:var(--mono);
+      overflow-wrap:anywhere;">{{ d.wid }}</h1>
+  <span style="flex:1"></span>
+  {# Cancel, terminate, reset and signal are deliberately not here — see the
+     module header. Temporal's own page is where they belong, and this is the
+     same execution, one click away. #}
+  <a class="btn btn-ghost" style="padding:6px 13px;font-size:12px;"
+     href="{{ conn.base_url }}/namespaces/{{ ns }}/workflows/{{ d.wid|urlencode
+     }}/{{ d.rid }}/history" target="_blank" rel="noopener">Open in Temporal ↗</a>
+</div>
+
+<div class="wfmeta">
+  <div>
+    <div class="k">Start</div><div class="v">{{ d.ago }}
+      <span class="hint">{{ d.start[:19]|replace('T', ' ') }}</span></div>
+    <div class="k" style="margin-top:7px;">End</div>
+    <div class="v">{{ (d.close[:19]|replace('T', ' ')) if d.close else '—' }}</div>
+    <div class="k" style="margin-top:7px;">Duration</div>
+    <div class="v">{{ d.took or '—' }}</div>
+  </div>
+  <div>
+    <div class="k">Run ID</div><div class="v m">{{ d.rid }}</div>
+    <div class="k" style="margin-top:7px;">Workflow Type</div>
+    <div class="v"><a href="/workflows/{{ conn.id }}/{{ ns }}?type={{
+      d.type|urlencode }}">{{ d.type }}</a></div>
+    <div class="k" style="margin-top:7px;">Task Queue</div>
+    <div class="v"><a href="/workflows/{{ conn.id }}/{{ ns }}?queue={{
+      d.queue|urlencode }}">{{ d.queue }}</a></div>
+  </div>
+  <div>
+    <div class="k">Parent Workflow</div>
+    <div class="v m">{% if hist and hist.parent.wid %}
+      <a href="/workflows/{{ conn.id }}/{{ ns }}/run?id={{ hist.parent.wid|urlencode
+         }}&run={{ hist.parent.rid|urlencode }}">{{ hist.parent.wid }}</a>
+      {% else %}—{% endif %}</div>
+    {% if hist and hist.cron %}
+    <div class="k" style="margin-top:7px;">Cron</div>
+    <div class="v m">{{ hist.cron }}</div>{% endif %}
+    {% if hist and hist.closed_by %}
+    <div class="k" style="margin-top:7px;">Closed by</div>
+    <div class="v">{{ hist.closed_by }}</div>{% endif %}
+  </div>
+  <div>
+    <div class="k">History Size (Bytes)</div>
+    <div class="v" style="font-variant-numeric:tabular-nums;">{{
+      '{:,}'.format(d.bytes) }}</div>
+    <div class="k" style="margin-top:7px;">State Transitions</div>
+    <div class="v" style="font-variant-numeric:tabular-nums;">{{ d.transitions }}</div>
+    <div class="k" style="margin-top:7px;">Events</div>
+    <div class="v" style="font-variant-numeric:tabular-nums;">{{ d.events }}</div>
+  </div>
+</div>
+
+{% set nrel = (1 if hist and hist.parent.wid else 0) + d.children|length
+              + (1 if d.first_run and d.first_run != d.rid else 0) %}
+{% set workers = [] %}
+{% if hist %}{% for e in hist.events %}{% for k, v in e.detail %}
+  {% if k == 'identity' and v not in workers %}{% set _ = workers.append(v) %}{% endif %}
+{% endfor %}{% endfor %}{% endif %}
+
+<div class="wftabs" id="wftabs">
+  <button data-p="history" class="on">History<span class="n">{{ d.events }}</span></button>
+  <button data-p="pending">Pending Activities<span class="n">{{ d.pending|length }}</span></button>
+  <button data-p="rel">Relationships<span class="n">{{ nrel }}</span></button>
+  <button data-p="workers">Workers<span class="n">{{ workers|length }}</span></button>
+  <button data-p="attrs">Search Attributes<span class="n">{{ d.search_attrs|length }}</span></button>
+  <button data-p="memo">Memo<span class="n">{{ d.memo|length }}</span></button>
+</div>
+
+{# ── history ───────────────────────────────────────────────────────────── #}
+<div class="wfpane" data-p="history">
+
+  {% if hist and hist.failures %}
+  {# Temporal makes you expand the closing event to find this. It is the whole
+     reason anybody opens a failed execution, so it goes first, with the cause
+     chain — the real reason is usually two or three links down. #}
+  <div class="card" style="margin-bottom:14px;border-color:var(--danger-line);">
+    <div class="card-h" style="color:var(--danger-ink);">Why it stopped
+      <span class="hint">{{ hist.failures|length }} failure point{{
+        '' if hist.failures|length == 1 else 's' }}</span></div>
+    <div class="card-b">
+      {% for f in hist.failures %}
+      <div style="margin-bottom:{{ '0' if loop.last else '13px' }};">
+        <div class="kv" style="gap:8px;">
+          <span class="wfch">event <b>{{ f.event }}</b></span>
+          <b style="font-size:12.5px;">{{ f.kind }}</b>
+        </div>
+        {% for l in f.chain %}
+        <div style="margin:6px 0 0 {{ l.depth * 15 }}px;padding-left:9px;
+                    border-left:2px solid {{ 'var(--danger-line)' if not l.depth
+                    else 'var(--line2)' }};">
+          {% if l.type %}<span class="wfch"><b>{{ l.type }}</b></span>{% endif %}
+          <div style="font-size:12.5px;overflow-wrap:anywhere;{{
+            'font-weight:600;' if loop.last and f.chain|length > 1 }}">{{
+            l.message or '(no message)' }}</div>
+          {% if loop.last and f.chain|length > 1 %}
+          <div class="hint" style="font-size:10.5px;">↑ root cause</div>{% endif %}
+          {% if l.stack %}
+          <details style="margin-top:4px;">
+            <summary class="hint" style="cursor:pointer;font-size:11px;">stack trace</summary>
+            <pre style="font-size:10.5px;margin:5px 0 0;overflow:auto;
+                        max-height:240px;">{{ l.stack }}</pre></details>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {# Input and Result side by side, as Temporal shows them #}
+  <div class="wfio" style="display:grid;gap:14px;margin-bottom:14px;
+       grid-template-columns:repeat(auto-fit,minmax(300px,1fr));">
+    <div class="card"><div class="card-h">Input</div>
+      <div class="card-b">
+        {% if hist and hist.input %}
+        {% for p in hist.input %}<pre>{{ p }}</pre>{% endfor %}
+        {% else %}<p class="sub" style="margin:0;">No input.</p>{% endif %}
+      </div></div>
+    <div class="card"><div class="card-h">Result</div>
+      <div class="card-b">
+        {% if hist and hist.result %}
+        {% for p in hist.result %}<pre>{{ p }}</pre>{% endfor %}
+        {% elif d.status == 'Running' %}
+        <p class="sub" style="margin:0;">Results will appear upon completion.</p>
+        {% else %}<p class="sub" style="margin:0;">No result.</p>{% endif %}
+      </div></div>
+  </div>
+
+  {# ── the timeline ───────────────────────────────────────────────────────
+     Stitched from the events, not fetched: an activity's SCHEDULED event is
+     referred to by its STARTED and closing events, so those ids are what turn a
+     flat list into one bar per activity. Colour carries the outcome, which is
+     the whole point — you read a failed activity before you read any text. #}
+  {% if lanes %}
+  <div class="card" style="margin-bottom:14px;">
+    <div class="card-h">Timeline <span class="hint">{{ lanes|length }} activit{{
+      'y' if lanes|length == 1 else 'ies' }}, timers and children</span>
+      <span style="flex:1"></span>
+      <span class="hint" style="font-size:11px;">click a bar for its events and JSON</span>
+    </div>
+    <div class="card-b">
+      {% set t0 = tspan(window[0]) %}
+      {% set t1 = tspan(window[1]) %}
+      {% set total = (t1 - t0) if t1 > t0 else 0 %}
+      {% if not total %}
+      {# Everything inside one second. Proportional bars would all be hairlines,
+         so they are laid out in order instead and the note says why. #}
+      <div class="sec-note" style="margin:0 0 9px;">Everything here happened
+        inside one second, so the bars are shown in order rather than to scale.</div>
+      {% endif %}
+      <div style="display:flex;flex-direction:column;gap:5px;">
+        {% for l in lanes %}
+        {% set oc = {'completed': '#12b76a', 'failed': '#f04438',
+                     'timedout': '#f79009', 'canceled': '#8098b8',
+                     'terminated': '#eaaa08',
+                     'pending': '#4f7dff'}.get(l.outcome, '#8098b8') %}
+        {% set s = tspan(l.start) %}
+        {% set e = tspan(l.end) if l.end else t1 %}
+        {% set left = ((s - t0) / total * 100) if total else 0 %}
+        {% set width = (((e - s) / total * 100) if total else (100 / lanes|length)) %}
+        <div class="tlrow" data-lane="{{ l.key }}" style="cursor:pointer;">
+          <div style="position:relative;height:24px;border-radius:5px;
+                      background:var(--well);overflow:hidden;">
+            <div style="position:absolute;left:{{ left|round(2) }}%;
+                 width:{{ [width, 1.5]|max|round(2) }}%;top:0;bottom:0;
+                 background:{{ oc }};opacity:.82;border-radius:4px;"></div>
+            <div style="position:relative;padding:4px 9px;font-size:11.5px;
+                 white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+              <b>{{ l.name or l.kind }}</b>
+              <span style="opacity:.75;">· {{ l.kind }} · {{ l.outcome }}{%
+                if l.attempt > 1 %} · attempt {{ l.attempt }}{% endif %}</span>
+            </div>
+          </div>
+          <div class="tldetail" hidden style="margin:6px 0 10px;padding:10px;
+               border:1px solid var(--line2);border-radius:9px;
+               background:var(--panel2);">
+            {% if l.detail %}
+            {% for c in l.detail %}
+            <div style="margin:0 0 6px {{ c.depth * 14 }}px;font-size:12.5px;
+                 color:var(--danger-ink);overflow-wrap:anywhere;">
+              {% if c.type %}<span class="wfch"><b>{{ c.type }}</b></span>{% endif %}
+              {{ c.message }}</div>
+            {% endfor %}
+            {% endif %}
+            {% for eid in l.events %}
+            {% for ev in hist.events if ev.id == eid %}
+            <details {{ 'open' if ev.failure }}>
+              <summary style="cursor:pointer;font-size:11.5px;">
+                <b>{{ ev.id }}</b> {{ ev.kind }}
+                <span class="hint">{{ ev.time[11:19] }}</span></summary>
+              <pre style="font-size:10.5px;margin:6px 0 4px;overflow:auto;
+                   max-height:320px;">{{ ev.json }}</pre>
+            </details>
+            {% endfor %}
+            {% endfor %}
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if hist %}
+  <div class="card">
+    <div class="card-h">Event history
+      <span class="hint">{{ hist.shown }}{{ ' of ' ~ hist.total if hist.truncated }}</span>
+      <span style="flex:1"></span>
+      <input type="search" id="evfilter" placeholder="filter events…"
+             style="width:170px;padding:4px 9px;font-size:11.5px;">
+      <a class="btn btn-ghost" style="padding:5px 11px;font-size:11.5px;margin-left:8px;"
+         href="?id={{ wid|urlencode }}&run={{ rid|urlencode }}&order={{
+         '' if order == 'new' else 'new' }}">{{
+        'Ascending' if order == 'new' else 'Descending' }}</a>
+    </div>
+    <div class="card-b" style="padding:0;">
+      {% if hist.truncated %}
+      <div class="sec-note" style="margin:0;padding:10px 12px;color:var(--warn-ink);">
+        Showing {{ hist.shown }} of {{ hist.total }} events. A history this long
+        usually means a loop or a long-lived signal handler; the full record is
+        in Temporal.</div>
+      {% endif %}
+      <table class="wfev" id="evtable">
+        <thead><tr>
+          <th style="width:70px;">Event ID</th>
+          <th style="width:110px;">Timestamp</th>
+          <th style="width:210px;">Event Type</th>
+          <th>Details</th>
+        </tr></thead>
+        <tbody>
+          {% for e in hist.events %}
+          <tr class="{{ 'bad' if e.failure }}"
+              data-find="{{ (e.kind ~ ' ' ~ e.cat ~ ' ' ~ (e.detail|join(' ')))|lower }}">
+            <td class="hint" style="font-variant-numeric:tabular-nums;">{{ e.id }}</td>
+            <td class="hint" style="font-size:11.5px;">{{ e.time[11:19] }}</td>
+            <td><b style="font-size:12px;{{ 'color:var(--danger-ink);'
+                  if e.failure }}">{{ e.kind }}</b>
+              <div class="hint" style="font-size:10.5px;">{{ e.cat }}</div></td>
+            <td>
+              {% if e.failure %}
+              <div style="margin-bottom:4px;">
+                <span class="wfch" style="background:rgba(240,68,56,.14);
+                      color:var(--danger-ink);">Failure Message</span>
+                <span style="color:var(--danger-ink);overflow-wrap:anywhere;">{{
+                  e.failure[-1].message[:240] }}</span></div>
+              {% endif %}
+              {% for k, v in e.detail %}
+              <span class="wfch">{{ k }} <b>{{ v }}</b></span>
+              {% endfor %}
+              {% for key, p in e.payloads %}
+              <details style="margin-top:3px;">
+                <summary class="hint" style="cursor:pointer;font-size:11px;">{{ key }}</summary>
+                <pre style="font-size:10.5px;margin:5px 0 0;overflow:auto;
+                            max-height:260px;">{{ p }}</pre></details>
+              {% endfor %}
+              {# the whole event, as Temporal's JSON view shows it — the reason
+                 this page can answer a question without opening Temporal #}
+              <details style="margin-top:3px;">
+                <summary class="hint" style="cursor:pointer;font-size:11px;">JSON</summary>
+                <pre style="font-size:10.5px;margin:5px 0 0;overflow:auto;
+                            max-height:320px;">{{ e.json }}</pre></details>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+</div>
+
+{# ── pending activities ────────────────────────────────────────────────── #}
+<div class="wfpane" data-p="pending" hidden>
+  <div class="card"><div class="card-b">
+    {% if not d.pending %}
+    <p class="sub" style="margin:0;">Nothing pending. A running workflow with no
+      pending activity is waiting on a timer, a signal, or a child.</p>
+    {% else %}
+    {% for a in d.pending %}
+    <div style="{{ 'border-top:1px solid var(--line);padding-top:13px;margin-top:13px;'
+         if not loop.first }}">
+      <div class="kv" style="gap:9px;">
+        <span class="wfch" style="background:rgba(247,144,9,.16);
+              color:var(--warn-ink);">{{ a.state }}</span>
+        <b style="font-size:13px;">{{ a.type }}</b>
+      </div>
+      <div class="wfmeta" style="margin:10px 0 0;">
+        <div><div class="k">Activity ID</div><div class="v m">{{ a.id }}</div></div>
+        <div><div class="k">Attempt</div><div class="v">{{ a.attempt }} of {{
+          a.max if a.max else 'unlimited' }}</div></div>
+        <div><div class="k">Last started</div>
+          <div class="v">{{ (a.started[:19]|replace('T', ' ')) if a.started else '—' }}</div></div>
+        <div><div class="k">Last worker identity</div>
+          <div class="v m">{{ a.worker or '—' }}</div></div>
+      </div>
+      {% if a.failure %}
+      <div style="margin-top:11px;">
+        <div class="k" style="font-size:11px;color:var(--muted);">Last failure —
+          why it is still retrying</div>
+        {% for l in a.failure %}
+        <div style="margin:5px 0 0 {{ l.depth * 15 }}px;padding-left:9px;
+                    border-left:2px solid var(--danger-line);font-size:12.5px;
+                    overflow-wrap:anywhere;">
+          {% if l.type %}<span class="wfch"><b>{{ l.type }}</b></span>{% endif %}
+          {{ l.message }}</div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+    {% endfor %}
+    {% endif %}
+  </div></div>
+</div>
+
+{# ── relationships ─────────────────────────────────────────────────────── #}
+<div class="wfpane" data-p="rel" hidden>
+  <div class="card"><div class="card-b">
+    {% if not nrel %}
+    <p class="sub" style="margin:0;">No parent, no pending children, and this is
+      the first run — nothing to relate.</p>
+    {% else %}
+    <div class="wfmeta" style="margin:0;">
+      {% if hist and hist.parent.wid %}
+      <div><div class="k">Parent</div><div class="v m">
+        <a href="/workflows/{{ conn.id }}/{{ ns }}/run?id={{ hist.parent.wid|urlencode
+           }}&run={{ hist.parent.rid|urlencode }}">{{ hist.parent.wid }}</a></div></div>
+      {% endif %}
+      {% if d.root and d.root != d.wid %}
+      <div><div class="k">Root</div><div class="v m">{{ d.root }}</div></div>
+      {% endif %}
+      {% if d.first_run and d.first_run != d.rid %}
+      {# continued-as-new: this run is a continuation, and the first run id is
+         how you find the beginning of the chain #}
+      <div><div class="k">First run</div><div class="v m">{{ d.first_run }}</div>
+        <div class="hint" style="font-size:10.5px;">this execution continued as new</div></div>
+      {% endif %}
+    </div>
+    {% if d.children %}
+    <div class="k" style="margin:13px 0 5px;font-size:11px;color:var(--muted);">
+      Pending children</div>
+    {% for ch in d.children %}
+    <div style="font-size:12.5px;">
+      <a href="/workflows/{{ conn.id }}/{{ ns }}/run?id={{ ch.wid|urlencode }}">{{
+        ch.type or 'child' }}</a>
+      <span class="hint m" style="font-family:var(--mono);font-size:11px;">{{ ch.wid }}</span>
+    </div>
+    {% endfor %}
+    {% endif %}
+    {% endif %}
+  </div></div>
+</div>
+
+{# ── workers ───────────────────────────────────────────────────────────── #}
+<div class="wfpane" data-p="workers" hidden>
+  {# Two different questions, and a stuck workflow needs the first one: who is
+     polling the queue NOW, and who handled this run. A task queue with no
+     pollers is why an execution sits at Scheduled, and no amount of reading its
+     history will say so. #}
+  <div class="card" style="margin-bottom:14px;">
+    <div class="card-h">Polling {{ d.queue }}
+      <span class="hint">{{ polls.rows|length }}</span>
+      {% if polls.rate %}<span style="flex:1"></span>
+      <span class="hint">rate limit {{ '{:,}'.format(polls.rate) }}/s</span>{% endif %}
+    </div>
+    <div class="card-b">
+      {% if not polls.rows %}
+      <p class="sub" style="margin:0;color:var(--warn-ink);">{{ polls.why or
+        'No worker is polling this task queue.' }}{% if d.status == 'Running'
+        %} That is why this execution is not progressing.{% endif %}</p>
+      {% else %}
+      <table class="wfev">
+        <thead><tr><th>identity</th><th style="width:26%;">last poll</th>
+          <th style="width:20%;text-align:right;">rate</th></tr></thead>
+        <tbody>
+          {% for p in polls.rows %}
+          <tr><td style="font-family:var(--mono);font-size:11.5px;">{{ p.identity }}</td>
+            <td class="hint">{{ p.ago }}</td>
+            <td style="text-align:right;font-variant-numeric:tabular-nums;">{{
+              '{:,}'.format(p.rate) }}/s</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+    </div>
+  </div>
+  <div class="card"><div class="card-h">Handled this execution
+    <span class="hint">{{ workers|length }}</span></div>
+    <div class="card-b">
+      {% if not workers %}
+      <p class="sub" style="margin:0;">No worker identity appears in this history.</p>
+      {% else %}
+      {% for w in workers %}
+      <div style="font-family:var(--mono);font-size:12px;padding:3px 0;">{{ w }}</div>
+      {% endfor %}
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+{# ── search attributes and memo ────────────────────────────────────────── #}
+{% for pane, data, empty in [('attrs', d.search_attrs, 'No search attributes.'),
+                             ('memo', d.memo, 'No memo.')] %}
+<div class="wfpane" data-p="{{ pane }}" hidden>
+  <div class="card"><div class="card-b">
+    {% if not data %}<p class="sub" style="margin:0;">{{ empty }}</p>
+    {% else %}
+    <table class="wfev">
+      <thead><tr><th style="width:32%;">Key</th><th>Value</th></tr></thead>
+      <tbody>
+        {% for k, v in data.items() %}
+        <tr><td class="m" style="font-family:var(--mono);">{{ k }}</td>
+          <td style="font-family:var(--mono);font-size:11.5px;
+              overflow-wrap:anywhere;">{{ v }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </div></div>
+</div>
+{% endfor %}
+
+<div class="sec-note" style="margin-top:14px;">Call Stack and Queries are not
+  here: both ask the running worker a question over a Temporal query, which needs
+  a live worker to answer and is the one thing this page cannot do from the read
+  API. Use Temporal for those.</div>
+
+<script nonce="{{ csp_nonce() }}">
+// This page is rendered whole rather than swapped in as a fragment, so a script
+// here does run — unlike the database console's tabs, which are fetched with
+// innerHTML and have to be wired in their shell.
+(function () {
+  const tabs = document.getElementById('wftabs');
+  const panes = [...document.querySelectorAll('.wfpane')];
+  tabs.addEventListener('click', e => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    tabs.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+    panes.forEach(p => { p.hidden = p.dataset.p !== b.dataset.p; });
+    // the tab is in the URL so a link to "the pending activity" survives a reload
+    history.replaceState(null, '', location.pathname + location.search +
+      '#' + b.dataset.p);
+  });
+  const want = (location.hash || '').slice(1);
+  if (want) {
+    const b = tabs.querySelector(`button[data-p="${want}"]`);
+    if (b) b.click();
+  }
+
+  // A bar opens the events it was stitched from, JSON and all. Nothing is
+  // fetched: the events are already on the page.
+  document.querySelectorAll('.tlrow').forEach(row => {
+    row.addEventListener('click', e => {
+      if (e.target.closest('details')) return;   // expanding JSON is not a toggle
+      const d = row.querySelector('.tldetail');
+      if (d) d.hidden = !d.hidden;
+    });
+  });
+
+  // Filtering 400 events client-side: the history is already on the page, so
+  // asking the server again to hide rows would be a round trip for nothing.
+  const f = document.getElementById('evfilter');
+  if (f) f.addEventListener('input', () => {
+    const q = f.value.trim().toLowerCase();
+    document.querySelectorAll('#evtable tbody tr').forEach(tr => {
+      tr.hidden = q && !tr.dataset.find.includes(q);
+    });
+  });
+})();
+</script>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,203 @@
+{#- The one place an expense is written.
+
+    It used to live only on the register, so "add an expense" meant going to
+    the register — and closing the dialog left you on a page you did not ask
+    for. It is an include now: the calendar, a month and the register each
+    carry the same dialog, and closing it puts you back where you were because
+    you never left.
+
+    `back` rides with the form so the save returns here rather than to
+    whichever page happened to define it. -#}
+<dialog id="addSub" class="pdialog">
+  <form method="post" action="/spend/save" id="subForm">
+    <input type="hidden" name="id" id="f_id" value="">
+    <input type="hidden" name="back" value="{{ request.url.path }}{{ ("?" ~ request.url.query) if request.url.query else "" }}">
+    <div class="dhead">
+      <span>
+        <span class="dtitle" id="licTitle">Add a subscription</span>
+        <span class="dwhere">what it is, what it costs, when it renews</span>
+      </span>
+      <span style="flex:1"></span>
+      <button type="button" class="dx" aria-label="Close"
+              data-dlg-close="addSub">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2.2" stroke-linecap="round"
+             aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div class="dbody">
+      <div class="dsec">What it is</div>
+      <div class="grid2-lic">
+        <div class="dfield"><label for="f_name">Name<span class="req" title="required">*</span></label>
+          <input id="f_name" name="name" required
+                 placeholder="Microsoft 365 Business Standard"></div>
+        <div class="dfield"><label for="f_vendor">Vendor</label>
+          <input id="f_vendor" name="vendor" list="vendors"
+                 placeholder="Microsoft">
+          <datalist id="vendors">
+            {% for v in vendors %}<option value="{{ v }}">{% endfor %}
+          </datalist></div>
+      </div>
+      <div class="grid2-lic">
+        <div class="dfield"><label for="f_category">Category</label>
+          <select id="f_category" name="category">
+            {% for key, label in categories.items() %}
+            <option value="{{ key }}">{{ label }}</option>{% endfor %}
+          </select></div>
+      </div>
+
+      <div class="dsec">What it costs</div>
+      <div class="grid3-lic">
+        <div class="dfield"><label for="f_cost">Amount per cycle<span class="req" title="required">*</span></label>
+          <input id="f_cost" name="cost" required placeholder="250"></div>
+        <div class="dfield"><label for="f_currency">Currency</label>
+          <input id="f_currency" name="currency" maxlength="3" value="{{ t.base }}"
+                 style="text-transform:uppercase;"></div>
+        <div class="dfield"><label for="f_cycle">Billing cycle</label>
+          <select id="f_cycle" name="cycle">
+            {% for key, spec in cycles.items() %}
+            <option value="{{ key }}" {{ 'selected' if key == 'yearly' }}>
+              {{ spec[0] }}</option>{% endfor %}
+          </select></div>
+      </div>
+      <div class="grid2-lic">
+        <div class="dfield"><label for="f_renews">Renews / expires</label>
+          <input id="f_renews" name="renews" placeholder="2027-03-01">
+          <div class="dhelp" style="margin:5px 0 0;">What the expiry radar
+            counts down to.</div></div>
+      </div>
+      <div class="dhelp">A one-off or metered row is kept for the record but left
+        out of the monthly and yearly totals — a single purchase counted as a run
+        rate overstates it forever.</div>
+
+      <details class="dmore">
+        <summary>More details — dates, ownership, notes</summary>
+      <div class="grid3-lic">
+        <div class="dfield"><label for="f_kind">Kind</label>
+          <select id="f_kind" name="kind">
+            {% for key, label in kinds.items() %}
+            <option value="{{ key }}">{{ label }}</option>{% endfor %}
+          </select></div>
+        <div class="dfield"><label for="f_seats">Seats</label>
+          <input id="f_seats" name="seats" placeholder="25"></div>
+        <div class="dfield"><label for="f_status">Status</label>
+          <select id="f_status" name="status">
+            {% for s in statuses %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
+          </select></div>
+      </div>
+      <div class="grid2-lic">
+        <div class="dfield"><label for="f_owner">Internal owner</label>
+          <input id="f_owner" name="owner" placeholder="who to ask about it"></div>
+        <div class="dfield"><label for="f_account">Account or tenant</label>
+          <input id="f_account" name="account" placeholder="yourcompany.com"></div>
+      </div>
+      <div class="dfield">
+        <label class="pick" style="width:100%;">
+          <input type="checkbox" name="auto_renew" id="f_auto">
+          <span><b style="font-weight:600;">Renews automatically</b>
+            <small>Off means somebody has to act before the date, and that is
+              worth knowing when it is a fortnight away.</small></span>
+        </label>
+      </div>
+      <div class="grid2-lic">
+        <div class="dfield"><label for="f_url">Vendor console</label>
+          <input id="f_url" name="url" placeholder="https://admin.microsoft.com"></div>
+        <div class="dfield"><label for="f_started">Started</label>
+          <input id="f_started" name="started" placeholder="2026-03-01"></div>
+      </div>
+      <div class="dfield" style="margin-bottom:0;">
+        <label for="f_notes">Notes</label>
+        <textarea id="f_notes" name="notes" style="min-height:56px;"
+                  placeholder="what it is for, who asked for it"></textarea>
+        <div class="dhelp">No passwords, card numbers or tokens here — this page
+          is a record of commitments, not a way in.</div>
+      </div>
+      </details>
+    </div>
+    <div class="dfoot">
+      <button type="button" class="btn-ghost"
+              data-dlg-close="addSub">Cancel</button>
+      <span class="spacer"></span>
+      <button type="submit">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dropSub" class="pdialog">
+  {# owns its own typed-"Delete" confirm; skip the house auto-gate (base.html). #}
+  <form method="post" action="/spend/delete" data-del-skip>
+    <input type="hidden" name="id" id="d_id">
+    <input type="hidden" name="back" value="{{ request.url.path }}{{ ("?" ~ request.url.query) if request.url.query else "" }}">
+    <div class="dhead">
+      <span><span class="dtitle">Delete this record</span>
+        <span class="dwhere" id="d_name"></span></span>
+      <span style="flex:1"></span>
+      <button type="button" class="dx" aria-label="Close"
+              data-dlg-close="dropSub">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2.2" stroke-linecap="round"
+             aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div class="dbody">
+      <p class="sub" style="margin:0 0 14px;">This removes the record here. It
+        does not cancel anything with the vendor — if the subscription is still
+        live you will still be billed for it. To stop tracking something you have
+        cancelled, set its status to <b>cancelled</b> instead and keep the
+        history.</p>
+      <div class="dfield" style="margin:0;">
+        <label for="d_word">type <b>Delete</b> to confirm</label>
+        <input id="d_word" type="text" name="confirm" required
+               autocomplete="off" placeholder="Delete">
+      </div>
+    </div>
+    <div class="dfoot">
+      <button type="button" class="btn-ghost"
+              data-dlg-close="dropSub">Cancel</button>
+      <span class="spacer"></span>
+      <button type="submit" class="btn-danger">Delete the record</button>
+    </div>
+  </form>
+</dialog>
+
+{# the currencies already in use, offered to the currency field #}
+<datalist id="curlist">
+  {% for c in (choices or []) %}<option value="{{ c }}">{% endfor %}
+</datalist>
+<script nonce="{{ csp_nonce() }}">
+// One dialog serves add and edit: two would drift apart, and a field added to
+// only one of them is the bug that follows.
+function editSub(row) {
+  document.getElementById("licTitle").textContent = "Edit this subscription";
+  document.getElementById("f_id").value = row.id || "";
+  for (const f of ["name", "vendor", "category", "kind", "cost", "currency",
+                   "cycle", "renews", "seats", "status", "owner", "account",
+                   "url", "started", "notes"]) {
+    const el = document.getElementById("f_" + f);
+    if (el) el.value = row[f] ?? "";
+  }
+  document.getElementById("f_auto").checked = !!row.auto_renew;
+  document.getElementById("addSub").showModal();
+}
+function dropSub(id, name) {
+  document.getElementById("d_id").value = id;
+  document.getElementById("d_name").textContent = name;
+  document.getElementById("d_word").value = "";
+  document.getElementById("dropSub").showModal();
+}
+// reset on close, so "Add" after an "Edit" is not the previous row prefilled
+document.getElementById("addSub").addEventListener("close", () => {
+  document.getElementById("subForm").reset();
+  document.getElementById("f_id").value = "";
+  document.getElementById("licTitle").textContent = "Add a subscription";
+});
+
+/* The row carries its JSON in a data attribute, because an inline handler is
+   what the policy forbids. tojson escapes ' so the attribute is single-quoted;
+   it does not escape ", which is why it must not be double-quoted. */
+window.editSubRow = function (el) { editSub(JSON.parse(el.dataset.row)); return false; };
+window.dropSubRow = function (el) {
+  dropSub(el.dataset.sub, JSON.parse(el.dataset.name));
+  return false;
+};
+</script>

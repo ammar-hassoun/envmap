@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block crumbs %}
+  <a href="/">Projects</a> <span class="sep">/</span>
+  <a href="/p/{{ pid }}">{{ pname }}</a> <span class="sep">/</span>
+  <a href="/p/{{ pid }}/{{ rgid }}">{{ rname }}</a> <span class="sep">/</span>
+  <a href="/p/{{ pid }}/{{ rgid }}/{{ env }}">{{ env_label(env) }}</a>
+  <span class="sep">/</span> new service
+{% endblock %}
+{% block content %}
+<h1>Add service</h1>
+<p class="sub">Create a new microservice values file, or add config into an existing
+   service's file. Nothing is committed — you review the diff first.</p>
+
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+
+<div class="seg" id="seg">
+  <label class="on" data-mode="new">New microservice</label>
+  <label data-mode="existing">Existing microservice</label>
+</div>
+
+<form method="post" action="/p/{{ pid }}/{{ rgid }}/{{ env }}/new">
+<input type="hidden" name="mode" id="mode" value="new">
+
+<div class="card" id="card-new">
+  <div class="card-h">Service definition</div>
+  <div class="card-b">
+    <div class="field-row"><label>service name</label>
+      <input type="text" name="name" placeholder="e.g. equitybank-worker"></div>
+    <div class="field-row"><label>image repository</label>
+      <input type="text" name="image_repo" placeholder="registry/equitybank"></div>
+    <div class="field-row"><label>image tag</label>
+      <input type="text" name="image_tag" value="latest"></div>
+    <div class="field-row"><label>container port</label>
+      <input type="number" name="port" value="8080"></div>
+    <div class="field-row"><label>namespace</label>
+      <input type="text" name="namespace" value="{{ namespace }}"></div>
+  </div>
+</div>
+
+<div class="card" id="card-existing" style="display:none;">
+  <div class="card-h">Target service
+    <span class="hint">config keys are appended to this file</span></div>
+  <div class="card-b">
+    <div class="field-row"><label>values file</label>
+      <select name="target_file">
+        {% for f in all_files %}<option value="{{ f }}">{{ f }}</option>{% endfor %}
+      </select></div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-h">Configuration
+    <span class="hint">endpoint URLs, callback URLs, business numbers…</span></div>
+  <div class="card-b" id="cfg-rows">
+    {% for i in range(1, 6) %}
+    <div class="field-row">
+      <input type="text" name="ck{{ i }}" placeholder="KEY">
+      <input type="text" name="cv{{ i }}" placeholder="value">
+    </div>
+    {% endfor %}
+  </div>
+  <div class="card-b" style="padding-top:0;">
+    <button type="button" class="btn-ghost" data-call="addRow">＋ more fields</button>
+  </div>
+</div>
+
+<div class="actions">
+  <button type="submit">Create</button>
+  <a class="btn btn-ghost" href="/p/{{ pid }}/{{ rgid }}/{{ env }}">Cancel</a>
+</div>
+</form>
+
+<script nonce="{{ csp_nonce() }}">
+let n = 5;
+function addRow() {
+  if (n >= 30) return; n++;
+  const d = document.createElement('div'); d.className = 'field-row';
+  d.innerHTML = `<input type="text" name="ck${n}" placeholder="KEY">
+                 <input type="text" name="cv${n}" placeholder="value">`;
+  document.getElementById('cfg-rows').appendChild(d);
+}
+document.querySelectorAll('#seg label').forEach(l => {
+  l.addEventListener('click', () => {
+    document.querySelectorAll('#seg label').forEach(x => x.classList.remove('on'));
+    l.classList.add('on');
+    const m = l.dataset.mode;
+    document.getElementById('mode').value = m;
+    document.getElementById('card-new').style.display = m === 'new' ? '' : 'none';
+    document.getElementById('card-existing').style.display = m === 'existing' ? '' : 'none';
+  });
+});
+</script>
+{% endblock %}

@@ -1,0 +1,71 @@
+{# Only meaningful when a CI provider is connected. #}
+{% if pipes and pipes.conns %}
+  <div class="card" style="margin:0;">
+    <div class="card-h">⚡ <a href="/pipelines" style="color:var(--text);">Pipelines</a>
+      <span class="hint">{{ pipes.conns }} connection{{ 's' if pipes.conns != 1 }}</span>
+      <span style="flex:1"></span>
+      {% if pipes.pending %}<span class="hint">sampling…</span>
+      {% elif pipes.stale %}<span class="hint" style="color:var(--warn-ink);">refreshing…</span>{% endif %}
+    </div>
+    <div class="card-b">
+      {% if pipes.pending %}
+      <div class="chart-empty" style="padding:34px 0;">reading pipeline status…</div>
+      {% elif pipes.error %}
+      <div class="flash err" style="margin:0;">⚠ {{ pipes.error }}</div>
+      {% else %}
+      <div style="display:flex;gap:20px;align-items:center;">
+        <div style="text-align:center;flex:none;">
+          {{ donut(pipes.green, label="%.0f%%"|format(pipes.green), sub="passing",
+                   size=112, thickness=10,
+                   color=("var(--ok)" if pipes.green >= 90 else
+                          ("var(--warn)" if pipes.green >= 60 else "var(--danger)"))) }}
+          <div class="chart-cap">{{ pipes.counts.success }} / {{ pipes.graded }} graded</div>
+        </div>
+        <div style="flex:1;min-width:0;">
+          <div class="kv" style="margin-bottom:10px;">
+            <a class="badge" href="/pipelines"><b>{{ pipes.total }}</b> total</a>
+            <a class="badge" style="color:var(--danger-ink);" href="/pipelines"><b
+               style="color:var(--danger-ink);">{{ pipes.counts.failed }}</b> failing</a>
+            {% if pipes.counts.running %}
+            <a class="badge" style="color:var(--accent-ink);" href="/pipelines"><b
+               style="color:var(--accent-ink);">{{ pipes.counts.running }}</b> running</a>{% endif %}
+            {% if pipes.broken %}<span class="badge" style="color:var(--warn-ink);">
+              {{ pipes.broken }} unreachable</span>{% endif %}
+          </div>
+          {{ stack([('seg-ok', pipes.counts.success), ('seg-bad', pipes.counts.failed),
+                    ('seg-idle', pipes.total - pipes.graded)]) }}
+          <div style="margin-top:12px;">
+            {% for p in pipes.providers %}
+            <a class="badge" href="/pipelines?provider={{ p.key }}">{{ logo(p.key, p.label, 14) }} {{ p.label }}
+              <b>{{ p.jobs }}</b></a>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+
+      {% if pipes.failing %}
+      <div style="margin-top:16px;">
+        <div class="cmp-lbl" style="margin-bottom:7px;">Failing now
+          <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted);">
+            {{ pipes.failing|length }} of {{ pipes.counts.failed }}</span></div>
+        {% for j in pipes.failing %}
+        <div class="kv" style="border-top:1px solid var(--hairline);padding:6px 0;font-size:12px;">
+          <span class="s-failed"></span>
+          <a href="/pipelines?provider={{ j.provider }}&conn={{ j.cid }}&q={{ j.name|urlencode }}"
+             style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ j.name }}</a>
+          {% if j.branch %}<span class="jbranch">⑂ {{ j.branch }}</span>{% endif %}
+          <span style="flex:1"></span>
+          <span style="color:var(--muted);white-space:nowrap;">{{ j.when }}</span>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+      {% endif %}
+    </div>
+  </div>
+{% else %}
+<div class="card" style="margin:0;"><div class="card-b">
+  <div class="sec-note">No CI provider connected yet — add one in
+    <a href="/settings/pipelines">Settings → Pipelines</a>.</div>
+</div></div>
+{% endif %}

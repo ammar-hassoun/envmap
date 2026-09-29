@@ -1,0 +1,479 @@
+{#- The MCP token controls, once.
+
+    They appear on two pages — Settings → AI clients and a person's own account
+    — and a permission editor written twice is a permission editor that drifts.
+    Both pages feed these macros the same vocabulary (`areas` from
+    mcp.readable_areas, `modes` from mcp.MODE_WORDS, `acts` from
+    actions.CATALOGUE) and post to the same routes.
+
+    WHY A TOKEN IS A CARD AND NOT A TABLE ROW
+        It was a nine-column table with the scope editor in a `<td colspan>`.
+        Two things went wrong and both were structural. The editor is forty
+        checkboxes, and a table cell does not reserve height for what a
+        `<details>` inside it unfolds — measured: 971 overlapping element pairs,
+        the editor's labels sitting on top of every row beneath it. And nine
+        columns do not fit a laptop, so the last of them was simply cut off.
+
+        A card owns its own height and grows downwards, so an editor inside one
+        cannot land on anything else. The information is the same; the geometry
+        is the difference between a page that reads and a page that smears.
+
+    `back` is which page to return to; `may_manage` is whether this person holds
+    Cluster management at all, because offering a token the ability to act when
+    its owner cannot is offering a refusal. -#}
+
+{% macro chips(name, items, chosen, cols=2) %}
+{#- A checkbox that reads as a chip: the whole pill is the hit area and it
+    lights up when it is on, so a scope can be read at a glance instead of
+    hunting for ticked boxes down a column of identical squares. -#}
+<div class="mcp-chips" style="--chipcols:{{ cols }};">
+  {% for key, label in items %}
+  <label class="mcp-chip">
+    <input type="checkbox" name="{{ name }}" value="{{ key }}"
+           {% if key in chosen %}checked{% endif %}>
+    <span>{{ label }}</span>
+  </label>
+  {% endfor %}
+</div>
+{% endmacro %}
+
+
+{% macro scope_fields(areas, modes, acts, may_manage, tok=None) %}
+{#- The read scope and what it may do — shared by the mint form and the
+    per-token editor, so a token cannot be created with a shape the editor
+    cannot express. -#}
+{% set chosen_areas = (tok.areas if tok else []) %}
+{% set chosen_acts = (tok.actions if tok else []) %}
+<div class="mcp-scope">
+  <div class="mcp-field">
+    <div class="mcp-lbl">may read
+      <span class="mcp-hint">{{ 'everything you may read' if not chosen_areas
+        else chosen_areas|length ~ ' of ' ~ areas|length ~ ' areas' }}</span>
+    </div>
+    <p class="mcp-note">Leave all clear for <b>everything you may read</b>.
+      Choosing narrows it.</p>
+    {{ chips('area', areas, chosen_areas, cols=2) }}
+  </div>
+  <div class="mcp-field">
+    <div class="mcp-lbl">may do</div>
+    <div class="mcp-modes">
+      {% for key, words in modes.items() %}
+      <label class="mcp-radio {{ 'is-off' if key != 'read' and not may_manage }}">
+        <input type="radio" name="mode" value="{{ key }}"
+               {% if tok and tok.mode == key %}checked
+               {% elif not tok and key == 'read' %}checked{% endif %}
+               {% if key != 'read' and not may_manage %}disabled{% endif %}>
+        <span>{{ words }}</span>
+      </label>
+      {% endfor %}
+    </div>
+    {% if not may_manage %}
+    <p class="mcp-note">You do not hold <b>Cluster management</b>, so a token of
+      yours could not change anything however it is scoped.</p>
+    {% else %}
+    <div class="mcp-lbl" style="margin-top:14px;">limited to these actions
+      <span class="mcp-hint">{{ 'any action' if not chosen_acts
+        else chosen_acts|length ~ ' chosen' }}</span></div>
+    <p class="mcp-note">Leave all clear for any action. Applies only while the
+      token may change things.</p>
+    {{ chips('act', acts, chosen_acts, cols=2) }}
+    {% endif %}
+  </div>
+</div>
+{% endmacro %}
+
+
+{% macro mint(areas, modes, acts, days, may_manage, back) %}
+{#- Two presets and a Custom, because the common answers are "let it read
+    everything" and "let it do everything I can". Assembling a scope out of
+    twenty checkboxes to express full access is the wrong shape for the thing
+    people want most often. -#}
+<form method="post" action="/me/mcp/token" class="mcp-mint">
+  <input type="hidden" name="back" value="{{ back }}">
+
+  <div class="mcp-row">
+    <label class="mcp-inp">
+      <span class="mcp-lbl">what is it for</span>
+      <input name="name" placeholder="MacBook — Claude Code" maxlength="60">
+    </label>
+    <label class="mcp-inp narrow">
+      <span class="mcp-lbl">expires</span>
+      <select name="expiry">
+        {# The install's own default is pre-selected; a lifetime token is its own
+           named choice rather than a 0 somebody has to know to type. #}
+        {% for d in [7, 30, 90, 180, 365] %}
+        <option value="{{ d }}" {% if d == days %}selected{% endif %}>in {{ d }} days</option>
+        {% endfor %}
+        <option value="never" {% if days == 0 %}selected{% endif %}>never — lifetime</option>
+      </select>
+    </label>
+  </div>
+
+  <div class="mcp-lbl" style="margin-top:16px;">what may it do</div>
+  <div class="mcp-presets">
+    <label class="mcp-pre">
+      <input type="radio" name="preset" value="read" checked>
+      <span class="mcp-pre-b">
+        <b>Read and troubleshoot</b>
+        <i>Every question these pages answer, plus read-only kubectl, run
+          output and describe. Changes nothing.</i></span>
+    </label>
+    <label class="mcp-pre {{ 'is-off' if not may_manage }}">
+      <input type="radio" name="preset" value="full"
+             {% if not may_manage %}disabled{% endif %}>
+      <span class="mcp-pre-b">
+        <b>Full access <span class="mcp-tag">everything I can do</span></b>
+        <i>{% if may_manage %}The same, plus every action your own roles allow —
+          add a host, run a playbook, generate a VM, sync an application,
+          request a certificate, act on a cluster.{% else %}You do not hold
+          Cluster management, so this is not offered.{% endif %}</i></span>
+    </label>
+    <label class="mcp-pre">
+      <input type="radio" name="preset" value="custom">
+      <span class="mcp-pre-b">
+        <b>Custom</b>
+        <i>Narrow it to particular areas, or particular actions.</i></span>
+    </label>
+  </div>
+
+  <div class="mcp-custom" hidden>
+    {{ scope_fields(areas, modes, acts, may_manage) }}
+  </div>
+
+  <div class="mcp-foot">
+    <button class="btn" type="submit">Mint a token</button>
+    <span class="mcp-note" style="margin:0;">Whatever you pick, it can never
+      reach further than your own permissions. A lifetime token never expires —
+      revoke it when the client is retired.</span>
+  </div>
+</form>
+{% endmacro %}
+
+
+{% macro cards(tokens, areas, modes, acts, may_manage, back, owners=None,
+               revoke_to="/me/mcp/revoke", editable=true) %}
+<div class="mcp-cards">
+  {% for t in tokens %}
+  {% set tone = 'dead' if not t.live else ('act' if t.mode == 'act' else 'read') %}
+  <div class="mcp-card tone-{{ tone }}">
+    <div class="mcp-card-h">
+      <span class="mcp-name" title="{{ t.name }}">{{ t.name }}</span>
+      <code class="mcp-tail">…{{ t.tail }}</code>
+      <span class="mcp-spacer"></span>
+      {% if t.revoked %}<span class="sv sv-critical">revoked</span>
+      {% elif t.expired %}<span class="sv sv-medium">expired</span>
+      {% elif t.mode == 'act' %}<span class="sv sv-high">full access</span>
+      {% else %}<span class="sv sv-clean">read only</span>{% endif %}
+    </div>
+
+    <div class="mcp-card-b">
+      <p class="mcp-scopeline">{{ t.scope_words }}</p>
+      <dl class="mcp-meta">
+        {% if owners %}
+        <div><dt>owner</dt><dd>{{ owners.get(t.uid) or t.uid }}</dd></div>
+        {% endif %}
+        <div><dt>expires</dt>
+          <dd>{% if t.lifetime %}<b class="mcp-warnink">never</b>
+            {% else %}{{ t.expires }}{% endif %}</dd></div>
+        <div><dt>last used</dt>
+          <dd>{{ t.last_used.replace('T', ' ') if t.last_used
+                 else '—' }}</dd></div>
+        <div><dt>calls</dt><dd>{{ t.calls }}</dd></div>
+        {% if t.last_ip %}<div><dt>from</dt><dd>{{ t.last_ip }}</dd></div>{% endif %}
+        <div><dt>created</dt>
+          <dd>{{ t.created.replace('T', ' ')[:16] }}</dd></div>
+      </dl>
+    </div>
+
+    <div class="mcp-card-f">
+      {% if editable %}
+      <button type="button" class="abtn mcp-edit" data-for="sc-{{ t.id }}"
+              {% if not t.live %}disabled title="it is not usable any more"{% endif %}
+              >change scope</button>
+      {% endif %}
+      {# Revoking is operational, not destruction: a plain confirm, per the
+         house rule that the typed gesture is for destroying a resource. #}
+      <form method="post" action="{{ revoke_to }}"
+            data-confirm="Revoke “{{ t.name }}”? Any client using it stops working at once.">
+        <input type="hidden" name="id" value="{{ t.id }}">
+        <input type="hidden" name="back" value="{{ back }}">
+        <button class="abtn danger" type="submit"
+                {% if not t.live %}disabled title="it is already not usable"{% endif %}
+                >revoke</button>
+      </form>
+    </div>
+
+    {% if editable %}
+    {# Re-scope in place rather than re-issue: a client already configured on
+       somebody's laptop should not have to be reconnected to be given, or
+       denied, the ability to act. The secret does not change. It lives INSIDE
+       the card, which owns its height — the same editor in a table cell landed
+       on top of every row below it. #}
+    <div class="mcp-editor" id="sc-{{ t.id }}" hidden>
+      <form method="post" action="/me/mcp/scope">
+        <input type="hidden" name="id" value="{{ t.id }}">
+        <input type="hidden" name="back" value="{{ back }}">
+        {{ scope_fields(areas, modes, acts, may_manage, t) }}
+        <div class="mcp-foot">
+          <button class="btn" type="submit">Save this scope</button>
+          <button type="button" class="btn btn-ghost mcp-cancel">Cancel</button>
+          <span class="mcp-note" style="margin:0;">The secret does not change —
+            the client keeps working with what it already has.</span>
+        </div>
+      </form>
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% endmacro %}
+
+
+{% macro js() %}
+<script nonce="{{ csp_nonce() }}">
+(() => {
+  // Deferred: these macros are emitted with the styles near the top of the
+  // page, so at parse time the forms they wire do not exist yet — measured, and
+  // the symptom was a preset that changed nothing at all.
+  const wire = () => {
+    // ── the mint form's presets ──
+    document.querySelectorAll('form.mcp-mint').forEach(f => {
+      const custom = f.querySelector('.mcp-custom');
+      const modes = [...f.querySelectorAll('.mcp-custom input[name=mode]')];
+      const boxes = () => [...f.querySelectorAll('.mcp-custom input[type=checkbox]')];
+      const apply = () => {
+        const pick = (f.querySelector('input[name=preset]:checked') || {}).value;
+        custom.hidden = pick !== 'custom';
+        if (pick === 'custom') return;
+        // read = change nothing; full = everything, which is an EMPTY narrowing
+        const want = pick === 'full' ? 'act' : 'read';
+        modes.forEach(r => { r.checked = r.value === want; });
+        boxes().forEach(b => { b.checked = false; });
+      };
+      f.querySelectorAll('input[name=preset]').forEach(r =>
+        r.addEventListener('change', apply));
+      apply();
+    });
+
+    // ── the per-token scope editor, one open at a time ──
+    const shutAll = except => document.querySelectorAll('.mcp-editor')
+      .forEach(e => { if (e !== except) e.hidden = true; });
+    document.querySelectorAll('.mcp-edit').forEach(b =>
+      b.addEventListener('click', () => {
+        const box = document.getElementById(b.dataset.for);
+        if (!box) return;
+        const opening = box.hidden;
+        shutAll(box);
+        box.hidden = !opening;
+        if (opening) box.scrollIntoView({block: 'nearest', behavior: 'smooth'});
+      }));
+    document.querySelectorAll('.mcp-cancel').forEach(b =>
+      b.addEventListener('click', () => shutAll(null)));
+
+    // ── a live count beside each scope heading, so the reader is never
+    //    counting ticked boxes themselves ──
+    document.querySelectorAll('.mcp-field').forEach(field => {
+      const chips = field.querySelectorAll('.mcp-chips');
+      chips.forEach(group => {
+        const lbl = group.previousElementSibling
+          && group.previousElementSibling.previousElementSibling;
+        const hint = lbl && lbl.querySelector('.mcp-hint');
+        if (!hint) return;
+        const total = group.querySelectorAll('input').length;
+        const word = hint.dataset.word
+          || (hint.textContent.includes('area') ? 'areas' : 'chosen');
+        hint.dataset.word = word;
+        const paint = () => {
+          const n = group.querySelectorAll('input:checked').length;
+          hint.textContent = n === 0
+            ? (word === 'areas' ? 'everything you may read' : 'any action')
+            : (word === 'areas' ? `${n} of ${total} areas` : `${n} chosen`);
+        };
+        group.addEventListener('change', paint);
+        paint();
+      });
+    });
+
+    // ── copy buttons ──
+    const put = (text, btn) => {
+      const done = () => {
+        const was = btn.dataset.was || btn.textContent;
+        btn.dataset.was = was;
+        btn.textContent = 'copied';
+        btn.classList.add('done');
+        setTimeout(() => { btn.textContent = was;
+                           btn.classList.remove('done'); }, 1500);
+      };
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text).then(done, () => legacy(text, done));
+      } else {
+        legacy(text, done);
+      }
+    };
+    // a portal served over plain http inside a cluster is a normal way to run
+    // this, and there is no clipboard API there
+    const legacy = (text, done) => {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); done(); } catch (e) { /* nothing */ }
+      ta.remove();
+    };
+    document.querySelectorAll('[data-copy]').forEach(b =>
+      b.addEventListener('click', () => put(b.dataset.copy, b)));
+  };
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', wire);
+  } else {
+    wire();
+  }
+})();
+</script>
+{% endmacro %}
+
+
+{% macro styles() %}
+<style>
+  /* ── shared vocabulary ── */
+  .mcp-lbl { font-size:10.5px; text-transform:uppercase; letter-spacing:.07em;
+    color:var(--muted); font-weight:700; display:flex; align-items:baseline;
+    gap:8px; margin-bottom:6px; }
+  .mcp-hint { text-transform:none; letter-spacing:0; font-weight:500;
+    font-size:11px; color:var(--accent-ink); }
+  .mcp-note { font-size:11.5px; color:var(--faint); line-height:1.55;
+    margin:0 0 8px; max-width:62ch; }
+  .mcp-spacer { flex:1; }
+  .mcp-warnink { color:var(--warn-ink); }
+
+  /* ── inputs ── */
+  .mcp-row { display:flex; gap:14px; flex-wrap:wrap; }
+  .mcp-inp { display:block; flex:1 1 260px; }
+  .mcp-inp.narrow { flex:0 0 200px; }
+  .mcp-inp input, .mcp-inp select { width:100%; box-sizing:border-box; }
+
+  /* ── a checkbox that reads as a chip ── */
+  .mcp-chips { display:grid; gap:6px;
+    grid-template-columns:repeat(var(--chipcols,2),minmax(0,1fr)); }
+  .mcp-chip { display:flex; align-items:center; gap:8px; cursor:pointer;
+    font-size:12px; font-weight:400; color:var(--text2); padding:6px 10px;
+    border:1px solid var(--line); border-radius:8px; background:var(--well);
+    transition:border-color .12s, color .12s, background .12s; }
+  .mcp-chip:hover { border-color:var(--line2); color:var(--text); }
+  .mcp-chip input { width:auto; margin:0; flex:none; }
+  .mcp-chip:has(input:checked) { border-color:var(--accent); color:var(--text);
+    background:color-mix(in srgb, var(--accent) 10%, transparent); }
+  .mcp-chip span { overflow:hidden; text-overflow:ellipsis;
+    white-space:nowrap; }
+
+  /* ── mode radios and the mint presets ── */
+  .mcp-modes { display:flex; flex-direction:column; gap:6px; }
+  .mcp-radio { display:flex; align-items:center; gap:9px; font-size:12.5px;
+    font-weight:400; color:var(--text2); cursor:pointer; padding:7px 11px;
+    border:1px solid var(--line); border-radius:9px; background:var(--well); }
+  .mcp-radio input { width:auto; margin:0; flex:none; }
+  .mcp-radio:has(input:checked) { border-color:var(--accent);
+    color:var(--text); background:color-mix(in srgb,var(--accent) 10%,transparent); }
+  .mcp-radio.is-off { opacity:.5; cursor:default; }
+
+  .mcp-presets { display:grid; gap:8px; }
+  .mcp-pre { display:flex; gap:11px; align-items:flex-start; cursor:pointer;
+    padding:12px 14px; border:1px solid var(--line); border-radius:11px;
+    background:var(--panel2); transition:border-color .12s, background .12s; }
+  .mcp-pre:hover { border-color:var(--line2); }
+  .mcp-pre input { width:auto; margin:3px 0 0; flex:none; }
+  .mcp-pre:has(input:checked) { border-color:var(--accent);
+    background:color-mix(in srgb, var(--accent) 7%, transparent); }
+  .mcp-pre.is-off { opacity:.55; cursor:default; }
+  .mcp-pre-b { display:block; min-width:0; }
+  .mcp-pre-b b { display:block; font-size:13px; color:var(--text);
+    margin-bottom:3px; }
+  .mcp-pre-b i { display:block; font-style:normal; font-size:11.5px;
+    color:var(--faint); line-height:1.55; }
+  .mcp-tag { font-size:10px; font-weight:700; text-transform:uppercase;
+    letter-spacing:.05em; color:var(--warn-ink); border:1px solid
+    color-mix(in srgb, var(--warn) 45%, transparent);
+    border-radius:20px; padding:1px 8px; margin-left:7px;
+    vertical-align:1px; }
+
+  /* ── the scope editor ── */
+  .mcp-scope { display:grid; gap:22px; margin-top:4px;
+    grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr)); }
+  .mcp-field { min-width:0; }
+  .mcp-foot { display:flex; gap:12px; align-items:center; flex-wrap:wrap;
+    margin-top:16px; }
+
+  /* ── a token is a card, because a card owns its own height ── */
+  .mcp-cards { display:grid; gap:12px; margin-top:16px; }
+  .mcp-card { border:1px solid var(--line); border-radius:13px;
+    background:var(--panel); position:relative; overflow:hidden; }
+  .mcp-card::before { content:""; position:absolute; left:0; top:0; bottom:0;
+    width:3px; background:var(--line2); }
+  .mcp-card.tone-act::before { background:var(--warn); }
+  .mcp-card.tone-read::before { background:var(--ok); }
+  .mcp-card.tone-dead { opacity:.62; }
+  .mcp-card.tone-dead::before { background:var(--danger); }
+  .mcp-card-h { display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+    padding:12px 15px 0 18px; }
+  .mcp-name { font-size:14px; font-weight:650; color:var(--text);
+    min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+    max-width:38ch; }
+  .mcp-tail { font-family:var(--mono); font-size:11px; color:var(--muted);
+    background:var(--well); border:1px solid var(--line);
+    border-radius:6px; padding:1px 7px; }
+  .mcp-card-b { padding:7px 15px 12px 18px; }
+  .mcp-scopeline { font-size:12px; color:var(--text2); margin:0 0 9px;
+    line-height:1.5; overflow-wrap:anywhere; }
+  /* definition pairs rather than a row of columns: they wrap instead of
+     colliding, which is the whole reason the table went */
+  .mcp-meta { display:flex; flex-wrap:wrap; gap:4px 20px; margin:0; }
+  .mcp-meta > div { min-width:0; }
+  .mcp-meta dt { font-size:10px; text-transform:uppercase; letter-spacing:.06em;
+    color:var(--faint); margin:0; }
+  .mcp-meta dd { margin:1px 0 0; font-size:12px; color:var(--text2);
+    font-variant-numeric:tabular-nums; }
+  .mcp-card-f { display:flex; gap:8px; align-items:center;
+    padding:0 15px 13px 18px; }
+  .mcp-card-f form { display:inline; }
+  .mcp-editor { border-top:1px solid var(--line); background:var(--well);
+    padding:15px 15px 15px 18px; }
+
+  /* ── the endpoint and command blocks ── */
+  .mcp-code { border:1px solid var(--line); border-radius:10px;
+    background:var(--well); overflow:hidden; margin-bottom:12px; }
+  .mcp-code-h { display:flex; align-items:center; gap:10px;
+    padding:8px 12px; border-bottom:1px solid var(--line);
+    background:var(--panel2); }
+  .mcp-code-h span { font-size:11px; color:var(--muted); font-weight:600; }
+  .mcp-code pre { margin:0; padding:12px 14px; font-size:12px; line-height:1.6;
+    overflow-x:auto; white-space:pre; color:var(--text); }
+  .copy { padding:4px 11px; font-size:11px; background:var(--panel);
+    border:1px solid var(--line); border-radius:7px; color:var(--muted);
+    cursor:pointer; flex:none; }
+  .copy:hover { border-color:var(--accent-ink); color:var(--text); }
+  .copy.done { color:var(--ok-ink); border-color:var(--ok-line); }
+
+  /* ── steps ── */
+  .mcp-steps { display:grid; gap:2px; }
+  .mcp-step { display:grid; grid-template-columns:30px minmax(0,1fr);
+    gap:13px; padding:13px 0; border-top:1px solid var(--line); }
+  .mcp-step:first-child { border-top:0; padding-top:2px; }
+  .mcp-num { width:26px; height:26px; border-radius:50%; flex:none;
+    display:flex; align-items:center; justify-content:center;
+    font-size:12px; font-weight:700; color:var(--muted);
+    border:1px solid var(--line); background:var(--well); }
+  .mcp-step.done .mcp-num { color:var(--ok-ink); border-color:var(--ok-line);
+    background:color-mix(in srgb, var(--ok) 12%, transparent); }
+  .mcp-step-b { min-width:0; }
+  .mcp-step-t { font-size:13px; font-weight:650; color:var(--text);
+    margin-bottom:5px; display:flex; align-items:center; gap:9px;
+    flex-wrap:wrap; }
+
+  @media (max-width:720px) {
+    .mcp-chips { grid-template-columns:minmax(0,1fr); }
+    .mcp-step { grid-template-columns:minmax(0,1fr); gap:8px; }
+  }
+</style>
+{% endmacro %}

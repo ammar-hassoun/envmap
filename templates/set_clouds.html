@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+{% from "_set_head.html" import head %}
+{% block crumbs %}<a href="/settings">Settings</a> <span class="sep">/</span> <b>Cloud accounts</b>{% endblock %}
+{% block content %}
+{{ head("Cloud accounts",
+        "Register AWS, Azure, Alibaba Cloud, Google Cloud or any provider with an API. Every connection is verified against the cloud itself — the status shows the identity the cloud reported, so a key for the wrong account is caught at Save.",
+        msg, err) }}
+
+<div class="card" id="cloud">
+  <div class="card-h">Accounts
+    <span class="hint">{{ cloud_conns|length }} connected</span>
+  </div>
+  <div class="card-b">
+    {% for c in cloud_conns %}
+    <div class="rowcard" id="{{ c.id }}">
+      <div class="kv">
+        {{ logo(c.type, c.name, 18) }}
+        <b style="font-size:14.5px;">{{ c.name }}</b>
+        <span class="badge">{{ providers[c.type].label if c.type in providers else c.type }}</span>
+        <span class="badge">{{ project_names[c.pid] if c.pid else 'central · all projects' }}</span>
+        <span style="flex:1"></span>
+        <form method="post" action="/settings/cloud/{{ c.id }}/test">
+          <input type="hidden" name="pid" value="{{ c.pid }}">
+          <button class="btn-ghost" style="padding:5px 13px;font-size:11.5px;">Test</button></form>
+        <form method="post" action="/settings/cloud/{{ c.id }}/delete"
+              data-del="{{ c.name }}">
+          <input type="hidden" name="pid" value="{{ c.pid }}">
+          <button class="btn-danger" style="padding:5px 13px;font-size:11.5px;">Remove</button></form>
+      </div>
+      {% if c.status %}
+      <div class="sec-note"
+           style="color:{{ 'var(--ok-ink)' if c.status.startswith('ok') else 'var(--danger-ink)' }};">{{ c.status }}</div>
+      {% endif %}
+
+      <details class="adv" style="margin-top:8px;"><summary>Edit</summary>
+        <form method="post" action="/settings/cloud/{{ c.id }}/update" style="margin-top:10px;">
+          <input type="hidden" name="pid" value="{{ c.pid }}">
+          <div class="field-row"><label>display name</label>
+            <input type="text" name="name" value="{{ c.name }}"></div>
+          {% set flds = providers[c.type].fields if c.type in providers else {} %}
+          {% if 'tenant' in flds %}
+          <div class="field-row"><label>{{ flds.tenant }}</label>
+            <input type="text" name="tenant" value="{{ c.tenant or '' }}"></div>
+          {% endif %}
+          {% if 'base_url' in flds %}
+          <div class="field-row"><label>{{ flds.base_url }}</label>
+            <input type="text" name="base_url" value="{{ c.base_url or '' }}"></div>
+          {% endif %}
+          {% if 'key_id' in flds %}
+          <div class="field-row"><label>{{ flds.key_id }}</label>
+            <input type="text" name="key_id" value="{{ c.key_id or '' }}"></div>
+          {% endif %}
+          <div class="field-row"><label>{{ flds.secret if 'secret' in flds else 'secret' }}</label>
+            {% if c.type == 'gcp' %}
+            <textarea name="secret" rows="4" style="font-family:var(--mono);font-size:11.5px;" data-nosave
+                      placeholder="•••••• stored — paste to replace"></textarea>
+            {% else %}
+            <input type="password" name="secret" autocomplete="new-password"
+                   placeholder="{% if c.secret %}•••••• stored — type to replace{% else %}required{% endif %}">
+            {% endif %}</div>
+          {% if 'region' in flds %}
+          <div class="field-row"><label>{{ flds.region }}</label>
+            <input type="text" name="region" value="{{ c.region or '' }}"></div>
+          {% endif %}
+          <div class="actions"><button type="submit"
+                  style="padding:6px 16px;font-size:12.5px;">Save &amp; verify</button></div>
+        </form>
+      </details>
+    </div>
+    {% endfor %}
+
+    <details class="adv" {% if not cloud_conns %}open{% endif %}>
+      <summary>＋ Connect a cloud account</summary>
+      <form method="post" action="/settings/cloud/new" style="margin-top:12px;">
+        <div class="field-row"><label>provider</label>
+          <select name="type" id="cloud-type" data-call-change="cloudType" required>
+            <option value="">— choose —</option>
+            {% for key, pv in providers.items() %}
+            <option value="{{ key }}">{{ pv.icon }} {{ pv.label }}</option>
+            {% endfor %}
+          </select></div>
+        <div class="field-row"><label>project <span style="font-family:inherit;
+              text-transform:none;letter-spacing:0;">(optional)</span></label>
+          <select name="pid">
+            <option value="">Not assigned — central account, all projects</option>
+            {% for pid2, nm in project_names.items() %}
+            <option value="{{ pid2 }}">only {{ nm }}</option>
+            {% endfor %}
+          </select></div>
+        <div class="field-row"><label>display name</label>
+          <input type="text" name="name" placeholder="e.g. production AWS"></div>
+        <div class="field-row" data-f="tenant" hidden><label id="l-tenant"></label>
+          <input type="text" name="tenant"></div>
+        <div class="field-row" data-f="base_url" hidden><label id="l-base_url"></label>
+          <input type="text" name="base_url"></div>
+        <div class="field-row" data-f="key_id" hidden><label id="l-key_id"></label>
+          <input type="text" name="key_id"></div>
+        <div class="field-row" data-f="secret" hidden><label id="l-secret"></label>
+          <textarea name="secret" rows="2" autocomplete="new-password" data-nosave
+                    style="font-family:var(--mono);font-size:11.5px;"></textarea></div>
+        <div class="field-row" data-f="region" hidden><label id="l-region"></label>
+          <input type="text" name="region"></div>
+        <div class="sec-note" id="cloud-note"></div>
+        <div class="actions"><button type="submit">Connect &amp; verify</button></div>
+      </form>
+    </details>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-h">How each provider is verified</div>
+  <div class="card-b">
+    <p class="sub" style="margin:0 0 10px;">Verification asks the cloud who the
+      credential belongs to and shows the answer. Use a dedicated read-only
+      identity per provider — the check needs no permissions beyond existing.</p>
+    {% for key, pv in providers.items() %}
+    <div class="kv" style="border-top:1px solid var(--line);padding-top:10px;margin-top:10px;">
+      {{ plogo(pv, 20) }}
+      <div style="min-width:0;">
+        <b style="font-size:13.5px;">{{ pv.label }}</b>
+        <span class="badge">{{ pv.auth }}</span>
+        <div class="sec-note" style="margin:2px 0 0;">{{ pv.note }}</div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<script nonce="{{ csp_nonce() }}">
+const CLOUD_FIELDS = {{ cloud_fields|tojson }};
+const CLOUD_NOTES = {{ cloud_notes|tojson }};
+function cloudType(t) {
+  const fields = CLOUD_FIELDS[t] || {};
+  document.querySelectorAll('[data-f]').forEach(row => {
+    const key = row.dataset.f;
+    row.hidden = !(key in fields);
+    if (key in fields) document.getElementById('l-' + key).textContent = fields[key];
+  });
+  document.getElementById('cloud-note').textContent = CLOUD_NOTES[t] || '';
+}
+</script>
+{% endblock %}

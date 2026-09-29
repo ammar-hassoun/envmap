@@ -1,0 +1,33 @@
+{% extends "_auth_shell.html" %}
+{% set title = 'Forgotten password' %}
+{% block body %}
+
+{% if sent %}
+<h1>Request sent</h1>
+<p class="sub">If that address has an account here, an administrator has been
+  told and will send you a link to set a new password.</p>
+{# Deliberately the same answer whether or not the account exists. A different
+   one would turn this form into a way to find out who works here. #}
+<ol class="steps">
+  <li>An administrator issues you a one-time link.</li>
+  <li>You open it and choose a new password.</li>
+  <li>You sign in with it and your usual authenticator code.</li>
+</ol>
+<div class="note">Your authenticator app is unaffected — you will still need a
+  code from it. <a href="/login">Back to sign in</a></div>
+
+{% else %}
+<h1>Forgotten your password?</h1>
+<p class="sub">Tell us the address you sign in with. This portal does not send
+  email, so an administrator will pass you a link directly.</p>
+{% if err %}<div class="err">⚠ {{ err }}</div>{% endif %}
+<form method="post" action="/forgot">
+  <label class="f" for="email">Email</label>
+  <input type="email" id="email" name="email" required autofocus
+         autocomplete="username" placeholder="you@example.com">
+  <button type="submit">Ask for a reset link</button>
+</form>
+<div class="note">Remembered it? <a href="/login">Sign in</a></div>
+{% endif %}
+
+{% endblock %}

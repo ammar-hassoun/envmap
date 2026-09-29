@@ -1,0 +1,37 @@
+{% if section_error %}
+<div class="flash err">⚠ {{ section_error }}</div>
+{% endif %}
+<div class="card">
+  <div class="card-h">Blocked by something else
+    <span class="hint">{{ locks|length }}</span></div>
+  <div class="card-b">
+    {% if not locks %}
+    <p class="sub" style="margin:0;">Nothing is waiting on anything else. This is
+      the question a database that has stopped responding raises, and the
+      tedious one to answer by hand — it lives here so it is one click when it
+      matters.</p>
+    {% else %}
+    <table class="jenkins">
+      <thead><tr><th class="num">waiting pid</th><th>user</th><th>for</th>
+        <th>its statement</th><th class="num">blocked by</th>
+        <th>that statement</th></tr></thead>
+      <tbody>
+        {% for l in locks %}
+        <tr>
+          <td class="num" style="color:var(--warn-ink);"><b>{{ l.pid }}</b></td>
+          <td>{{ l.user or '—' }}</td>
+          <td>{{ l.for or '—' }}</td>
+          <td class="sqlcell" title="{{ l.query }}">{{ l.query or '—' }}</td>
+          <td class="num" style="color:var(--danger-ink);"><b>{{ l.by_pid }}</b></td>
+          <td class="sqlcell" title="{{ l.by_query }}">{{ l.by_query or '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div class="sec-note" style="margin-top:10px;">The portal does not cancel or
+      kill a session. Ending somebody else's transaction is a decision with
+      consequences this page cannot see — it belongs in a shell, with the
+      person who owns the workload.</div>
+    {% endif %}
+  </div>
+</div>

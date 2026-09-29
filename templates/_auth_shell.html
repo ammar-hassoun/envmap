@@ -1,0 +1,510 @@
+{% import "_mark.html" as mk %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title or 'Sign in' }} · {{ brand().name }}</title>
+  {#- The tab icon, and only when the install is not wearing somebody else's
+      name — the same rule the mark follows. A data URI because a strict CSP
+      allows no external host and nothing is served from /static. -#}
+  {% if not brand().branded %}
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%235b8def'/><stop offset='1' stop-color='%238b6cf5'/></linearGradient></defs><rect width='24' height='24' rx='6' fill='url(%23g)'/><path d='M12 3.4 21 7.6 12 11.8 3 7.6Z' fill='%23fff'/><path d='M12 12.4 21 16.6 12 20.8 3 16.6Z' fill='%23fff' opacity='.5'/></svg>">
+  {% endif %}
+  <script nonce="{{ csp_nonce() }}">
+  // Applied before the first paint so the page never flashes the wrong theme.
+  // An explicit choice wins; otherwise follow the operating system.
+  (function () {
+    try {
+      var saved = localStorage.getItem('portal-theme');
+      var os = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', saved || os);
+    } catch (e) { document.documentElement.setAttribute('data-theme', 'dark'); }
+  })();
+  </script>
+  <style>
+    /* The same variable names as the signed-in pages, and both themes, so the
+       sign-in page follows the operating system like everything else. It used
+       to define one dark palette and then set data-theme on the html element
+       with nothing listening for it — the toggle in the corner moved an
+       attribute and changed no colour at all. Several variables used below
+       (--well, --text2, --shadow-cast, the -ink pair) were never defined here
+       either, so those rules were falling back to nothing. */
+    :root {
+      color-scheme: dark;
+      --bg:#0a0e17; --panel:#101626; --panel2:#171f33; --well:#0c1120;
+      --line:#222c45; --line2:#2c3958;
+      --text:#e8edf6; --text2:#c3cde0; --muted:#8a97b1;
+      --accent:#5b8def; --accent2:#8b6cf5; --ok:#3ddc97; --danger:#f57171;
+      --accent-ink:#5b8def; --ok-ink:#3ddc97; --danger-ink:#f57171;
+      --on-accent:#fff;
+      /* the glow behind the card, and the cast under it */
+      --auth-glow:#16203a; --shadow-cast:#000;
+      --aura:.34; --weave:.42; --glass:rgba(23,31,51,.72);
+      --danger-wash:rgba(245,113,113,.1); --danger-edge:rgba(245,113,113,.4);
+      --danger-on-wash:#ffc9c9;
+      --mono:ui-monospace,'SF Mono',Menlo,monospace;
+    }
+    :root[data-theme="light"] {
+      color-scheme: light;
+      --bg:#f4f6fa; --panel:#ffffff; --panel2:#f2f5fa; --well:#f5f7fb;
+      --line:#e2e7f0; --line2:#c6cfdf;
+      --text:#131a26; --text2:#333f55; --muted:#5b6779;
+      --accent:#3d6ed0; --accent2:#7150e8; --ok:#35c98a; --danger:#ef5f5f;
+      /* the text versions darken; a bright fill colour is not readable copy */
+      --accent-ink:#2c5fd0; --ok-ink:#0f7a54; --danger-ink:#c62f2f;
+      --on-accent:#fff;
+      --auth-glow:#e2eaf8; --shadow-cast:rgba(15,23,42,.22);
+      --aura:.18; --weave:.30; --glass:rgba(255,255,255,.82);
+      --danger-wash:rgba(239,95,95,.09); --danger-edge:rgba(239,95,95,.38);
+      --danger-on-wash:#b3261e;
+    }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; display:flex; align-items:center;
+      justify-content:center; padding:32px; position:relative; overflow-x:hidden;
+      font:14px/1.55 -apple-system,'Inter','Segoe UI',sans-serif;
+      background:var(--bg); color:var(--text);
+      -webkit-font-smoothing:antialiased; }
+    /* Two coloured lights behind everything, drifting slowly against each
+       other. Gradients rather than an image because a strict CSP allows no
+       external host and this page is the first thing a customer ever sees of
+       the product — it should not be waiting on a download to look finished. */
+    body::before, body::after { content:""; position:fixed; z-index:0;
+      border-radius:50%; filter:blur(90px); pointer-events:none;
+      opacity:var(--aura); }
+    body::before { width:52vw; height:52vw; left:-12vw; top:-16vw;
+      background:radial-gradient(circle, var(--accent) 0%, transparent 70%);
+      animation:drift1 26s ease-in-out infinite alternate; }
+    body::after { width:46vw; height:46vw; right:-14vw; bottom:-18vw;
+      background:radial-gradient(circle, var(--accent2) 0%, transparent 70%);
+      animation:drift2 31s ease-in-out infinite alternate; }
+    @keyframes drift1 { to { transform:translate3d(7vw, 5vh, 0) scale(1.12); } }
+    @keyframes drift2 { to { transform:translate3d(-6vw, -6vh, 0) scale(1.09); } }
+    /* The mesh the product is named for, drawn once and left to breathe. */
+    .weave { position:fixed; inset:0; z-index:0; pointer-events:none;
+      opacity:var(--weave); }
+    .weave line { stroke:var(--accent); stroke-width:.13; }
+    .weave circle { fill:var(--accent2); }
+    .weave .pulse { animation:breathe 7s ease-in-out infinite; }
+    @keyframes breathe { 0%,100% { opacity:.25; } 50% { opacity:1; } }
+    @media (prefers-reduced-motion:reduce) {
+      body::before, body::after, .weave .pulse { animation:none; } }
+    .box { width:100%; max-width:{{ width or 420 }}px; }
+    /* Two columns, but only where a page has something worth putting beside
+       the form. Every other page in this shell keeps the single card, so the
+       layout is not paid for by pages that would leave it empty. */
+    .box.split { max-width:940px; display:grid; gap:52px; align-items:center;
+      grid-template-columns:1fr minmax(360px,420px); }
+    .box.split .col { min-width:0; }
+    @media (max-width:900px) {
+      .box.split { max-width:{{ width or 420 }}px; grid-template-columns:1fr;
+        gap:0; }
+      /* the stage is the part that can go: the form is the page */
+      .box.split .stage { display:none; }
+    }
+    .stage h2 { font-size:34px; line-height:1.15; margin:0 0 14px;
+      letter-spacing:-.02em; font-weight:750; }
+    .stage h2 em { font-style:normal;
+      background:linear-gradient(100deg,var(--accent),var(--accent2));
+      -webkit-background-clip:text; background-clip:text; color:transparent; }
+    .stage p { color:var(--text2); font-size:14.5px; margin:0 0 26px;
+      max-width:44ch; }
+    .points { list-style:none; margin:0; padding:0; display:grid; gap:14px; }
+    .points li { display:flex; gap:12px; align-items:flex-start;
+      font-size:13.5px; color:var(--text2); }
+    .points b { display:block; color:var(--text); font-weight:650;
+      font-size:13.5px; margin-bottom:1px; }
+    .points .ic { width:30px; height:30px; border-radius:9px; flex:none;
+      display:flex; align-items:center; justify-content:center;
+      background:var(--panel2); border:1px solid var(--line);
+      color:var(--accent-ink); }
+    .brand { display:flex; align-items:center; gap:12px; justify-content:center;
+      margin-bottom:26px; }
+    .logo { width:40px; height:40px; border-radius:11px;
+      background:linear-gradient(135deg,var(--accent),var(--accent2));
+      display:flex; align-items:center; justify-content:center;
+      font-weight:800; font-size:19px; color:var(--on-accent);
+      box-shadow:0 6px 20px -6px rgba(91,141,239,.6); }
+    .brand b { font-size:16px; } .brand small { display:block; color:var(--muted); font-size:11px; }
+    .box { position:relative; z-index:1; }
+    /* Glass, and a lit top edge: the card has to read as ON the backdrop
+       rather than as a hole cut out of it. */
+    .card { position:relative; background:var(--glass);
+      -webkit-backdrop-filter:blur(18px) saturate(1.4);
+      backdrop-filter:blur(18px) saturate(1.4);
+      border:1px solid var(--line); border-radius:18px; padding:30px;
+      box-shadow:0 30px 80px -28px var(--shadow-cast),
+                 0 1px 0 rgba(255,255,255,.05) inset; }
+    .card::before { content:""; position:absolute; inset:0 0 auto; height:1px;
+      border-radius:18px 18px 0 0;
+      background:linear-gradient(90deg, transparent,
+                 var(--accent) 30%, var(--accent2) 70%, transparent); }
+    h1 { font-size:19px; margin:0 0 6px; }
+    p.sub { color:var(--muted); font-size:13px; margin:0 0 22px; }
+    label.f { display:block; font-size:11px; text-transform:uppercase;
+      letter-spacing:1px; color:var(--muted); font-weight:700; margin:0 0 7px; }
+    input { width:100%; padding:11px 14px; border-radius:10px;
+      border:1px solid var(--line); background:var(--well); color:var(--text);
+      font-size:14px; font-family:inherit; margin-bottom:16px; }
+    input:focus { outline:none; border-color:var(--accent-ink);
+      box-shadow:0 0 0 3px rgba(91,141,239,.16); }
+    input.code { font-family:var(--mono); font-size:26px; letter-spacing:10px;
+      text-align:center; padding:14px; }
+    button { width:100%; padding:12px; border:0; border-radius:10px; cursor:pointer;
+      font-weight:650; font-size:14px; color:var(--on-accent);
+      background:linear-gradient(135deg,var(--accent),#4a7de0);
+      box-shadow:0 6px 18px -8px rgba(91,141,239,.7); }
+    button:hover { filter:brightness(1.1); }
+    .err { background:var(--danger-wash); border:1px solid var(--danger-edge);
+      color:var(--danger-on-wash); padding:11px 14px; border-radius:10px;
+      font-size:13px;
+      margin-bottom:18px; }
+    .note { color:var(--muted); font-size:12px; margin-top:16px; text-align:center; }
+    .steps { counter-reset:s; margin:0 0 20px; padding:0; list-style:none; }
+    .steps li { counter-increment:s; position:relative; padding-left:32px;
+      margin-bottom:12px; font-size:13.5px; color:var(--text2); }
+    .steps li::before { content:counter(s); position:absolute; left:0; top:0;
+      width:21px; height:21px; border-radius:50%; background:var(--panel2);
+      border:1px solid var(--line); color:var(--muted); font-size:11px;
+      font-weight:700; display:flex; align-items:center; justify-content:center; }
+    /* white plate on purpose: scanners need dark-on-light with a quiet zone */
+    .qr { background:#fff; border-radius:12px; padding:10px;
+      display:flex; justify-content:center; margin:0 auto 16px;
+      width:fit-content; box-shadow:0 6px 22px -10px var(--shadow-cast); }
+    /* displayed at its natural pixel size on purpose — any scaling would
+       land modules on fractional pixels and grey the edges */
+    .qr img { display:block; image-rendering:pixelated; }
+    /* the shell styles bare <button> as the big submit control, so the theme
+       toggle needs its own rule or it renders as a second full-width primary
+       button floating in the corner */
+    .themebtn { width:auto; background:transparent; border:1px solid var(--line);
+      color:var(--muted); border-radius:8px; padding:5px 9px; font-size:12.5px;
+      cursor:pointer; box-shadow:none; line-height:1; font-weight:500; }
+    .themebtn:hover { color:var(--text); border-color:var(--line2);
+      background:var(--panel2); filter:none; }
+    /* the divider above the SSO button, and the button itself — both were
+       written inline on the login page, where nothing else could reuse them */
+    .or { display:flex; align-items:center; gap:12px; margin:20px 0 14px; }
+    .or::before, .or::after { content:""; flex:1; height:1px;
+      background:var(--line); }
+    .or span { font-size:11.5px; color:var(--muted); }
+    /* `.sso` IS ON BOTH A <button> (passkey) AND AN <a> (Microsoft), stacked
+       one above the other on the sign-in page — so anything the class leaves
+       to the user agent shows up as the two controls disagreeing. Measured in
+       a browser before and after: the button rendered in **Arial** while the
+       anchor used the product's own stack, and it was **41px tall against
+       46px**. Two identical-looking controls, different font and different
+       height, on the first page anybody sees of a white-labelled product.
+       This shell does NOT load app.css (it has its own <style>), so unlike
+       `.ex-open` on the radar the culprit here really is the UA default —
+       which is why the fix is `font-family:inherit` and a stated
+       `line-height`, not a background. */
+    .sso { display:flex; align-items:center; justify-content:center; gap:10px;
+      width:100%; padding:11px 0; border:1px solid var(--line);
+      border-radius:10px; text-decoration:none; color:var(--text);
+      font-size:14px; font-weight:550; background:var(--panel2);
+      font-family:inherit; line-height:1.5; margin:0; box-sizing:border-box;
+      -webkit-appearance:none; appearance:none; cursor:pointer;
+      /* this shell's OWN `button` rule (above) is the big submit control: it
+         adds a shadow and a hover brightness filter. Both are answered here
+         so the passkey button and the Microsoft anchor are the same control,
+         and neither is confused with the primary Sign in button. */
+      box-shadow:none;
+      transition:border-color .12s, transform .12s; }
+    .sso:hover { border-color:var(--line2); transform:translateY(-1px);
+      filter:none; }
+    .secret { font-family:var(--mono); font-size:13px; letter-spacing:1.5px;
+      background:var(--well); border:1px solid var(--line); border-radius:9px;
+      padding:11px 14px; text-align:center; word-break:break-all;
+      color:var(--ok-ink); margin-bottom:18px; }
+  </style>
+</head>
+<body>
+{#- The mesh, fixed rather than random per load: a backdrop that reshuffles
+    every refresh is a distraction, and this one costs the server nothing. -#}
+<svg class="weave" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid slice"
+     aria-hidden="true" focusable="false">
+  <line x1="2.8" y1="7.5" x2="12.8" y2="8.0"/>
+  <line x1="2.8" y1="7.5" x2="6.3" y2="22.2"/>
+  <line x1="2.8" y1="7.5" x2="12.3" y2="17.5"/>
+  <line x1="12.8" y1="8.0" x2="23.6" y2="3.5"/>
+  <line x1="12.8" y1="8.0" x2="12.3" y2="17.5"/>
+  <line x1="23.6" y1="3.5" x2="28.5" y2="10.0"/>
+  <line x1="28.5" y1="10.0" x2="39.3" y2="4.9"/>
+  <line x1="28.5" y1="10.0" x2="25.2" y2="21.2"/>
+  <line x1="28.5" y1="10.0" x2="33.3" y2="24.6"/>
+  <line x1="39.3" y1="4.9" x2="53.4" y2="6.9"/>
+  <line x1="53.4" y1="6.9" x2="61.4" y2="6.9"/>
+  <line x1="61.4" y1="6.9" x2="69.1" y2="4.2"/>
+  <line x1="61.4" y1="6.9" x2="70.8" y2="18.0"/>
+  <line x1="69.1" y1="4.2" x2="78.2" y2="10.2"/>
+  <line x1="69.1" y1="4.2" x2="70.8" y2="18.0"/>
+  <line x1="78.2" y1="10.2" x2="86.5" y2="9.2"/>
+  <line x1="78.2" y1="10.2" x2="70.8" y2="18.0"/>
+  <line x1="78.2" y1="10.2" x2="74.8" y2="19.1"/>
+  <line x1="86.5" y1="9.2" x2="96.6" y2="3.5"/>
+  <line x1="86.5" y1="9.2" x2="74.8" y2="19.1"/>
+  <line x1="86.5" y1="9.2" x2="89.5" y2="20.9"/>
+  <line x1="86.5" y1="9.2" x2="96.3" y2="19.8"/>
+  <line x1="6.3" y1="22.2" x2="12.3" y2="17.5"/>
+  <line x1="6.3" y1="22.2" x2="4.6" y2="34.8"/>
+  <line x1="12.3" y1="17.5" x2="25.2" y2="21.2"/>
+  <line x1="25.2" y1="21.2" x2="33.3" y2="24.6"/>
+  <line x1="33.3" y1="24.6" x2="42.4" y2="25.0"/>
+  <line x1="33.3" y1="24.6" x2="33.1" y2="39.3"/>
+  <line x1="42.4" y1="25.0" x2="49.3" y2="24.0"/>
+  <line x1="42.4" y1="25.0" x2="43.3" y2="39.8"/>
+  <line x1="42.4" y1="25.0" x2="51.2" y2="32.9"/>
+  <line x1="49.3" y1="24.0" x2="58.7" y2="25.1"/>
+  <line x1="49.3" y1="24.0" x2="51.2" y2="32.9"/>
+  <line x1="58.7" y1="25.1" x2="70.8" y2="18.0"/>
+  <line x1="58.7" y1="25.1" x2="51.2" y2="32.9"/>
+  <line x1="58.7" y1="25.1" x2="61.5" y2="39.6"/>
+  <line x1="70.8" y1="18.0" x2="74.8" y2="19.1"/>
+  <line x1="74.8" y1="19.1" x2="89.5" y2="20.9"/>
+  <line x1="74.8" y1="19.1" x2="78.7" y2="33.3"/>
+  <line x1="89.5" y1="20.9" x2="96.3" y2="19.8"/>
+  <line x1="89.5" y1="20.9" x2="88.6" y2="36.3"/>
+  <line x1="89.5" y1="20.9" x2="94.0" y2="32.0"/>
+  <line x1="96.3" y1="19.8" x2="94.0" y2="32.0"/>
+  <line x1="4.6" y1="34.8" x2="12.6" y2="36.4"/>
+  <line x1="12.6" y1="36.4" x2="23.3" y2="39.1"/>
+  <line x1="12.6" y1="36.4" x2="22.1" y2="47.1"/>
+  <line x1="23.3" y1="39.1" x2="33.1" y2="39.3"/>
+  <line x1="23.3" y1="39.1" x2="22.1" y2="47.1"/>
+  <line x1="23.3" y1="39.1" x2="30.4" y2="52.3"/>
+  <line x1="33.1" y1="39.3" x2="43.3" y2="39.8"/>
+  <line x1="33.1" y1="39.3" x2="22.1" y2="47.1"/>
+  <line x1="33.1" y1="39.3" x2="30.4" y2="52.3"/>
+  <line x1="33.1" y1="39.3" x2="43.4" y2="46.2"/>
+  <line x1="43.3" y1="39.8" x2="51.2" y2="32.9"/>
+  <line x1="43.3" y1="39.8" x2="43.4" y2="46.2"/>
+  <line x1="43.3" y1="39.8" x2="50.8" y2="46.2"/>
+  <line x1="51.2" y1="32.9" x2="61.5" y2="39.6"/>
+  <line x1="51.2" y1="32.9" x2="43.4" y2="46.2"/>
+  <line x1="51.2" y1="32.9" x2="50.8" y2="46.2"/>
+  <line x1="61.5" y1="39.6" x2="70.9" y2="36.3"/>
+  <line x1="61.5" y1="39.6" x2="50.8" y2="46.2"/>
+  <line x1="61.5" y1="39.6" x2="60.6" y2="48.6"/>
+  <line x1="70.9" y1="36.3" x2="78.7" y2="33.3"/>
+  <line x1="78.7" y1="33.3" x2="88.6" y2="36.3"/>
+  <line x1="78.7" y1="33.3" x2="94.0" y2="32.0"/>
+  <line x1="78.7" y1="33.3" x2="85.1" y2="46.4"/>
+  <line x1="88.6" y1="36.3" x2="94.0" y2="32.0"/>
+  <line x1="88.6" y1="36.3" x2="85.1" y2="46.4"/>
+  <line x1="88.6" y1="36.3" x2="96.1" y2="46.1"/>
+  <line x1="94.0" y1="32.0" x2="96.1" y2="46.1"/>
+  <line x1="7.0" y1="54.1" x2="10.8" y2="52.5"/>
+  <line x1="7.0" y1="54.1" x2="2.5" y2="63.5"/>
+  <line x1="7.0" y1="54.1" x2="14.4" y2="61.4"/>
+  <line x1="10.8" y1="52.5" x2="22.1" y2="47.1"/>
+  <line x1="10.8" y1="52.5" x2="2.5" y2="63.5"/>
+  <line x1="10.8" y1="52.5" x2="14.4" y2="61.4"/>
+  <line x1="22.1" y1="47.1" x2="30.4" y2="52.3"/>
+  <line x1="30.4" y1="52.3" x2="43.4" y2="46.2"/>
+  <line x1="43.4" y1="46.2" x2="50.8" y2="46.2"/>
+  <line x1="50.8" y1="46.2" x2="60.6" y2="48.6"/>
+  <line x1="60.6" y1="48.6" x2="70.8" y2="54.0"/>
+  <line x1="70.8" y1="54.0" x2="77.3" y2="54.2"/>
+  <line x1="70.8" y1="54.0" x2="60.1" y2="65.1"/>
+  <line x1="70.8" y1="54.0" x2="68.6" y2="65.3"/>
+  <line x1="70.8" y1="54.0" x2="80.3" y2="64.3"/>
+  <line x1="77.3" y1="54.2" x2="85.1" y2="46.4"/>
+  <line x1="77.3" y1="54.2" x2="68.6" y2="65.3"/>
+  <line x1="77.3" y1="54.2" x2="80.3" y2="64.3"/>
+  <line x1="77.3" y1="54.2" x2="85.9" y2="66.1"/>
+  <line x1="85.1" y1="46.4" x2="96.1" y2="46.1"/>
+  <line x1="2.5" y1="63.5" x2="14.4" y2="61.4"/>
+  <line x1="14.4" y1="61.4" x2="19.6" y2="67.4"/>
+  <line x1="14.4" y1="61.4" x2="14.0" y2="74.5"/>
+  <line x1="19.6" y1="67.4" x2="30.6" y2="68.1"/>
+  <line x1="19.6" y1="67.4" x2="14.0" y2="74.5"/>
+  <line x1="19.6" y1="67.4" x2="22.2" y2="79.2"/>
+  <line x1="19.6" y1="67.4" x2="28.6" y2="79.5"/>
+  <line x1="30.6" y1="68.1" x2="43.6" y2="63.3"/>
+  <line x1="30.6" y1="68.1" x2="22.2" y2="79.2"/>
+  <line x1="30.6" y1="68.1" x2="28.6" y2="79.5"/>
+  <line x1="30.6" y1="68.1" x2="41.8" y2="74.9"/>
+  <line x1="43.6" y1="63.3" x2="49.7" y2="64.5"/>
+  <line x1="43.6" y1="63.3" x2="41.8" y2="74.9"/>
+  <line x1="49.7" y1="64.5" x2="60.1" y2="65.1"/>
+  <line x1="49.7" y1="64.5" x2="41.8" y2="74.9"/>
+  <line x1="49.7" y1="64.5" x2="50.9" y2="78.3"/>
+  <line x1="60.1" y1="65.1" x2="68.6" y2="65.3"/>
+  <line x1="60.1" y1="65.1" x2="60.3" y2="77.3"/>
+  <line x1="68.6" y1="65.3" x2="80.3" y2="64.3"/>
+  <line x1="68.6" y1="65.3" x2="60.3" y2="77.3"/>
+  <line x1="68.6" y1="65.3" x2="69.6" y2="80.6"/>
+  <line x1="68.6" y1="65.3" x2="74.0" y2="74.9"/>
+  <line x1="80.3" y1="64.3" x2="85.9" y2="66.1"/>
+  <line x1="80.3" y1="64.3" x2="93.7" y2="62.6"/>
+  <line x1="80.3" y1="64.3" x2="74.0" y2="74.9"/>
+  <line x1="85.9" y1="66.1" x2="93.7" y2="62.6"/>
+  <line x1="85.9" y1="66.1" x2="74.0" y2="74.9"/>
+  <line x1="85.9" y1="66.1" x2="93.8" y2="78.2"/>
+  <line x1="7.8" y1="78.7" x2="14.0" y2="74.5"/>
+  <line x1="7.8" y1="78.7" x2="22.2" y2="79.2"/>
+  <line x1="7.8" y1="78.7" x2="5.2" y2="91.3"/>
+  <line x1="7.8" y1="78.7" x2="12.7" y2="91.3"/>
+  <line x1="14.0" y1="74.5" x2="22.2" y2="79.2"/>
+  <line x1="14.0" y1="74.5" x2="28.6" y2="79.5"/>
+  <line x1="22.2" y1="79.2" x2="28.6" y2="79.5"/>
+  <line x1="22.2" y1="79.2" x2="12.7" y2="91.3"/>
+  <line x1="22.2" y1="79.2" x2="21.8" y2="93.7"/>
+  <line x1="22.2" y1="79.2" x2="30.5" y2="91.8"/>
+  <line x1="28.6" y1="79.5" x2="41.8" y2="74.9"/>
+  <line x1="28.6" y1="79.5" x2="30.5" y2="91.8"/>
+  <line x1="41.8" y1="74.9" x2="50.9" y2="78.3"/>
+  <line x1="41.8" y1="74.9" x2="42.8" y2="88.9"/>
+  <line x1="50.9" y1="78.3" x2="60.3" y2="77.3"/>
+  <line x1="50.9" y1="78.3" x2="42.8" y2="88.9"/>
+  <line x1="50.9" y1="78.3" x2="57.8" y2="90.5"/>
+  <line x1="60.3" y1="77.3" x2="69.6" y2="80.6"/>
+  <line x1="60.3" y1="77.3" x2="74.0" y2="74.9"/>
+  <line x1="60.3" y1="77.3" x2="57.8" y2="90.5"/>
+  <line x1="69.6" y1="80.6" x2="74.0" y2="74.9"/>
+  <line x1="69.6" y1="80.6" x2="57.8" y2="90.5"/>
+  <line x1="69.6" y1="80.6" x2="70.2" y2="90.7"/>
+  <line x1="69.6" y1="80.6" x2="75.1" y2="92.3"/>
+  <line x1="87.6" y1="82.5" x2="93.8" y2="78.2"/>
+  <line x1="87.6" y1="82.5" x2="87.7" y2="89.5"/>
+  <line x1="87.6" y1="82.5" x2="94.2" y2="91.5"/>
+  <line x1="93.8" y1="78.2" x2="87.7" y2="89.5"/>
+  <line x1="93.8" y1="78.2" x2="94.2" y2="91.5"/>
+  <line x1="5.2" y1="91.3" x2="12.7" y2="91.3"/>
+  <line x1="12.7" y1="91.3" x2="21.8" y2="93.7"/>
+  <line x1="21.8" y1="93.7" x2="30.5" y2="91.8"/>
+  <line x1="30.5" y1="91.8" x2="42.8" y2="88.9"/>
+  <line x1="42.8" y1="88.9" x2="50.5" y2="94.8"/>
+  <line x1="42.8" y1="88.9" x2="57.8" y2="90.5"/>
+  <line x1="50.5" y1="94.8" x2="57.8" y2="90.5"/>
+  <line x1="57.8" y1="90.5" x2="70.2" y2="90.7"/>
+  <line x1="70.2" y1="90.7" x2="75.1" y2="92.3"/>
+  <line x1="75.1" y1="92.3" x2="87.7" y2="89.5"/>
+  <line x1="87.7" y1="89.5" x2="94.2" y2="91.5"/>
+  <circle cx="2.8" cy="7.5" r="0.22"/>
+  <circle cx="12.8" cy="8.0" r="0.22"/>
+  <circle cx="23.6" cy="3.5" r="0.22"/>
+  <circle cx="28.5" cy="10.0" r="0.4" class="pulse" style="animation-delay:1.5s"/>
+  <circle cx="39.3" cy="4.9" r="0.22"/>
+  <circle cx="53.4" cy="6.9" r="0.22"/>
+  <circle cx="61.4" cy="6.9" r="0.22"/>
+  <circle cx="69.1" cy="4.2" r="0.22"/>
+  <circle cx="78.2" cy="10.2" r="0.22"/>
+  <circle cx="86.5" cy="9.2" r="0.22"/>
+  <circle cx="96.6" cy="3.5" r="0.4" class="pulse" style="animation-delay:5.0s"/>
+  <circle cx="6.3" cy="22.2" r="0.22"/>
+  <circle cx="12.3" cy="17.5" r="0.22"/>
+  <circle cx="25.2" cy="21.2" r="0.22"/>
+  <circle cx="33.3" cy="24.6" r="0.22"/>
+  <circle cx="42.4" cy="25.0" r="0.22"/>
+  <circle cx="49.3" cy="24.0" r="0.22"/>
+  <circle cx="58.7" cy="25.1" r="0.4" class="pulse" style="animation-delay:3.0s"/>
+  <circle cx="70.8" cy="18.0" r="0.22"/>
+  <circle cx="74.8" cy="19.1" r="0.22"/>
+  <circle cx="89.5" cy="20.9" r="0.22"/>
+  <circle cx="96.3" cy="19.8" r="0.22"/>
+  <circle cx="4.6" cy="34.8" r="0.22"/>
+  <circle cx="12.6" cy="36.4" r="0.22"/>
+  <circle cx="23.3" cy="39.1" r="0.4" class="pulse" style="animation-delay:1.0s"/>
+  <circle cx="33.1" cy="39.3" r="0.22"/>
+  <circle cx="43.3" cy="39.8" r="0.22"/>
+  <circle cx="51.2" cy="32.9" r="0.22"/>
+  <circle cx="61.5" cy="39.6" r="0.22"/>
+  <circle cx="70.9" cy="36.3" r="0.22"/>
+  <circle cx="78.7" cy="33.3" r="0.22"/>
+  <circle cx="88.6" cy="36.3" r="0.4" class="pulse" style="animation-delay:4.5s"/>
+  <circle cx="94.0" cy="32.0" r="0.22"/>
+  <circle cx="7.0" cy="54.1" r="0.22"/>
+  <circle cx="10.8" cy="52.5" r="0.22"/>
+  <circle cx="22.1" cy="47.1" r="0.22"/>
+  <circle cx="30.4" cy="52.3" r="0.22"/>
+  <circle cx="43.4" cy="46.2" r="0.22"/>
+  <circle cx="50.8" cy="46.2" r="0.4" class="pulse" style="animation-delay:2.5s"/>
+  <circle cx="60.6" cy="48.6" r="0.22"/>
+  <circle cx="70.8" cy="54.0" r="0.22"/>
+  <circle cx="77.3" cy="54.2" r="0.22"/>
+  <circle cx="85.1" cy="46.4" r="0.22"/>
+  <circle cx="96.1" cy="46.1" r="0.22"/>
+  <circle cx="2.5" cy="63.5" r="0.22"/>
+  <circle cx="14.4" cy="61.4" r="0.4" class="pulse" style="animation-delay:0.5s"/>
+  <circle cx="19.6" cy="67.4" r="0.22"/>
+  <circle cx="30.6" cy="68.1" r="0.22"/>
+  <circle cx="43.6" cy="63.3" r="0.22"/>
+  <circle cx="49.7" cy="64.5" r="0.22"/>
+  <circle cx="60.1" cy="65.1" r="0.22"/>
+  <circle cx="68.6" cy="65.3" r="0.22"/>
+  <circle cx="80.3" cy="64.3" r="0.4" class="pulse" style="animation-delay:4.0s"/>
+  <circle cx="85.9" cy="66.1" r="0.22"/>
+  <circle cx="93.7" cy="62.6" r="0.22"/>
+  <circle cx="7.8" cy="78.7" r="0.22"/>
+  <circle cx="14.0" cy="74.5" r="0.22"/>
+  <circle cx="22.2" cy="79.2" r="0.22"/>
+  <circle cx="28.6" cy="79.5" r="0.22"/>
+  <circle cx="41.8" cy="74.9" r="0.4" class="pulse" style="animation-delay:2.0s"/>
+  <circle cx="50.9" cy="78.3" r="0.22"/>
+  <circle cx="60.3" cy="77.3" r="0.22"/>
+  <circle cx="69.6" cy="80.6" r="0.22"/>
+  <circle cx="74.0" cy="74.9" r="0.22"/>
+  <circle cx="87.6" cy="82.5" r="0.22"/>
+  <circle cx="93.8" cy="78.2" r="0.22"/>
+  <circle cx="5.2" cy="91.3" r="0.4" class="pulse" style="animation-delay:0.0s"/>
+  <circle cx="12.7" cy="91.3" r="0.22"/>
+  <circle cx="21.8" cy="93.7" r="0.22"/>
+  <circle cx="30.5" cy="91.8" r="0.22"/>
+  <circle cx="42.8" cy="88.9" r="0.22"/>
+  <circle cx="50.5" cy="94.8" r="0.22"/>
+  <circle cx="57.8" cy="90.5" r="0.22"/>
+  <circle cx="70.2" cy="90.7" r="0.4" class="pulse" style="animation-delay:3.5s"/>
+  <circle cx="75.1" cy="92.3" r="0.22"/>
+  <circle cx="87.7" cy="89.5" r="0.22"/>
+  <circle cx="94.2" cy="91.5" r="0.22"/>
+</svg>
+  <div class="box{{ ' split' if self.stage() | trim else '' }}">
+    {% if self.stage() | trim %}<div class="stage">{% block stage %}{% endblock %}</div>{% endif %}
+    <div class="col">
+    <div class="brand">
+      {{ mk.tile(brand(), "logo", 22) }}
+      <div><b>{{ brand().name }}</b>{% if brand().org %}<small>{{ brand().org }}</small>{% endif %}</div>
+    </div>
+    <div class="card">{% block body %}{% endblock %}</div>
+    {% block after %}{% endblock %}
+    </div>
+  </div>
+<div style="position:fixed;right:16px;top:14px;">
+  <button type="button" class="themebtn" data-call="portalToggleTheme"></button>
+</div>
+<script nonce="{{ csp_nonce() }}">
+// Theme switch. Stores an explicit choice, so it stops following the OS once the
+// user has expressed a preference.
+(function () {
+  function paint() {
+    var light = document.documentElement.getAttribute('data-theme') === 'light';
+    document.querySelectorAll('.themebtn').forEach(function (b) {
+      // THE ICON IS THE DESTINATION, NOT THE CURRENT STATE.
+      //
+      // It was the other way round: a dark page showed a MOON, and clicking it
+      // went to light. A moon on a dark page reads as a badge saying "dark
+      // mode is on", so pressing it feels like confirming what you already
+      // have — and the next page you load is white. Reported exactly that way:
+      // sign-in was dark, the page after it came up light.
+      //
+      // Showing where the button TAKES you is both the convention and the only
+      // reading that agrees with the title beside it.
+      b.textContent = light ? '\u263D' : '\u263C';
+      b.title = light ? 'Switch to the dark theme' : 'Switch to the light theme';
+      b.setAttribute('aria-label', b.title);
+    });
+  }
+  window.portalToggleTheme = function () {
+    var now = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+    document.documentElement.setAttribute('data-theme', now);
+    try { localStorage.setItem('portal-theme', now); } catch (e) {}
+    paint();
+  };
+  paint();
+})();
+</script>
+  <script nonce="{{ csp_nonce() }}" src="/static/csp-actions.js?v={{ portal_version() }}" defer></script>
+</body>
+</html>

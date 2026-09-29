@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% from "_cloud_search.html" import searchbar %}
+{% from "_cloud_action.html" import actions as action_panel %}
+{% block crumbs %}<a href="/clouds">Clouds</a> <span class="sep">/</span>
+  <a href="/clouds?account={{ sel.id }}">{{ sel.name }}</a> <span class="sep">/</span>
+  <a href="/clouds/r/{{ sel.id }}/compute/{{ instance }}?region={{ region }}"
+     style="font-family:var(--mono);">{{ instance }}</a>
+  <span class="sep">/</span> <b>Console</b>{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1 class="withico">{{ glyph("server", 26) }} Console</h1>
+    <p class="sub" style="font-family:var(--mono);">{{ instance }} · {{ region }}</p>
+  </div>
+  <div style="display:flex;gap:10px;">
+    <a class="btn btn-ghost" href="/clouds/shell/{{ sel.id }}/{{ instance }}?region={{ region }}">❯ Run a command</a>
+    <a class="btn btn-ghost" href="/clouds/r/{{ sel.id }}/compute/{{ instance }}?region={{ region }}">← Instance</a>
+  </div>
+</div>
+
+{{ searchbar(search_index) }}
+
+{% if msg %}<div class="flash">✓ {{ msg }}</div>{% endif %}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+
+{% if vnc_url %}
+<div class="card">
+  <div class="card-h">Open the console
+    <span class="hint">a fresh session, valid for a short while</span></div>
+  <div class="card-b">
+    <a class="btn" href="{{ vnc_url }}" target="_blank" rel="noopener"
+       style="font-size:13.5px;">{{ glyph("server", 14) }} Open VNC console in a new tab</a>
+    <div class="sec-note" style="margin-top:12px;">
+      This opens Alibaba's own console with a session for this instance. It will
+      ask for the <b>VNC password</b> — six characters, and not the operating
+      system's password. The portal deliberately does not put it in the link:
+      a credential in a URL ends up in browser history and in logs. If nobody
+      remembers it, set a new one below.
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-h">Which way in to use</div>
+  <div class="card-b">
+    <div class="kv" style="align-items:flex-start;gap:10px;margin-bottom:10px;">
+      <b style="min-width:150px;">VNC console</b>
+      <span class="sub" style="margin:0;">A screen, as if you were at the
+        machine. The only way in when SSH is broken, the firewall is wrong or the
+        box will not finish booting.</span>
+    </div>
+    <div class="kv" style="align-items:flex-start;gap:10px;">
+      <b style="min-width:150px;">Run a command</b>
+      <span class="sub" style="margin:0;">Cloud Assistant, from inside the
+        portal, with the command and its output recorded against your name.
+        Better for anything routine, and it needs no password.</span>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{{ action_panel(sel, region, actions,
+                '/clouds/console/' ~ sel.id ~ '/' ~ instance, prefill) }}
+{% endblock %}

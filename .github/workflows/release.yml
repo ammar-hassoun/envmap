@@ -1,0 +1,305 @@
+# Build, publish and sign a release when a v-tag is pushed.
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# The tag must match the VERSION file — the job checks, and fails loudly if not,
+# because a chart whose appVersion disagrees with its image is a support ticket
+# nobody can answer.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  # Or from the Actions tab, which is the release console: give it a version and
+  # it does the bumping, committing and tagging itself.
+  #
+  # Cutting a release by hand was eight steps — two files bumped, the suite run,
+  # a commit, a tag, a push, a watched build, the image verified, the
+  # announcement — and the one that got forgotten was forgotten for three
+  # releases running, which every customer read as "up to date". Steps a person
+  # performs in order are steps a person skips.
+  #
+  # The credentials for this already live here. Nothing new is created, and in
+  # particular nothing that can push or publish goes into the portal itself: a
+  # web session that could release the product would put every customer's image
+  # one compromise away.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "version to release, e.g. 0.4.1"
+        required: true
+        type: string
+      notes:
+        description: "one line customers read on their update panel (optional)"
+        required: false
+        type: string
+
+permissions:
+  contents: write        # attach the packaged chart to the release
+  packages: write        # push to GHCR
+  id-token: write        # keyless cosign signing
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # the bump below commits and pushes, so the checkout needs to be able
+          # to; and it needs the tags to know whether this version already exists
+          fetch-depth: 0
+          persist-credentials: true
+
+      # ── the dispatch path: become a tagged release ──────────────────────────
+      - name: cut the release
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          WANT: ${{ inputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Anchored, because this string becomes a git tag, an image tag and a
+          # chart version. "v0.4.1" and "0.4.1 " are the two that get typed.
+          echo "$WANT" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$' || {
+            echo "::error title=not a version::$WANT is not a version number."\
+                 "Write 0.4.1, not v0.4.1"; exit 1; }
+          have="$(tr -d '[:space:]' < VERSION)"
+          if [ "$WANT" = "$have" ]; then
+            echo "::error title=already released::VERSION already says $WANT."\
+                 "A release is published once — pick the next one"; exit 1
+          fi
+          # Refuse to go backwards. The published set is a ladder customers climb
+          # and a lower number would be announced as newer than what they run.
+          newest="$(printf '%s\n%s\n' "$have" "$WANT" | sort -V | tail -1)"
+          [ "$newest" = "$WANT" ] || {
+            echo "::error title=not newer::$WANT is older than $have"; exit 1; }
+          if git rev-parse -q --verify "refs/tags/v$WANT" >/dev/null; then
+            echo "::error title=tag exists::v$WANT is already a tag"; exit 1
+          fi
+
+          echo "$WANT" > VERSION
+          sed -i -E "s/^version: .*/version: $WANT/" \
+                    deploy/helm/config-portal/Chart.yaml
+          sed -i -E "s/^appVersion: .*/appVersion: \"$WANT\"/" \
+                    deploy/helm/config-portal/Chart.yaml
+          grep -E '^(version|appVersion):' deploy/helm/config-portal/Chart.yaml
+
+          # The notes become the tag's message, which is what the announcement
+          # sends — so the words a customer reads are written once, here.
+          notes="${{ inputs.notes }}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add VERSION deploy/helm/config-portal/Chart.yaml
+          git commit -m "Release $WANT" -m "${notes:-Released from the Actions tab.}"
+          git tag -a "v$WANT" -m "$WANT${notes:+ - $notes}"
+          # Pushed with GITHUB_TOKEN on purpose: a push made with it does not
+          # start another workflow run, so this job stays the only one that
+          # builds this release instead of racing a second one.
+          git push origin HEAD:"${GITHUB_REF_NAME}" "refs/tags/v$WANT"
+          echo "::notice title=cut::v$WANT committed, tagged and pushed"
+
+      - name: the tag and the VERSION file must agree
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          file="$(tr -d '[:space:]' < VERSION)"
+          echo "tag=$tag file=$file"
+          [ "$tag" = "$file" ] || {
+            echo "::error::tag $GITHUB_REF_NAME does not match VERSION ($file)"
+            exit 1; }
+
+      - id: v
+        run: echo "version=$(tr -d '[:space:]' < VERSION)" >> "$GITHUB_OUTPUT"
+
+      # Whether this run should publish a release and announce it. True for a
+      # pushed tag, and true for a dispatch — which has just made one. Every step
+      # that used to test the ref for a tag asks this instead, so the two paths
+      # cannot drift into doing different amounts.
+      - id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] \
+             || case "$GITHUB_REF" in refs/tags/v*) true;; *) false;; esac; then
+            echo "tagged=true" >> "$GITHUB_OUTPUT"
+            echo "tag=v${{ steps.v.outputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tagged=false" >> "$GITHUB_OUTPUT"
+            echo "tag=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: where the image and the chart are published
+        id: img
+        run: |
+          # NOT github.repository, which is what this used to be. Renaming the
+          # repository would have moved every future release to a new package —
+          # private by default — while every installed customer went on pulling
+          # the old path. They would not have seen an error; they would simply
+          # have stopped receiving releases, and the update button would have
+          # gone on patching tags in a package that no longer got any.
+          #
+          # The published path is a promise made to installs that already exist,
+          # so it is stated here rather than derived from something a rename can
+          # change. Overridable per-repository, defaulting to the path customers
+          # are pointing at today — a variable nobody sets must not move it.
+          repo="${{ vars.IMAGE_REPO }}"
+          repo="${repo:-ammar-hassoun/devops-portal}"
+          echo "::notice title=publishing to::ghcr.io/$repo"
+          echo "repo=$(echo "$repo" | tr 'A-Z' 'a-z')" >> "$GITHUB_OUTPUT"
+
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          # linux/arm64 too: plenty of clusters are Graviton or Ampere now.
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            VERSION=${{ steps.v.outputs.version }}
+          tags: |
+            ghcr.io/${{ steps.img.outputs.repo }}:${{ steps.v.outputs.version }}
+            ghcr.io/${{ steps.img.outputs.repo }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # THE IMAGE MUST BE ABLE TO START. 0.6.0 was built, signed, published and
+      # announced, and it crashed on import: provision.py imports httpx, which
+      # was declared in requirements-DEV.txt only. Every gate below passed,
+      # because none of them imported the module the container actually runs,
+      # which is `app.main`. So load it, before anything is signed.
+      #
+      # An import rather than a boot-and-curl: it exercises the whole import
+      # graph (main pulls in every module the portal has) and it is
+      # deterministic, where a container that has to come up, bind a port and
+      # answer inside a timeout can fail a release for reasons that are not the
+      # release. tests/test_deps.py catches the same class one step earlier, at
+      # the commit that adds the import.
+      - name: the image must be able to import the app it runs
+        run: |
+          ref="ghcr.io/${{ steps.img.outputs.repo }}@${{ steps.build.outputs.digest }}"
+          docker run --rm --entrypoint sh "$ref" -c \
+            'python -c "import app.main; print(\"app.main imported\")"' || {
+              echo "::error title=this image cannot start::the container would"\
+                   "CrashLoopBackOff at every install. Usually a dependency"\
+                   "imported by the app but declared only in"\
+                   "requirements-dev.txt — see tests/test_deps.py"
+              exit 1; }
+
+      - name: the image must carry no source and report the right version
+        run: |
+          ref="ghcr.io/${{ steps.img.outputs.repo }}@${{ steps.build.outputs.digest }}"
+          got=$(docker run --rm --entrypoint sh "$ref" -c 'cat /app/VERSION')
+          left=$(docker run --rm --entrypoint sh "$ref" -c 'find /app -name "*.py" | wc -l')
+          echo "version=$got stray_py=$left"
+          [ "$got" = "${{ steps.v.outputs.version }}" ] || exit 1
+          [ "$left" -eq 0 ] || { echo "::error::source files shipped in the image"; exit 1; }
+
+      - uses: sigstore/cosign-installer@v3
+      - name: sign the image
+        run: cosign sign --yes "ghcr.io/${{ steps.img.outputs.repo }}@${{ steps.build.outputs.digest }}"
+
+      - uses: azure/setup-helm@v4
+      - name: lint, stamp and package the chart
+        run: |
+          helm lint deploy/helm/config-portal
+          helm package deploy/helm/config-portal -d dist \
+            --version "${{ steps.v.outputs.version }}" \
+            --app-version "${{ steps.v.outputs.version }}"
+          ls -l dist
+
+      - name: publish the chart as an OCI artifact
+        run: |
+          helm push "dist/config-portal-${{ steps.v.outputs.version }}.tgz" \
+            "oci://ghcr.io/${{ steps.img.outputs.repo }}-charts"
+
+      - name: publish a classic chart repository on the gh-pages branch
+        # `helm repo add` needs an index.yaml served over HTTP; the OCI artifact
+        # above has no index at all. So the packaged chart is also committed to a
+        # gh-pages branch alongside a merged index.yaml, which serves both the
+        # raw.githubusercontent URL (works while the repository is private, with
+        # basic auth) and GitHub Pages if it is ever enabled.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          V: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          BRANCH=gh-pages
+          # The index's --url must point at wherever the .tgz files are actually
+          # fetched from, so it is the raw URL: that one works for a private and
+          # a public repository alike, whereas a Pages URL only exists once Pages
+          # is turned on.
+          BASE="https://raw.githubusercontent.com/${{ github.repository }}/$BRANCH"
+          REMOTE="https://x-access-token:$GH_TOKEN@github.com/${{ github.repository }}.git"
+          tmp=$(mktemp -d)
+
+          if git ls-remote --exit-code --heads "$REMOTE" "$BRANCH" > /dev/null 2>&1; then
+            git clone --depth 1 --branch "$BRANCH" "$REMOTE" "$tmp"
+          else
+            # First release: an orphan branch, so the chart repo carries none of
+            # the source history.
+            git clone --depth 1 "$REMOTE" "$tmp"
+            git -C "$tmp" checkout --orphan "$BRANCH"
+            git -C "$tmp" rm -rqf . || true
+          fi
+
+          cp "dist/config-portal-$V.tgz" "$tmp/"
+          # Regenerated from the .tgz files present on the branch, not merged
+          # into the existing index. Every published version is kept as a file,
+          # so this produces the complete history either way — and unlike
+          # --merge it is idempotent: re-releasing the same version replaces its
+          # entry instead of appending a duplicate that `helm search` would then
+          # list twice.
+          helm repo index "$tmp" --url "$BASE"
+
+          cat > "$tmp/README.md" <<EOF
+          # Chart repository
+
+          Generated by the release workflow — do not edit this branch by hand.
+
+              helm repo add devops-portal $BASE
+              helm repo update
+              helm install portal devops-portal/config-portal --version $V
+          EOF
+
+          cd "$tmp"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -qm "config-portal $V"
+          git push -q origin "$BRANCH"
+          echo "index now lists:"
+          grep -E "^\s+version:" index.yaml | sort -u
+
+      - name: attach the chart to the GitHub release
+        if: steps.mode.outputs.tagged == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          # Named, not inferred. On a pushed tag the action reads the ref; on a
+          # dispatch the ref is the branch, and without this the release would be
+          # created against main instead of against the tag just made.
+          tag_name: ${{ steps.mode.outputs.tag }}
+          files: dist/*.tgz
+          body: |
+            Image: `ghcr.io/${{ steps.img.outputs.repo }}@${{ steps.build.outputs.digest }}`
+
+            ```
+            helm install portal oci://ghcr.io/${{ steps.img.outputs.repo }}-charts/config-portal \
+              --version ${{ steps.v.outputs.version }} \
+              --set image.digest=${{ steps.build.outputs.digest }}
+            ```
+
+      # Publishing a release and telling anybody about it were two steps, and
+      # only the first was automatic — so 0.3.4, 0.3.5 and 0.3.6 shipped in
+      # silence and every managed customer read "up to date" while three
+      # releases behind. Their portal was right; its input was stale. This is
+      # that second step, made unforgettable.
+      #
+      # Last, and deliberately: it runs only once the image and the chart are
+      # actually published, so an announcement can never name a release that
+      # does not exist.

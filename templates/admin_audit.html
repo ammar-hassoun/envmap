@@ -1,0 +1,227 @@
+{% extends "base.html" %}
+{% from "_set_head.html" import head %}
+{% block crumbs %}<b>Administration</b> <span class="sep">/</span> <b>Audit log</b>{% endblock %}
+{% block content %}
+{{ head("Audit log",
+        "Every write, every cluster-changing command, every sign-in and every refusal — who did it, to what, and from where. The log is hash-chained: editing, deleting or reordering an entry breaks the chain and is caught below.",
+        msg, err) }}
+
+{#- The query string every tile, page link and the export share. `group` is set
+    per tile; `page` is reset by anything that changes the filter. -#}
+{% set scope = "q=" ~ (q|urlencode) ~ "&user=" ~ (user|urlencode)
+   ~ "&since=" ~ (since|urlencode) ~ "&until=" ~ (until|urlencode)
+   ~ "&size=" ~ size %}
+{% set common = scope ~ "&action=" ~ (action|urlencode)
+   ~ "&group=" ~ (group|urlencode) %}
+
+<style>
+  /* the chain-integrity strip: one honest line about whether the log can be trusted */
+  .aud-chain { display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+    border:1px solid var(--line); border-radius:12px; padding:9px 13px;
+    margin-bottom:14px; font-size:12.5px; }
+  /* a SUBTLE green tint, parallel to --danger-wash. --ok-on-wash is a SOLID
+     foreground colour (bright mint in dark, dark green in light), so the page's
+     normal text was unreadable sitting on top of it. */
+  .aud-chain.ok  { border-color:var(--ok-line);
+    background:var(--ok-wash, color-mix(in srgb, var(--ok) 13%, transparent)); }
+  .aud-chain.bad { border-color:var(--danger-line); background:var(--danger-wash); }
+  .aud-chain-note { color:var(--muted); font-size:11.5px; }
+  .aud-chain .ic { display:inline-flex; }
+  .aud-chain.ok  .ic { color:var(--ok); }
+  .aud-chain.bad .ic { color:var(--danger); }
+  .aud-chain b { color:var(--text); }
+  .aud-chain .sp { flex:1; }
+  /* per-row outcome tone: a dot + a tinted action pill, no new colours invented */
+  .aud-dot { display:inline-block; width:7px; height:7px; border-radius:50%;
+    margin-right:7px; vertical-align:middle; background:var(--muted); }
+  .aud-dot.danger { background:var(--danger); }
+  .aud-dot.warn   { background:var(--warn); }
+  .aud-dot.ok     { background:var(--ok); }
+  tr.aud-row { cursor:pointer; }
+  tr.aud-row:hover { background:var(--overlay); }
+  tr.aud-row.danger td:first-child { box-shadow:inset 3px 0 0 var(--danger); }
+  tr.aud-row.warn   td:first-child { box-shadow:inset 3px 0 0 var(--warn); }
+  .aud-when { font-family:var(--mono); font-size:11.5px; white-space:nowrap; }
+  .aud-ip   { font-family:var(--mono); font-size:11.5px; color:var(--muted); }
+  .aud-pg { display:flex; align-items:center; gap:12px; justify-content:flex-end;
+    padding:10px 4px 2px; font-size:12.5px; color:var(--muted); }
+  dialog.aud-dlg { width:min(560px,94vw); border:1px solid var(--line2);
+    border-radius:14px; background:var(--panel); color:var(--text); padding:0; }
+  dialog.aud-dlg::backdrop { background:var(--overlay-soft); }
+  .aud-dl { display:grid; grid-template-columns:auto 1fr; gap:6px 16px;
+    padding:16px 18px; font-size:13px; }
+  .aud-dl dt { color:var(--muted); }
+  .aud-dl dd { margin:0; word-break:break-word; font-family:var(--mono); font-size:12px; }
+</style>
+
+{# ── chain integrity ─────────────────────────────────────────── #}
+<div class="aud-chain {{ 'ok' if verify.ok else 'bad' }}" id="audChain"
+     data-checked="{{ verify.checked }}" data-total="{{ verify.total }}"
+     data-break="{{ verify.break_id or '' }}" data-headok="{{ 1 if verify.head_ok else 0 }}">
+  <span class="ic">{{ glyph('shield-check' if verify.ok else 'triangle-alert', 16) }}</span>
+  <span id="audChainMsg">
+    {% if verify.ok %}
+      <b>Chain verified.</b> The {{ verify.checked }} most recent entries are
+      cryptographically intact and the head anchor matches.
+    {% elif not verify.head_ok %}
+      <b>Chain anchor mismatch.</b> The stored head does not match the log — the
+      most recent entries may have been removed. Investigate before trusting counts.
+    {% else %}
+      <b>Chain broken at entry #{{ verify.break_id }}.</b> That row or one before
+      it was altered or removed. Everything after it is suspect.
+    {% endif %}
+  </span>
+  <span class="sp"></span>
+  <span class="aud-chain-note">re-checks the entire log from the first entry</span>
+  <button type="button" class="btn btn-ghost tbtn" id="audVerify"
+          title="The badge above only re-hashes the most recent window. This walks EVERY entry from the very first one and re-computes the hash chain — proving nothing anywhere in the log was edited, deleted, or reordered. Read-only; it changes nothing.">Verify full chain</button>
+</div>
+
+{# ── tiles: the navigation. each number equals the rows its link lists ── #}
+<div class="ex-tiles">
+  {% set rail = {'accent':'act','danger':'bad','warn':'warn','ok':'ok','info':''} %}
+  {% for t in tiles %}
+  <a class="ex-tile {{ rail[t.tone] }} {{ 'quiet' if not t.count }} {{ 'on' if t.on }}"
+     href="/admin/audit?group={{ t.key|urlencode }}&{{ scope }}">
+    <span class="ico">{{ glyph(t.glyph, 17) }}</span>
+    <span><span class="big">{{ '{:,}'.format(t.count) }}</span>
+      <span class="cap">{{ t.label }}</span>
+      <span class="sub">{% if t.key %}click to filter{% else %}in view{% endif %}</span></span>
+  </a>
+  {% endfor %}
+</div>
+
+{# ── filter bar ──────────────────────────────────────────────── #}
+<form method="get" action="/admin/audit" class="placebar" style="margin-bottom:12px;">
+  <input type="hidden" name="group" value="{{ group }}">
+  <span class="ic">{{ glyph('search', 15) }}</span>
+  <input type="search" name="q" value="{{ q }}" style="flex:1;min-width:180px;"
+         placeholder="person, action, target or address…">
+  <select name="action" data-submit title="action">
+    <option value="">every action</option>
+    {% for a in action_kinds %}
+    <option value="{{ a }}" {% if a == action %}selected{% endif %}>{{ a }}</option>
+    {% endfor %}
+  </select>
+  <select name="user" data-submit title="who">
+    <option value="">everyone</option>
+    {% for u in users %}
+    <option value="{{ u }}" {% if u == user %}selected{% endif %}>{{ u }}</option>
+    {% endfor %}
+  </select>
+  <input type="date" name="since" value="{{ since }}" title="from date"
+         data-submit>
+  <input type="date" name="until" value="{{ until }}" title="to date"
+         data-submit>
+  <select name="size" data-submit title="per page">
+    {% for n in [50, 100, 250, 500, 1000] %}
+    <option value="{{ n }}" {% if n == size %}selected{% endif %}>{{ n }} / page</option>
+    {% endfor %}
+  </select>
+  <button class="btn btn-ghost tbtn" type="submit">Apply</button>
+  {% if q or action or user or group or since or until %}
+  <a class="btn btn-ghost tbtn" href="/admin/audit">Reset</a>
+  {% endif %}
+  <a class="btn btn-ghost tbtn" href="/admin/audit/export?{{ common }}&limit=50000">Export CSV</a>
+</form>
+
+{# ── the table ───────────────────────────────────────────────── #}
+<div class="card">
+  <div class="card-h">Entries
+    <span class="hint">{{ '{:,}'.format(total) }} match{{ '' if total == 1 else 'es' }}{% if pages > 1 %} · page {{ page }} of {{ pages }}{% endif %}</span>
+  </div>
+  <div class="card-b" style="padding:0 0 4px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr>
+        <th style="width:150px;">When</th><th style="min-width:160px;">Who</th>
+        <th style="min-width:180px;">Action</th><th style="min-width:150px;">Target</th>
+        <th>Detail</th><th style="width:118px;">From</th>
+      </tr></thead>
+      <tbody>
+      {% for r in rows %}
+      <tr class="aud-row {{ r.sev }}" tabindex="0"
+          data-at="{{ r.at }}" data-user="{{ r.user or '—' }}"
+          data-action="{{ r.action }}" data-target="{{ r.target or '' }}"
+          data-detail="{{ r.detail or '' }}" data-ip="{{ r.ip or '' }}">
+        <td class="aud-when">{{ r.at }}</td>
+        <td>{{ r.user or '—' }}</td>
+        <td><span class="aud-dot {{ r.sev }}"></span><span class="badge">{{ r.action }}</span></td>
+        <td style="font-family:var(--mono);font-size:11.5px;">{{ r.target or '' }}</td>
+        <td class="hint" style="white-space:normal;">{{ r.detail or '' }}</td>
+        <td class="aud-ip">{{ r.ip or '' }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% if not rows %}
+    <div class="sec-note" style="padding:14px 16px;">Nothing matches this filter.</div>
+    {% endif %}
+  </div>
+  {% if pages > 1 %}
+  <div class="aud-pg">
+    {% if page > 1 %}
+    <a class="btn btn-ghost tbtn" href="/admin/audit?{{ common }}&page={{ page - 1 }}">← Newer</a>
+    {% endif %}
+    <span>page {{ page }} of {{ pages }}</span>
+    {% if page < pages %}
+    <a class="btn btn-ghost tbtn" href="/admin/audit?{{ common }}&page={{ page + 1 }}">Older →</a>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+
+<dialog class="aud-dlg" id="audDlg">
+  <div class="psh-bar">
+    <b>Audit entry</b><span style="flex:1"></span>
+    <button type="button" class="psh-x" id="audDlgClose">close</button>
+  </div>
+  <dl class="aud-dl">
+    <dt>When</dt><dd id="adWhen"></dd>
+    <dt>Who</dt><dd id="adWho"></dd>
+    <dt>Action</dt><dd id="adAction"></dd>
+    <dt>Target</dt><dd id="adTarget"></dd>
+    <dt>Detail</dt><dd id="adDetail" style="white-space:pre-wrap;"></dd>
+    <dt>From</dt><dd id="adIp"></dd>
+  </dl>
+</dialog>
+
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  // Full-chain re-verification on demand — the badge shows a bounded check by
+  // default; this walks every row from genesis.
+  const btn = document.getElementById('audVerify');
+  const chain = document.getElementById('audChain');
+  const msg = document.getElementById('audChainMsg');
+  if (btn) btn.addEventListener('click', () => {
+    btn.disabled = true; const was = btn.textContent; btn.textContent = 'verifying…';
+    fetch('/admin/audit/verify?full=1').then(r => r.json()).then(v => {
+      chain.classList.toggle('ok', v.ok); chain.classList.toggle('bad', !v.ok);
+      msg.innerHTML = v.ok
+        ? '<b>Full chain verified.</b> All ' + v.total.toLocaleString()
+          + ' entries are cryptographically intact.'
+        : (!v.head_ok
+            ? '<b>Chain anchor mismatch.</b> The most recent entries may have been removed.'
+            : '<b>Chain broken at entry #' + v.break_id + '.</b> Everything after it is suspect.');
+    }).catch(() => { msg.innerHTML = '<b>Could not verify.</b>'; })
+      .finally(() => { btn.disabled = false; btn.textContent = was; });
+  });
+
+  // Row drill-down: the detail is capped at 400 chars but can still wrap badly
+  // in the table; this shows it in full and readable.
+  const dlg = document.getElementById('audDlg');
+  const set = (id, v) => { document.getElementById(id).textContent = v || '—'; };
+  document.querySelectorAll('tr.aud-row').forEach(tr => {
+    const open = () => {
+      set('adWhen', tr.dataset.at); set('adWho', tr.dataset.user);
+      set('adAction', tr.dataset.action); set('adTarget', tr.dataset.target);
+      set('adDetail', tr.dataset.detail); set('adIp', tr.dataset.ip);
+      if (dlg.showModal) dlg.showModal();
+    };
+    tr.addEventListener('click', open);
+    tr.addEventListener('keydown', e => { if (e.key === 'Enter') open(); });
+  });
+  document.getElementById('audDlgClose').addEventListener('click', () => dlg.close());
+  dlg.addEventListener('click', e => { if (e.target === dlg) dlg.close(); });
+})();
+</script>
+{% endblock %}

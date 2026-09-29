@@ -1,0 +1,645 @@
+{% extends "base.html" %}
+{% import "_sonar.html" as sq %}
+{% from "_back.html" import back %}
+{% from "_findings_table.html" import findings_table %}
+{% import "_bits.html" as bits %}
+{% block crumbs %}
+{% if level == 'hub' %}<b>Security</b>
+{% else %}<a href="/security">Security</a> <span class="sep">/</span>
+  {% if level == 'provider' %}<b>{{ providers[platform].label }}</b>
+  {% else %}<a href="/security?platform={{ platform }}">{{ providers[platform].label }}</a>
+    <span class="sep">/</span>
+    {% if level == 'detail' %}<b>{{ sel.name }}</b>
+    {% else %}<a href="/security?platform={{ platform }}&conn={{ sel.id }}">{{ sel.name }}</a>
+      <span class="sep">/</span>
+      <b>{{ prod.product.name if prod and prod.product else 'Product' }}</b>{% endif %}
+  {% endif %}
+{% endif %}
+{% endblock %}
+{% block content %}
+
+{% if not conns %}
+<div class="empty">
+  <div class="big">{{ glyph("shield", 40) }}</div>
+  <h2>No security platform connected</h2>
+  <p>Connect DefectDojo, Dependency-Track or SonarQube and every product,
+     scan and open finding will be listed here.</p>
+  <a class="btn" href="/settings/security">Connect a platform</a>
+</div>
+{% else %}
+
+{% macro sevchips(t) %}
+{% for s in severities %}{% if t.get(s) %}
+<span class="sv sv-{{ s }}">{{ t[s] }}<i>{{ s[:4] }}</i></span>
+{% endif %}{% endfor %}
+{% endmacro %}
+
+{# product-type strip, shared by Products and Findings; `base` already carries
+   the tab and any severity, so selecting a type never changes the other two #}
+{% macro grouptabs(groups, base, cur) %}
+{% if groups %}
+<div class="viewtabs">
+  <a href="{{ base }}" class="vtab {% if not cur %}on{% endif %}">All types</a>
+  {% for g in groups %}
+  <a href="{{ base }}&group={{ g|urlencode }}"
+     class="vtab {% if cur == g %}on{% endif %}">{{ g }}</a>
+  {% endfor %}
+</div>
+{% endif %}
+{% endmacro %}
+
+{% macro tile(cls, n, label, href) %}
+{%- if href %}<a class="sevtile {{ cls }}" href="{{ href }}">
+{%- else %}<div class="sevtile {{ cls }} static">{% endif %}
+  <div class="n">{{ n }}</div><div class="l">{{ label }}</div>
+{%- if href %}</a>{% else %}</div>{% endif %}
+{%- endmacro %}
+
+{# Severity tiles. `base` may already carry a query string or none at all, so
+   the separator is derived rather than assumed — appending '&sev=' to a bare
+   '/security' produced '/security&sev=critical', which is a 404, not a filter.
+   An empty `base` renders the tiles as plain figures: on the hub there can be
+   several platforms and no single findings list to send the click to. #}
+{% macro sevtiles(t, base, cur, label='all open') %}
+{% set sep = '&' if '?' in base else '?' %}
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(132px,1fr));margin-bottom:18px;">
+  {{ tile('t-all' ~ (' on' if not cur else ''), t.values()|sum, label,
+          base if base else '') }}
+  {% for s in severities %}
+  {{ tile('t-' ~ s ~ (' on' if cur == s else ''), t[s], s,
+          (base ~ sep ~ 'sev=' ~ s if cur != s else base) if base else '') }}
+  {% endfor %}
+</div>
+{% endmacro %}
+
+{# the house Overview tile (shared with Pipelines/Clusters/Workflows). A link
+   when there is a destination, a figure otherwise (several platforms have no
+   single findings list to open). #}
+{% macro extile(tone, n, cap, sub, icon, href='') %}
+{%- if href %}<a class="ex-tile {{ tone }}" href="{{ href }}">
+{%- else %}<div class="ex-tile {{ tone }} static">{% endif %}
+  <span class="ico">{{ glyph(icon, 17) }}</span>
+  <span><span class="big">{{ n }}</span><span class="cap">{{ cap }}</span><span class="sub">{{ sub }}</span></span>
+{%- if href %}</a>{%- else %}</div>{% endif %}
+{% endmacro %}
+
+{# ═══════════ level 1 — one box per connected platform ═══════════ #}
+{% if level == 'hub' %}
+<div class="page-head">
+  <div>
+    <h1>Security</h1>
+    <p class="sub">{{ findings_n }} open finding{{ 's' if findings_n != 1 }} across
+      {{ products }} product{{ 's' if products != 1 }} ·
+      {{ present|length }} platform{{ 's' if present|length != 1 }} · read-only</p>
+  </div>
+  <a class="btn btn-ghost" href="/security?refresh=1">↻ Refresh</a>
+</div>
+{% if msg %}<div class="flash">✓ {{ msg }}</div>{% endif %}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+
+{# Overview tiles, the shared .ex-tile component. With one connection a severity
+   click drills into its findings; with several platforms there is no combined
+   findings list, so the tiles are figures and you pick a platform below. #}
+<style>.ex-tile.static, .ex-tile.static:hover { transform:none; border-color:var(--line);
+  box-shadow:none; cursor:default; }</style>
+{% set only = conns[0] if conns|length == 1 else none %}
+{% set fbase = ('/security?platform=' ~ only.type ~ '&conn=' ~ only.id ~ '&tab=findings') if only else '' %}
+<div class="ex-tiles">
+  {{ extile('' if findings_n else 'quiet', findings_n,
+            'open finding' ~ ('' if findings_n == 1 else 's'),
+            present|length ~ ' platform' ~ ('' if present|length == 1 else 's'), 'shield', fbase) }}
+  {{ extile('bad' if totals.get('critical') else 'quiet', totals.get('critical', 0),
+            'critical', 'highest severity', 'triangle-alert',
+            (fbase ~ '&sev=critical') if fbase else '') }}
+  {{ extile('warn' if totals.get('high') else 'quiet', totals.get('high', 0),
+            'high', 'fix soon', 'triangle-alert', (fbase ~ '&sev=high') if fbase else '') }}
+  {{ extile('', products, 'product' ~ ('' if products == 1 else 's'), 'scanned', 'boxes', '') }}
+</div>
+
+<div class="hub-grid" style="grid-template-columns:repeat(auto-fit,minmax(340px,1fr));">
+  {% for c in cards %}
+  <a class="hub-card" href="{{ c.href }}" style="align-items:flex-start;">
+    <div class="flag">{{ plogo(c.provider, 26) }}</div>
+    <div style="min-width:0;flex:1;">
+      <div class="htitle">{{ c.provider.label }}</div>
+      <div class="hmeta">{{ c.conns|length }} connection{{ 's' if c.conns|length != 1 }} ·
+        {{ c.products }} product{{ 's' if c.products != 1 }} ·
+        {{ c.conns|map(attribute='name')|join(', ')|truncate(40) }}</div>
+      <div style="margin-top:10px;">{{ sevchips(c.totals) }}
+        {% if not c.totals.values()|sum %}<span class="sv sv-clean">no open findings</span>{% endif %}
+      </div>
+      {% if c.broken %}
+      <div class="hmeta" style="color:var(--warn-ink);margin-top:2px;">
+        ⚠ {{ c.broken }} connection{{ 's' if c.broken != 1 }} unreachable</div>
+      {% endif %}
+    </div>
+    <div class="arrow">→</div>
+  </a>
+  {% endfor %}
+</div>
+
+{% set idle = providers.keys()|reject('in', present)|list %}
+{% if idle %}
+<p class="sub" style="margin-top:22px;">
+  Not connected yet:
+  {% for k in idle %}{{ providers[k].label }}{{ ', ' if not loop.last }}{% endfor %} —
+  add one in <a href="/settings/security">Settings → Security scanning</a>.</p>
+{% endif %}
+
+{# ═══════════ level 2 — one box per connection ═══════════ #}
+{% elif level == 'provider' %}
+<div class="page-head">
+  <div>
+    {{ back('/security', 'All platforms') }}
+    <h1 class="withico">{{ logo(platform, providers[platform].label, 26) }} {{ providers[platform].label }}</h1>
+    <p class="sub">{{ cards|length }} connection{{ 's' if cards|length != 1 }} ·
+      {{ findings_n }} open finding{{ 's' if findings_n != 1 }} · read-only</p>
+  </div>
+  <a class="btn btn-ghost" href="/security?platform={{ platform }}&refresh=1">↻ Refresh</a>
+</div>
+{% if msg %}<div class="flash">✓ {{ msg }}</div>{% endif %}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+
+<div class="hub-grid" style="grid-template-columns:repeat(auto-fit,minmax(340px,1fr));">
+  {% for c in cards %}
+  <a class="hub-card" href="{{ c.href }}" style="align-items:flex-start;">
+    <div class="flag">{{ plogo(c.provider, 26) }}</div>
+    <div style="min-width:0;flex:1;">
+      <div class="htitle">{{ c.conn.name }}</div>
+      <div class="hmeta">{{ c.scope }} · {{ c.products }} product{{ 's' if c.products != 1 }}
+        {%- if c.conn.scope %} · scope {{ c.conn.scope }}{% endif %}</div>
+      <div class="hmeta" style="font-family:var(--mono);font-size:11px;">{{ c.conn.base_url }}</div>
+      {% if c.error %}
+      <div class="hmeta" style="color:var(--danger-ink);margin-top:8px;">⚠ {{ c.error }}</div>
+      {% else %}
+      <div style="margin-top:10px;">{{ sevchips(c.totals) }}
+        {% if c.conn.skip_tls %}<span class="badge" style="color:var(--warn-ink);">⚠ TLS unverified</span>{% endif %}
+      </div>
+      {% endif %}
+    </div>
+    <div class="arrow">→</div>
+  </a>
+  {% endfor %}
+</div>
+
+{# ═══════════ level 4 — one product, exact severities ═══════════ #}
+{% elif level == 'product' %}
+{% set home = '/security?platform=' ~ platform ~ '&conn=' ~ sel.id %}
+{% set pbase = home ~ '&product=' ~ product %}
+<div class="page-head">
+  <div>
+    {{ back(home, sel.name) }}
+    <h1>{{ prod.product.name if prod and prod.product else 'Product' }}</h1>
+    <p class="sub">
+      {% if prod and prod.product %}
+        {% if prod.product.group %}{{ prod.product.group }} · {% endif %}
+        {{ prod.total }} open finding{{ 's' if prod.total != 1 }} ·
+        exact severity counts
+        {%- if prod.product.criticality %} · {{ prod.product.criticality }} criticality{% endif %}
+      {% else %}{{ sel.name }}{% endif %}</p>
+  </div>
+  <div style="display:flex;gap:9px;">
+    {% if prod and prod.product and prod.product.url %}
+    <a class="btn btn-ghost" href="{{ prod.product.url }}" target="_blank" rel="noopener">
+      Open in {{ block.provider.label }} ↗</a>{% endif %}
+    <a class="btn btn-ghost" href="{{ pbase }}&refresh=1">↻ Refresh</a>
+  </div>
+</div>
+
+{% if block.error %}
+<div class="flash err">⚠ {{ block.error }}</div>
+{% else %}
+{{ sevtiles(prod.sev, pbase, sev) }}
+
+{% if platform == 'sonarqube' and sonar %}
+{{ sq.detail(sonar) }}
+{% else %}
+
+{% if prod.product %}
+<div class="card"><div class="card-b">
+  <div class="kv">
+    {% if prod.product.engagements %}<span class="badge"><b>{{ prod.product.engagements }}</b> engagements</span>{% endif %}
+    {% if prod.product.last %}<span class="badge">last scan <b>{{ prod.product.last }}</b></span>{% endif %}
+    {% if prod.product.grade %}<span class="badge">grade <b>{{ prod.product.grade }}</b></span>{% endif %}
+    {% for t in prod.product.tags[:6] %}<span class="badge">{{ t }}</span>{% endfor %}
+  </div>
+  <div class="sevbar" style="margin-top:12px;"
+       title="{% for s in severities %}{{ prod.sev[s] }} {{ s }}  {% endfor %}">
+    {% for s in severities %}{% if prod.sev[s] and prod.total %}
+    <span class="b-{{ s }}" style="width:{{ (prod.sev[s] / prod.total * 100)|round(2) }}%"></span>
+    {% endif %}{% endfor %}
+  </div>
+</div></div>
+{% endif %}
+
+<div class="card">
+  <div class="card-h">Findings
+    {% if sev %}<span class="sv sv-{{ sev }}">{{ sev }}</span>
+    <a class="badge" href="{{ pbase }}">clear filter ✕</a>{% endif %}
+    <span style="flex:1"></span>
+    <span class="hint">{{ prod.findings|length }} of {{ prod.findings_total }},
+      worst severity first</span></div>
+  {% if prod.findings %}
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    {{ findings_table(prod.findings, block.provider,
+                      detail=(home ~ '&tab=findings') if platform == 'defectdojo' else '') }}
+  </div>
+  {% else %}
+  <div class="card-b" style="color:var(--muted);font-size:13px;">No open findings.</div>
+  {% endif %}
+</div>
+{% endif %}{# platform == 'sonarqube' #}
+{% endif %}
+
+{# ═══════════ level 3 — connection detail, three tabs ═══════════ #}
+{% else %}
+{% set home = '/security?platform=' ~ platform ~ '&conn=' ~ sel.id %}
+{% set tbase = home ~ '&tab=' ~ (tab or 'products') %}
+{% set keep = ('&group=' ~ group|urlencode if group else '') ~ ('&q=' ~ q|urlencode if q else '') %}
+<div class="page-head">
+  <div>
+    {{ back('/security?platform=' ~ platform, providers[platform].label) }}
+    <h1 class="withico">{{ logo(platform, sel.name, 26) }} {{ sel.name }}</h1>
+    <p class="sub">{{ findings_n }} open finding{{ 's' if findings_n != 1 }} across
+      {{ products }} product{{ 's' if products != 1 }} · {{ block.scope }} · read-only</p>
+  </div>
+  <a class="btn btn-ghost" href="{{ tbase }}{{ keep }}{{ '&sev=' ~ sev if sev }}&refresh=1">↻ Refresh</a>
+</div>
+{% if msg %}<div class="flash">✓ {{ msg }}</div>{% endif %}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+
+{# Severity belongs to findings. On any other tab the tiles jump to Findings
+   rather than filtering a list that has no severity in it. #}
+{% set gkeep = '&group=' ~ group|urlencode if group else '' %}
+{% set sevbase = (tbase ~ keep ~ ('&status=' ~ fstatus if fstatus)) if tab == 'findings' else (home ~ '&tab=findings' ~ gkeep) %}
+{# the tiles say what they COUNT: "all open" normally, "all closed" on the
+   Closed view, and so on — the number must never wear the wrong label #}
+{% set all_label = ('all statuses' if fstatus == 'all'
+                    else 'all ' ~ statuses_meta[fstatus][0]|lower if fstatus
+                    else 'all open') if tab == 'findings' else 'all open' %}
+{{ sevtiles(totals, sevbase, sev if tab == 'findings' else '', label=all_label) }}
+
+<div class="viewtabs">
+  <a href="{{ home }}&tab=products{{ gkeep }}"
+     class="vtab {% if tab != 'findings' and tab != 'scans' %}on{% endif %}">Products</a>
+  <a href="{{ home }}&tab=findings{{ gkeep }}{{ '&sev=' ~ sev if sev }}"
+     class="vtab {% if tab == 'findings' %}on{% endif %}">Findings</a>
+  <a href="{{ home }}&tab=scans" class="vtab {% if tab == 'scans' %}on{% endif %}">Recent scans</a>
+</div>
+
+{% if block.error %}
+<div class="flash err">⚠ {{ block.error }}</div>
+
+{# ── Products ── #}
+{% elif tab not in ('findings', 'scans') %}
+{{ grouptabs(block.groups, tbase, group) }}
+
+{# the landing view's chart row — the house macros. "How findings stand" is the
+   whole LIFECYCLE (open vs closed, with the closed reasons ranked beside it),
+   which the severity tiles above deliberately do not show; "most affected"
+   ranks the products already fetched for the table below. #}
+{% if block.statuses %}
+{% set st = block.statuses %}
+{% set n_open = st.get('') or 0 %}
+{% set n_closed = st.get('closed') or 0 %}
+{% set fb = home ~ '&tab=findings' %}
+<div class="apanels">
+  {{ bits.donut_panel('How findings stand',
+       [{'label':'open','value':n_open,'color':'var(--danger)','href':fb},
+        {'label':'closed','value':n_closed,'color':'var(--ok)','href':fb ~ '&status=closed'}],
+       centre=("{:,}".format((st.get('all') if st.get('all') is not none else n_open + n_closed))),
+       sub='findings ever', icon='shield',
+       hint='duplicates excluded') }}
+  {{ bits.bars_panel('Closed, and why',
+       [{'label':'mitigated','n':st.get('mitigated') or 0,'href':fb ~ '&status=mitigated'},
+        {'label':'risk accepted','n':st.get('accepted') or 0,'href':fb ~ '&status=accepted'},
+        {'label':'false positives','n':st.get('false') or 0,'href':fb ~ '&status=false'},
+        {'label':'out of scope','n':st.get('out') or 0,'href':fb ~ '&status=out'}] | sort(attribute='n', reverse=true),
+       hint='every resolution is a link', icon='circle-check',
+       empty='Nothing closed yet.') }}
+  {% set prodrows = [] %}
+  {% for p in (block.products or []) | sort(attribute='total', reverse=true) %}
+    {% if loop.index <= 8 and p.total %}{{ prodrows.append(
+        {'label': p.name, 'n': p.total,
+         'href': home ~ '&product=' ~ p.id, 'note': p.group}) or '' }}{% endif %}
+  {% endfor %}
+  {{ bits.bars_panel('Most affected products', prodrows,
+       hint='open findings, most first', icon='boxes',
+       empty='No products reported.') }}
+</div>
+{% endif %}
+
+<form method="get" action="/security" class="pipefilters">
+  <input type="hidden" name="platform" value="{{ platform }}">
+  <input type="hidden" name="conn" value="{{ sel.id }}">
+  <input type="hidden" name="tab" value="products">
+  <input type="hidden" name="group" value="{{ group }}">
+  <input type="hidden" name="sev" value="{{ sev }}">
+  <input type="search" name="q" value="{{ q }}" placeholder="filter products by name…">
+  <button type="submit" class="btn-ghost" style="padding:8px 16px;">Apply</button>
+</form>
+
+<div class="card">
+  <div class="card-h" style="flex-wrap:wrap;">
+    {{ plogo(block.provider, 18) }}
+    <b style="font-size:14.5px;">Products</b>
+    <span class="badge">{{ block.scope }}</span>
+    <span style="flex:1"></span>
+    <span class="hint">{{ block.products|length }} of {{ block.total_products }} shown</span>
+  </div>
+  {% if block.products and platform == 'sonarqube' %}
+  {# a project with no vulnerabilities and a failing gate is not healthy, and
+     the severity table above cannot say so — so Sonar gets its own #}
+  {{ sq.projects(block.products, home) }}
+  {% elif block.products %}
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr>
+        <th>Product</th><th style="width:170px;">Type</th>
+        <th style="width:120px;">Open findings</th>
+        <th style="width:230px;">Severity</th>
+        <th style="width:112px;">Last scan</th>
+        <th style="width:64px;"></th></tr></thead>
+      <tbody>
+      {% for p in block.products %}
+      <tr>
+        <td class="jname">
+          <a href="{{ home }}&product={{ p.id }}">{{ p.name }}</a>
+          {% if p.criticality %}<span class="jbranch">{{ p.criticality }}</span>{% endif %}
+          {% if p.engagements %}<span class="jbranch">{{ p.engagements }} engagement{{ 's' if p.engagements != 1 }}</span>{% endif %}
+          {% for t in p.tags[:2] %}<span class="jbranch">{{ t }}</span>{% endfor %}
+        </td>
+        <td>{{ p.group or '—' }}</td>
+        <td><b style="font-size:14px;">{{ p.total }}</b></td>
+        <td>
+          {% if p.sev_known and p.total %}
+          <div class="sevbar" title="{% for s in severities %}{{ p.sev[s] }} {{ s }}  {% endfor %}">
+            {% for s in severities %}{% if p.sev[s] %}
+            <span class="b-{{ s }}" style="width:{{ (p.sev[s] / p.total * 100)|round(2) }}%"></span>
+            {% endif %}{% endfor %}
+          </div>
+          <div style="margin-top:6px;">{{ sevchips(p.sev) }}</div>
+          {% elif p.total %}
+          <a class="badge" href="{{ home }}&product={{ p.id }}"
+             title="Severity counts are queried per product — open it for the exact split">
+            show breakdown →</a>
+          {% else %}<span class="sv sv-clean">clean</span>{% endif %}
+        </td>
+        <td>{{ p.last or '—' }}</td>
+        <td class="mid">
+          <a href="{{ home }}&product={{ p.id }}" class="jopen" title="Open in the portal">→</a>
+          {% if p.url %}<a href="{{ p.url }}" class="jopen" target="_blank"
+             rel="noopener" title="Open in {{ block.provider.label }}">↗</a>{% endif %}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-b" style="color:var(--muted);font-size:13px;">
+    {% if q or group or sev %}No products match the current filter.
+    {% else %}No products visible to this key.{% endif %}</div>
+  {% endif %}
+</div>
+
+{# ── Findings ── #}
+{% elif tab == 'findings' %}
+{% set f = block.findings %}
+{# the list URL as it stands — the detail card appends &finding=<id> to it and
+   its ✕ returns to it, so opening a CVE never loses the filter or the page #}
+{% set fdbase = tbase ~ keep ~ ('&sev=' ~ sev if sev) ~ ('&status=' ~ fstatus if fstatus) ~ ('&offset=' ~ f.offset if f and f.offset) %}
+{{ grouptabs(block.groups, tbase ~ ('&sev=' ~ sev if sev else '') ~ ('&status=' ~ fstatus if fstatus), group) }}
+
+{# the LIFECYCLE strip: open, closed and why — every DefectDojo state, each an
+   exact count. The severity tiles above describe the OPEN slice; this row is
+   how you reach everything else. A count of none means "could not be asked",
+   which is not the same as zero, so it renders as a dash. #}
+{% if block.statuses %}
+<div class="viewtabs" style="margin-top:2px;align-items:center;">
+  {% for skey, meta in statuses_meta.items() %}
+  {% set n = block.statuses.get(skey) %}
+  <a href="{{ tbase }}{{ keep }}{{ '&sev=' ~ sev if sev }}{{ '&status=' ~ skey if skey }}"
+     class="vtab {% if fstatus == skey %}on{% endif %}"
+     title="{{ meta[0] }}{{ ' — count unavailable on the last read' if n is none }}">
+    {{ meta[0] }} <span class="n" style="opacity:.75;">{{ '—' if n is none else "{:,}".format(n) }}</span></a>
+  {% endfor %}
+  <span class="hint" style="margin-left:auto;">counts follow the type, severity
+    and search filters</span>
+</div>
+{% endif %}
+
+{% if block.finding_err %}
+<div class="flash err">⚠ could not read that finding: {{ block.finding_err }}</div>
+{% endif %}
+{% if block.finding %}
+{% set fd = block.finding %}
+<style>
+  /* the opened finding — inline (not app.css) so it ships before a release.
+     The severity pill in the header carries the tone; the border stays the
+     house line (a colour-only border would also defeat the css-vars audit). */
+  .fdet { border-color:var(--accent); margin-bottom:14px; }
+  .fdet .card-h { flex-wrap:wrap; gap:8px; }
+  .fdet-facts { display:grid; gap:9px 18px; grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+    padding:12px 0 2px; }
+  .fdet-fact { min-width:0; }
+  .fdet-fact span { display:block; font-size:10.5px; text-transform:uppercase;
+    letter-spacing:.04em; color:var(--muted); margin-bottom:2px; }
+  .fdet-fact b { font-size:13px; font-weight:600; overflow-wrap:anywhere; }
+  /* reading layout: the story on the left at a readable measure, the
+     actionable facts (the fix, impact, vector, links, notes) in a rail */
+  .fdet-cols { display:grid; grid-template-columns:minmax(0,1fr) minmax(240px,320px);
+    gap:6px 28px; align-items:start; margin-top:6px; }
+  @media (max-width:940px){ .fdet-cols { grid-template-columns:1fr; } }
+  .fdet-sec { margin-top:14px; min-width:0; }
+  .fdet-sec h4 { font-size:11px; text-transform:uppercase; letter-spacing:.05em;
+    color:var(--muted); margin:0 0 8px; padding-bottom:4px; border-bottom:1px solid var(--line); }
+  .fdet-fix { border-left:3px solid var(--ok); background:var(--overlay);
+    border-radius:0 8px 8px 0; padding:10px 12px; }
+  .fdet-fix h4 { border:0; padding:0; margin-bottom:4px; }
+</style>
+<style>
+  .fdet-txt { font-size:13px; line-height:1.6; overflow-wrap:anywhere;
+    max-width:76ch; max-height:560px; overflow-y:auto; padding-right:6px; }
+  .fdet-txt.mono { font-family:var(--mono); font-size:11.5px; white-space:pre-wrap; }
+  /* what mdlite emits */
+  .fdet-txt p { margin:0 0 10px; }
+  .fdet-txt p:last-child { margin-bottom:0; }
+  .fdet-txt h5 { font-size:12.5px; margin:14px 0 6px; color:var(--text); }
+  .fdet-txt ul { margin:0 0 10px; padding-left:20px; }
+  .fdet-txt li { margin:3px 0; }
+  .fdet-txt code { font-family:var(--mono); font-size:11.5px; background:var(--overlay);
+    border:1px solid var(--line); border-radius:5px; padding:1px 5px; overflow-wrap:anywhere; }
+  .fdet-txt pre { font-family:var(--mono); font-size:11.5px; background:var(--well);
+    border:1px solid var(--line); border-radius:8px; padding:10px 12px;
+    overflow-x:auto; margin:0 0 10px; }
+  .fdet-txt a { overflow-wrap:anywhere; }
+  .fdet-note { border-top:1px solid var(--line); padding:8px 0; font-size:12.5px;
+    white-space:pre-wrap; }
+  .fdet-note .who { color:var(--muted); font-size:11.5px; margin-bottom:2px;
+    white-space:normal; }
+</style>
+<div class="card fdet">
+  <div class="card-h">
+    <span class="sv sv-{{ fd.severity }}">{{ fd.severity }}</span>
+    <b style="font-size:14.5px;">{{ fd.title }}</b>
+    <span class="badge">{{ fd.status }}</span>
+    {% for fl in fd.flags %}{% if fl != fd.status %}<span class="badge">{{ fl }}</span>{% endif %}{% endfor %}
+    <span style="flex:1"></span>
+    {% if fd.url %}<a class="btn btn-ghost tbtn" href="{{ fd.url }}" target="_blank"
+       rel="noopener">Open in {{ block.provider.label }} ↗</a>{% endif %}
+    <a class="btn btn-ghost tbtn" href="{{ fdbase }}" title="Back to the list">✕ Close</a>
+  </div>
+  <div class="card-b">
+    <div class="fdet-facts">
+      {% if fd.product %}<div class="fdet-fact"><span>Product</span>
+        <b><a href="{{ home }}&product={{ fd.product_id }}">{{ fd.product }}</a></b></div>{% endif %}
+      {% if fd.engagement %}<div class="fdet-fact"><span>Engagement</span><b>{{ fd.engagement }}</b></div>{% endif %}
+      {% if fd.component %}<div class="fdet-fact"><span>Component</span><b style="font-family:var(--mono);font-size:12px;">{{ fd.component }}</b></div>{% endif %}
+      {% if fd.tool %}<div class="fdet-fact"><span>Found by</span><b>{{ fd.tool }}</b></div>{% endif %}
+      {% if fd.date %}<div class="fdet-fact"><span>Found on</span><b>{{ fd.date }}</b></div>{% endif %}
+      {% if fd.sla is not none %}<div class="fdet-fact"><span>SLA</span>
+        <b style="color:{{ 'var(--danger-ink)' if fd.sla < 0 }};">
+          {{ (-fd.sla ~ ' days over') if fd.sla < 0 else (fd.sla ~ ' days left') }}</b></div>{% endif %}
+      {% if fd.cvss_score is not none %}<div class="fdet-fact"><span>CVSS v3</span><b>{{ fd.cvss_score }}</b></div>{% endif %}
+      {% if fd.epss is not none %}<div class="fdet-fact"><span>EPSS</span><b>{{ fd.epss }}</b></div>{% endif %}
+      {% if fd.file %}<div class="fdet-fact"><span>Location</span>
+        <b style="font-family:var(--mono);font-size:11.5px;">{{ fd.file }}{{ ':' ~ fd.line if fd.line }}</b></div>{% endif %}
+      {% if fd.branch %}<div class="fdet-fact"><span>Branch</span><b>⑂ {{ fd.branch }}</b></div>{% endif %}
+      {% if fd.mitigated_on %}<div class="fdet-fact"><span>Mitigated on</span><b>{{ fd.mitigated_on }}</b></div>{% endif %}
+    </div>
+    {% if fd.refs %}
+    <div class="fdet-sec" style="margin-top:8px;"><h4>References</h4>
+      {% for r in fd.refs %}
+        {% if r.url %}<a class="badge" href="{{ r.url }}" target="_blank" rel="noopener">{{ r.id }} ↗</a>
+        {% else %}<span class="badge">{{ r.id }}</span>{% endif %}
+      {% endfor %}
+      {% for t in fd.tags %}<span class="badge">{{ t }}</span>{% endfor %}
+    </div>
+    {% endif %}
+    <div class="fdet-cols">
+      <div>{# the story, at a readable measure #}
+        {% for label, text in [('Description', fd.description),
+                               ('Steps to reproduce', fd.steps),
+                               ('Severity justification', fd.justification)] %}
+        {% if text %}
+        <div class="fdet-sec"><h4>{{ label }}</h4>
+          <div class="fdet-txt">{{ text | mdlite }}</div></div>
+        {% endif %}
+        {% endfor %}
+      </div>
+      <div>{# the rail: what to do about it, and the raw facts #}
+        {% if fd.mitigation %}
+        <div class="fdet-sec fdet-fix"><h4>Mitigation</h4>
+          <div class="fdet-txt">{{ fd.mitigation | mdlite }}</div></div>
+        {% endif %}
+        {% if fd.impact %}
+        <div class="fdet-sec"><h4>Impact</h4>
+          <div class="fdet-txt">{{ fd.impact | mdlite }}</div></div>
+        {% endif %}
+        {% if fd.cvss %}
+        <div class="fdet-sec"><h4>CVSS vector</h4>
+          <div class="fdet-txt mono">{{ fd.cvss }}</div></div>
+        {% endif %}
+        {% if fd.references %}
+        <div class="fdet-sec"><h4>Links</h4>
+          <div class="fdet-txt">{{ fd.references | mdlite }}</div></div>
+        {% endif %}
+        {% if fd.notes %}
+        <div class="fdet-sec"><h4>Notes</h4>
+          {% for n in fd.notes %}
+          <div class="fdet-note"><div class="who">{{ n.who }} · {{ n.when }}</div>{{ n.text }}</div>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<form method="get" action="/security" class="pipefilters">
+  <input type="hidden" name="platform" value="{{ platform }}">
+  <input type="hidden" name="conn" value="{{ sel.id }}">
+  <input type="hidden" name="tab" value="findings">
+  <input type="hidden" name="group" value="{{ group }}">
+  <input type="hidden" name="status" value="{{ fstatus }}">
+  <input type="search" name="q" value="{{ q }}" placeholder="search finding titles…">
+  <select name="sev" data-submit>
+    <option value="">any severity</option>
+    {% for s in severities %}
+    <option value="{{ s }}" {% if sev == s %}selected{% endif %}>{{ s }} only</option>
+    {% endfor %}
+  </select>
+  <button type="submit" class="btn-ghost" style="padding:8px 16px;">Apply</button>
+</form>
+
+<div class="card">
+  <div class="card-h" style="flex-wrap:wrap;">
+    {{ plogo(block.provider, 18) }}
+    <b style="font-size:14.5px;">Findings</b>
+    {% if sev %}<span class="sv sv-{{ sev }}">{{ sev }}</span>{% endif %}
+    <span style="flex:1"></span>
+    <span class="hint">
+      {% if f.total %}{{ f.offset + 1 }}–{{ f.offset + f.rows|length }} of {{ f.total }}{% else %}none{% endif %}
+      · worst severity first</span>
+  </div>
+  {% if f.rows %}
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    {{ findings_table(f.rows, block.provider, home,
+                      detail=fdbase if platform == 'defectdojo' else '') }}
+  </div>
+  <div class="card-b" style="display:flex;gap:9px;align-items:center;">
+    {% set qs = tbase ~ keep ~ ('&sev=' ~ sev if sev else '') ~ ('&status=' ~ fstatus if fstatus) %}
+    {% if f.offset > 0 %}
+    <a class="btn btn-ghost" style="padding:6px 15px;font-size:12px;"
+       href="{{ qs }}&offset={{ [f.offset - f.limit, 0]|max }}">← Previous</a>{% endif %}
+    {% if f.offset + f.rows|length < f.total %}
+    <a class="btn btn-ghost" style="padding:6px 15px;font-size:12px;"
+       href="{{ qs }}&offset={{ f.offset + f.limit }}">Next {{ f.limit }} →</a>{% endif %}
+    <span class="hint">page size is set on the connection in Settings</span>
+  </div>
+  {% else %}
+  <div class="card-b" style="color:var(--muted);font-size:13px;">
+    {% if sev or q %}No findings match the current filter.
+    {% else %}No open findings reported.{% endif %}</div>
+  {% endif %}
+</div>
+
+{# ── Recent scans ── #}
+{% else %}
+<div class="card">
+  <div class="card-h">Recent scans
+    <span class="hint">{{ block.scans|length }} newest, from this platform</span></div>
+  {% if block.scans %}
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr><th>Scan</th><th style="width:210px;">Product</th>
+        <th style="width:190px;">Engagement</th><th style="width:120px;">When</th>
+        <th style="width:44px;"></th></tr></thead>
+      <tbody>
+      {% for s in block.scans %}
+      <tr><td class="jname">{{ s.name }}</td><td>{{ s.product or '—' }}</td>
+        <td>{{ s.engagement or '—' }}</td><td>{{ s.when or '—' }}</td>
+        <td class="mid">{% if s.url %}<a class="jopen" href="{{ s.url }}"
+           target="_blank" rel="noopener">↗</a>{% endif %}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-b" style="color:var(--muted);font-size:13px;">
+    No scan history reported by this platform.</div>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if block.note %}
+<div class="stat-note">⚠ {{ block.note }}</div>
+{% endif %}
+{% endif %}
+
+<p class="sub" style="margin-top:14px;">
+  Platforms are managed in <a href="/settings/security">Settings → Security scanning</a>.
+  Read-only: the portal never triages or re-scans.</p>
+{% endif %}
+{% endblock %}

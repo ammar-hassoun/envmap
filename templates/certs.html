@@ -1,0 +1,867 @@
+{% extends "base.html" %}
+{% import "_bits.html" as bits %}
+{% block crumbs %}{% if order %}<a href="/certs">Certificates</a>
+  <span class="sep">/</span> <b>{{ order.domains|join(', ')|truncate(60) }}</b>
+{% elif show_new %}<a href="/certs">Certificates</a>
+  <span class="sep">/</span> <b>New</b>
+{% else %}<b>Certificates</b>{% endif %}{% endblock %}
+{% block content %}
+
+{# the orders table, reused by the Overview / Issued / In progress / Expiring tabs #}
+{% macro certtable(rows) %}
+<div class="card"><div class="card-b" style="padding:0;">
+  {% if rows %}
+  <table class="certtbl">
+    <thead><tr><th>Domains</th><th>State</th><th>Expires</th><th>Key</th><th>Issuer</th><th></th></tr></thead>
+    <tbody>
+      {% for o in rows %}
+      <tr>
+        <td class="dom"><a href="/certs?id={{ o.id }}"><b>{{ o.domains[0] }}</b></a>
+          {% if o.domains|length > 1 %}<span class="sub">+{{ o.domains|length - 1 }} more</span>{% endif %}</td>
+        <td class="nowrap">
+          <span class="{{ {'ready':'pill-success', 'failed':'pill-failed', 'cancelled':'pill-cancelled',
+                           'awaiting_dns':'pill-pending'}.get(o.status, 'pill-running') }}">{{ o.state_label }}</span></td>
+        <td class="nowrap">{% if o.days_left is not none %}
+            <span style="color:{{ 'var(--warn-ink)' if o.expiring else 'inherit' }};">{{ o.days_left }} days</span><br>
+            <span class="sub" style="font-size:11px;">{{ o.expires_on }}</span>
+            {% elif o.status == 'awaiting_dns' %}<span class="sub">records not pasted yet</span>
+            {% else %}<span class="sub">—</span>{% endif %}</td>
+        <td class="nowrap"><span class="sub">{{ o.key_desc }}</span></td>
+        <td class="nowrap"><span class="sub">{{ o.facts.issuer or o.ca_label }}</span></td>
+        <td class="act"><a class="btn btn-ghost" style="padding:4px 14px;font-size:11.5px;"
+             href="/certs?id={{ o.id }}">Open</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<div class="sec-note" style="padding:16px;">No certificates in this state.</div>{% endif %}
+</div></div>
+{% endmacro %}
+
+{% if msg %}<div class="flash">✓ {{ msg }}</div>{% endif %}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+
+{# ══════════════════════════════════════════════════════════════
+   ONE ORDER — the view somebody opens hours after they pasted a
+   record, so it says what happened while they were away
+   ══════════════════════════════════════════════════════════════ #}
+{% if order %}
+{% set pill = {'ready':'pill-success', 'failed':'pill-failed',
+               'cancelled':'pill-cancelled', 'awaiting_dns':'pill-pending'}
+               .get(order.status, 'pill-running') %}
+<div class="page-head">
+  <div>
+    <h1>🔐 {{ order.domains[0] }}</h1>
+    <p class="sub">
+      <span class="{{ pill }}">{{ order.state_label }}</span>
+      {% if order.domains|length > 1 %}
+        · {{ order.domains|length }} names{% endif %}
+      · {{ order.ca_label }} · {{ order.key_desc }}
+    </p>
+  </div>
+  <a class="btn btn-ghost" href="/certs">← All certificates</a>
+</div>
+
+{% if order.status == 'ready' %}
+{# ── issued ── #}
+<div class="card">
+  <div class="card-h">Download
+    <span class="hint">a web server wants the fullchain and the private key</span>
+  </div>
+  <div class="card-b">
+    {# Every link asks whether the file exists. The first two were once
+       unconditional, which made a button for a file the order could not produce
+       — the same order then told you underneath that it had no key. #}
+    <div style="display:flex;gap:10px;flex-wrap:wrap;">
+      {% for kind, label, primary in [
+           ('fullchain', 'fullchain.pem', true),
+           ('privkey', 'privkey.pem', false),
+           ('cert', 'cert.pem', false),
+           ('chain', 'chain.pem', false),
+           ('csr', 'csr', false)] %}
+      {% if kind in order.downloads %}
+      <a class="btn{{ '' if primary else ' btn-ghost' }}"
+         href="/certs/{{ order.id }}/download/{{ kind }}">⤓ {{ label }}</a>
+      {% endif %}
+      {% endfor %}
+    </div>
+    {% if not order.has_key %}
+    <p class="sub" style="margin:12px 0 0;">This one was issued from a CSR you
+      supplied, so the private key never came here — use the one you already
+      have.</p>
+    {% else %}
+    <p class="sub" style="margin:12px 0 0;">The private key download is recorded
+      in the audit log, with who and when.</p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr));
+     margin-bottom:18px;">
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat" style="color:{{ 'var(--warn-ink)' if order.expiring else 'var(--ok-ink)' }};">{{ order.days_left }}</div>
+    <div class="statsub">days left</div></div></div>
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat" style="font-size:15px;">{{ order.expires_on }}</div>
+    <div class="statsub">expires</div></div></div>
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat" style="font-size:15px;">{{ order.facts.key }}</div>
+    <div class="statsub">key</div></div></div>
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat" style="font-size:15px;">{{ order.facts.issuer }}</div>
+    <div class="statsub">issued by</div></div></div>
+</div>
+
+{% if order.has_key %}
+<div class="card">
+  <div class="card-h">PKCS#12 bundle
+    <span class="hint">the key, the certificate and the chain in one .p12 —
+      what a JVM or a .NET service actually loads</span></div>
+  <div class="card-b">
+    {# Built here rather than by hand because `openssl pkcs12` with the wrong
+       -certfile produces a bundle missing its chain, and that fails only
+       against clients which do not already trust the intermediate — so it
+       passes every test somebody runs on their own laptop. #}
+    <form method="post" action="/certs/{{ order.id }}/p12">
+      <div class="field-row">
+        <label>passphrase</label>
+        <div>
+          <input type="password" name="passphrase" autocomplete="new-password"
+                 data-nosave placeholder="leave empty for an unprotected file">
+          <div class="sub">An empty passphrase is legal and almost always a
+            mistake: the file holds a private key and is about to be attached
+            to an email.</div>
+        </div>
+      </div>
+      <div class="field-row">
+        <label>format</label>
+        <div>
+          <select name="mode">
+            {% for key, m in p12_modes.items() %}
+            <option value="{{ key }}">{{ m[0] }} — {{ m[1] }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+      <div style="margin-top:12px;">
+        <button class="btn" type="submit">Download the .p12</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endif %}
+
+{% if not order.external %}
+<div class="card">
+  <div class="card-h">Renew
+    <span class="hint">a new certificate for the same names — new DNS records
+      each time, because that is how DNS validation works</span></div>
+  <div class="card-b" style="display:flex;gap:10px;flex-wrap:wrap;">
+    {% if order.has_key %}
+    <form method="post" action="/certs/{{ order.id }}/renew">
+      <input type="hidden" name="same_key" value="1">
+      <button class="btn" type="submit">↻ Renew, keeping this private key</button>
+    </form>
+    {% endif %}
+    <form method="post" action="/certs/{{ order.id }}/renew">
+      <button class="btn btn-ghost" type="submit">↻ Renew with a new key</button>
+    </form>
+  </div>
+</div>
+{% endif %}{# /not external — renewal is the provider's process, not ours #}
+{% endif %}
+
+{% if order.status == 'awaiting_signing' %}
+{# ── with the provider ── #}
+<div class="card">
+  <div class="card-h">Send this to the provider
+    <span class="hint">the private key stays here — it is not in the CSR</span>
+  </div>
+  <div class="card-b">
+    <textarea id="csrbox" rows="9" readonly
+              style="width:100%;box-sizing:border-box;font-family:var(--mono);font-size:11.5px;"
+              >{{ order.csr_pem }}</textarea>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;">
+      <button type="button" class="btn btn-ghost" id="csrcopy">copy</button>
+      <a class="btn btn-ghost" href="/certs/{{ order.id }}/download/csr">
+        download the .csr</a>
+      <a class="btn btn-ghost" href="/certs/{{ order.id }}/download/privkey">
+        download the private key</a>
+    </div>
+    {% if order.subject and order.subject.values()|select|list %}
+    <div class="sub" style="margin-top:12px;">Subject:
+      {% for f, _o, label, short, _n in subject_fields %}{% if order.subject.get(f) %}<code>{{ short }}={{ order.subject[f] }}</code> {% endif %}{% endfor %}</div>
+    {% endif %}
+    {% if order.note %}
+    <div class="sub" style="margin-top:6px;">Note: {{ order.note }}</div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-h">When the signed certificate comes back
+    <span class="hint">paste it or upload the file — chain included if they
+      sent one</span></div>
+  <div class="card-b">
+    {# The upload is the moment the pair is proven. A certificate that does not
+       match the key held here is REFUSED, because the alternative is a bundle
+       that builds, deploys and then fails the handshake. #}
+    <form method="post" action="/certs/{{ order.id }}/attach"
+          enctype="multipart/form-data" id="attachform">
+      <textarea name="cert_pem" rows="8" data-nosave
+                placeholder="-----BEGIN CERTIFICATE-----&#10;…&#10;paste the certificate, and the intermediates below it if the provider sent them"
+                style="width:100%;box-sizing:border-box;font-family:var(--mono);font-size:11.5px;"></textarea>
+      <div class="field-row" style="margin-top:10px;">
+        <label>or a file</label>
+        <div><input type="file" name="cert_file"
+                    accept=".crt,.cer,.pem,.txt,application/x-pem-file"></div>
+      </div>
+      <div style="margin-top:12px;">
+        <button class="btn" type="submit">Store this certificate</button>
+      </div>
+      <p class="sub" style="margin:10px 0 0;">It is checked against the private
+        key held here before anything is saved. Order does not matter — a
+        bundle that arrives root-first is straightened out.</p>
+    </form>
+  </div>
+</div>
+{% endif %}
+
+{% if order.status == 'failed' %}
+<div class="card" style="border-color:var(--danger-line);">
+  <div class="card-h">What went wrong</div>
+  <div class="card-b">
+    <p style="margin:0 0 12px;">{{ order.error }}</p>
+    <form method="post" action="/certs/{{ order.id }}/renew">
+      <input type="hidden" name="same_key" value="{{ '1' if order.has_key else '' }}">
+      <button class="btn" type="submit">Start a fresh order with the same
+        details</button>
+    </form>
+  </div>
+</div>
+{% endif %}
+
+{% if order.status in ('awaiting_dns', 'checking_dns') %}
+{# ── the records to paste: the whole point of the page ── #}
+<div class="card" style="border-color:var(--accent);">
+  <div class="card-h" style="flex-wrap:wrap;gap:10px;">
+    <span>Put these TXT records in your DNS</span>
+    <span style="flex:1"></span>
+    <button type="button" class="btn-ghost" id="copyall"
+            style="padding:4px 12px;font-size:11.5px;">copy all</button>
+  </div>
+  <div class="card-b">
+    {% for g in order.records %}
+    <div class="recrow">
+      <div class="reclabel">Name</div>
+      <div class="recval">
+        <code>{{ g.record }}</code>
+        <button type="button" class="copy" data-copy="{{ g.record }}">copy</button>
+      </div>
+
+      <div class="reclabel">Type</div>
+      <div class="recval"><code>TXT</code></div>
+
+      <div class="reclabel">Value{{ 's' if g.txt|length > 1 }}</div>
+      <div class="recval" style="flex-direction:column;align-items:stretch;">
+        {% for v in g.txt %}
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;">
+          <code style="flex:1">{{ v }}</code>
+          <button type="button" class="copy" data-copy="{{ v }}">copy</button>
+        </div>
+        {% endfor %}
+        {% if g.txt|length > 1 %}
+        {# The one that catches everybody: a wildcard and its base name validate
+           at the same record, and DNS interfaces invite you to overwrite rather
+           than add. Both values have to be live at the same moment. #}
+        <p class="sub" style="margin:4px 0 0;color:var(--warn-ink);">
+          ⚠ Two values at the same name — {{ g.domains|join(' and ') }}. Add
+          both as separate TXT records; do not replace one with the other.</p>
+        {% endif %}
+      </div>
+
+      <div class="reclabel">For</div>
+      <div class="recval"><span class="sub">{{ g.domains|join(', ') }}</span></div>
+    </div>
+    {% endfor %}
+    <p class="sub" style="margin:14px 0 0;">Set the TTL as low as your provider
+      allows — 60 seconds if it lets you. Leave the records in place until the
+      certificate is issued; you can delete them afterwards.</p>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-b">
+    {% if order.status == 'awaiting_dns' %}
+    <form method="post" action="/certs/{{ order.id }}/proceed"
+          style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;">
+      <button class="btn" type="submit">The records are in — carry on without
+        me</button>
+      <span class="sub" style="margin:0;max-width:52ch;">Then close this page if
+        you like. The portal waits for the records to appear, asks
+        {{ order.ca_label }} to check them, and has the certificate here when you
+        come back.</span>
+    </form>
+    {% else %}
+    <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;">
+      <form method="post" action="/certs/{{ order.id }}/check">
+        <button class="btn btn-ghost" type="submit">Look now</button>
+      </form>
+      {% if order.status == 'checking_dns' and order.blind %}
+      {# Offered only while this installation cannot query the DNS at all. It is
+         the operator asserting what the portal cannot see, and the wording has
+         to carry the cost, because a wrong assertion ends the order. #}
+      <form method="post" action="/certs/{{ order.id }}/check-anyway"
+            data-confirm="Ask {{ order.ca_label }} to check now?\n\nThis installation cannot query the DNS, so it cannot confirm the records are published. If they are not, this order fails permanently and you will have to start a new one.">
+        <button class="btn btn-ghost" type="submit">Check anyway</button>
+      </form>
+      {% endif %}
+      <span class="sub" style="margin:0;max-width:52ch;">
+        <b>You can close this page.</b> It is checking on its own and will keep
+        trying for up to six hours.
+        {% if order.dns_note %}<br>{{ order.dns_note }}{% endif %}</span>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+{% if order.status in ('validating', 'finalizing') %}
+<div class="card">
+  <div class="card-b" style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;">
+    <span class="{{ pill }}">{{ order.state_label }}</span>
+    <span class="sub" style="margin:0;">{{ order.state_note }} — this usually
+      takes a few seconds. You can close this page.</span>
+    <form method="post" action="/certs/{{ order.id }}/check">
+      <button class="btn btn-ghost" type="submit">Check now</button>
+    </form>
+  </div>
+</div>
+{% endif %}
+
+{# ── the names, and what the order is made of ── #}
+<div class="card">
+  <div class="card-h">This order</div>
+  <div class="card-b" style="padding-top:4px;">
+    <div class="field-row"><label>domains</label>
+      <div>{% for d in order.domains %}<code class="tagcode">{{ d }}</code>{% endfor %}</div>
+    </div>
+    <div class="field-row"><label>certificate authority</label>
+      <div>{{ order.ca_label }} <span class="sub">{{ order.ca }}</span></div></div>
+    <div class="field-row"><label>private key</label>
+      <div>{{ order.key_desc }}</div></div>
+    {% if order.facts.serial %}
+    <div class="field-row"><label>serial</label>
+      <div><code>{{ order.facts.serial }}</code></div></div>
+    {% endif %}
+    <div class="field-row"><label>opened</label>
+      <div>{{ order.opened_on }}</div></div>
+  </div>
+</div>
+
+{% if order.events %}
+<div class="card">
+  <div class="card-h">What it has done
+    <span class="hint">so "what happened while I was away" is answerable</span>
+  </div>
+  <div class="card-b" style="padding:0;">
+    <table class="evtbl">
+      <tbody>
+        {% for e in order.events %}
+        <tr><td class="at">{{ e.when }}</td><td>{{ e.text }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:30px;">
+  {% if order.status not in ('ready', 'cancelled') %}
+  <form method="post" action="/certs/{{ order.id }}/cancel">
+    <button class="btn btn-ghost" type="submit">Abandon this order</button>
+  </form>
+  {% endif %}
+  <form method="post" action="/certs/{{ order.id }}/delete"
+        data-del="this order{{ ' and its private key' if order.has_key }} (there is no other copy)">
+    <button class="btn btn-ghost" type="submit"
+            style="color:var(--danger-ink);">Delete</button>
+  </form>
+</div>
+
+
+{# ══════════════════════════════════════════════════════════════
+   THE REQUEST FORM
+   ══════════════════════════════════════════════════════════════ #}
+{% elif show_new %}
+<div class="page-head">
+  <div>
+    <h1>🔐 New certificate</h1>
+    <p class="sub" style="max-width:72ch;">Domain validation happens over DNS, so
+      this works for a name that is not reachable from the internet and for
+      wildcards — the only thing you have to do by hand is paste one TXT record
+      per name.</p>
+  </div>
+  {% if orders %}<a class="btn btn-ghost" href="/certs">← All certificates</a>{% endif %}
+</div>
+
+<form method="post" action="/certs/new" id="newcert">
+  <div class="card">
+    <div class="card-h">Domains</div>
+    <div class="card-b">
+      <textarea name="domains" id="domains" rows="4"
+                placeholder="example.com&#10;www.example.com&#10;*.example.com"
+                style="width:100%;box-sizing:border-box;"></textarea>
+      <p class="sub" style="margin:8px 0 0;">One per line, or separated by
+        commas. <code>*.example.com</code> covers every subdomain but
+        <b>not</b> <code>example.com</code> itself — list both if you need both.
+        Up to 100 names on one certificate.</p>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-h">Who issues it</div>
+    <div class="card-b">
+      {% for key, ca in cas.items() %}
+      <label class="pickrow">
+        <input type="radio" name="ca" value="{{ key }}"
+               {{ 'checked' if key == 'le' }}>
+        <span>
+          <b>{{ ca[0] }}</b>
+          <small>{{ ca[2] }}</small>
+        </span>
+      </label>
+      {% endfor %}
+      {#- A PROVIDER IS NOT AN ACME CA and is listed apart from them on
+          purpose: nothing below this point — the directory URL, the contact
+          email, the terms — applies to it, and offering them would imply an
+          automation that does not exist. What it does instead is keep the
+          private key. -#}
+      <label class="pickrow">
+        <input type="radio" name="ca" value="external" id="ca_external">
+        <span>
+          <b>Signed by a provider</b>
+          <small>you send them a CSR and they email a .crt back days later.
+            The portal generates the key, holds it sealed, and waits — so the
+            key is still here when the certificate arrives.</small>
+        </span>
+      </label>
+      <div id="ca_custom" class="hidden" style="margin-top:10px;">
+        <input type="text" name="ca_url"
+               placeholder="https://acme.provider.example/directory">
+      </div>
+      {#- WHAT A COMMERCIAL CA REFUSES AN ORDER WITHOUT. An ACME CA reads the
+          SAN list and throws all of this away; a provider signing an OV
+          certificate rejects the request, and the rejection arrives days
+          later as an email from a person. Shown only for that path so the
+          Let's Encrypt form stays as short as it is. -#}
+      <div id="subj_fields" class="hidden" style="margin-top:14px;">
+        <div class="sub" style="margin-bottom:8px;">The provider verifies
+          these against your registered entity, so they must match it
+          exactly.</div>
+        {% for field, _oid, label, short, note in subject_fields %}
+        <div class="field-row">
+          <label>{{ label }} <code class="subj-ab">{{ short }}</code></label>
+          <div>
+            <input type="text" name="subj_{{ field }}"
+                   {% if field == 'country' %}maxlength="2" size="4"{% endif %}>
+            {% if note %}<div class="sub">{{ note }}</div>{% endif %}
+          </div>
+        </div>
+        {% endfor %}
+        <div class="field-row">
+          <label>Note to yourself</label>
+          <div><input type="text" name="note"
+                 placeholder="which provider, which ticket — you will read this in three weeks">
+          </div>
+        </div>
+      </div>
+      <div id="acme_only">
+      <div class="field-row" style="margin-top:12px;">
+        <label>contact email</label>
+        <input type="text" name="email"
+               placeholder="ops@example.com — where expiry warnings go">
+      </div>
+      </div>{# /acme_only #}
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-h">The private key</div>
+    <div class="card-b">
+      {#- A PROVIDER ORDER ALWAYS GENERATES ITS KEY HERE. Keeping it is the
+          entire point of the feature, so the four sources are an ACME-only
+          choice; only the key TYPE below applies to both. -#}
+      <div id="src_choice">
+      {% for key, src in key_sources.items() %}
+      <label class="pickrow">
+        <input type="radio" name="key_source" value="{{ key }}"
+               {{ 'checked' if key == 'new' }}
+               {{ 'disabled' if key == 'reuse' and not reusable }}>
+        <span>
+          <b>{{ src[0] }}</b>
+          <small>{{ src[1] }}{% if key == 'reuse' and not reusable %} — nothing
+            here has a key to keep yet{% endif %}</small>
+        </span>
+      </label>
+      {% endfor %}
+      </div>
+      <p id="src_ext" class="sub hidden" style="margin:0 0 4px;">A new private
+        key is generated here and held sealed until you upload the signed
+        certificate.</p>
+
+      <div id="src_new" style="margin-top:12px;">
+        <div class="field-row"><label>key type</label>
+          <select name="key_type">
+            {% for key, kt in key_types.items() %}
+            <option value="{{ key }}">{{ kt[0] }} — {{ kt[1] }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+
+      <div id="src_reuse" class="hidden" style="margin-top:12px;">
+        <div class="field-row"><label>take the key from</label>
+          <select name="reuse_from">
+            {% for o in reusable %}
+            {# On one line: a newline inside an <option> is rendered verbatim by
+               the browser, so the label came out with the template's own
+               indentation in the middle of it. #}
+            <option value="{{ o.id }}">{{ o.domains|join(', ')|truncate(50) }} — {{ o.key_desc }}, opened {{ o.created_on }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <p class="sub" style="margin:8px 0 0;">The new certificate will carry the
+          same public key, so anything that has the key already — a load
+          balancer, a pinned client — needs only the certificate file
+          replaced.</p>
+      </div>
+
+      <div id="src_paste" class="hidden" style="margin-top:12px;">
+        <textarea name="key_pem" rows="6" placeholder="-----BEGIN PRIVATE KEY-----"
+                  data-nosave
+                  style="width:100%;box-sizing:border-box;"></textarea>
+        <div class="field-row" style="margin-top:8px;">
+          <label>passphrase, if it has one</label>
+          <input type="password" name="passphrase" autocomplete="new-password">
+        </div>
+        <p class="sub" style="margin:8px 0 0;">Sealed at rest with the portal's
+          own key, like every other secret here. The passphrase is used to read
+          it and is not stored.</p>
+      </div>
+
+      <div id="src_csr" class="hidden" style="margin-top:12px;">
+        <textarea name="csr" rows="7"
+                  placeholder="-----BEGIN CERTIFICATE REQUEST-----"
+                  style="width:100%;box-sizing:border-box;"></textarea>
+        <p class="sub" style="margin:8px 0 0;">The domains are read out of the
+          CSR, so the Domains box above is ignored. Nothing about your key
+          reaches this portal — this is <code>certbot --csr</code>.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-b">
+      <label class="chk" style="display:flex;gap:9px;align-items:flex-start;">
+        <input type="checkbox" name="agreed" value="1" required>
+        <span>I accept the certificate authority's subscriber agreement{% if terms %}
+          — <a href="{{ terms }}" target="_blank" rel="noopener">read it</a>{% endif %}.
+          An ACME account is registered on first use with the address above.</span>
+      </label>
+    </div>
+  </div>
+
+  <div style="display:flex;gap:12px;align-items:center;margin-bottom:30px;">
+    <button class="btn" type="submit">Request the certificate</button>
+    <span class="sub" style="margin:0;">The next page prints the TXT records to
+      paste.</span>
+  </div>
+</form>
+
+
+{# ══════════════════════════════════════════════════════════════
+   THE LIST
+   ══════════════════════════════════════════════════════════════ #}
+{% else %}
+{%- set cur = sec if sec in ('overview','issued','inflight','expiring') else 'overview' -%}
+{% set issued = orders|selectattr('status', 'equalto', 'ready')|list %}
+{% set inflight = orders|selectattr('in_flight')|list %}
+{% set soon = orders|selectattr('expiring')|selectattr('status', 'equalto', 'ready')|list %}
+<div class="page-head">
+  <div>
+    <h1>🔐 Certificates</h1>
+    <p class="sub">{{ orders|length }} order{{ 's' if orders|length != 1 }} ·
+      {{ issued|length }} issued
+      {% if inflight %}· {{ inflight|length }} in progress{% endif %}</p>
+  </div>
+  <a class="btn" href="/certs?new=1">＋ New certificate</a>
+</div>
+
+{% if not orders %}
+<div class="empty">
+  <div class="big">{{ glyph('shield', 40) }}</div>
+  <h2>No certificates yet</h2>
+  <p>Request one from Let's Encrypt or any ACME CA — validation is over DNS, so it
+     works for internal names and wildcards too.</p>
+  <a class="btn" href="/certs?new=1">＋ New certificate</a>
+</div>
+{% else %}
+{{ bits.subtabs('/certs?', 'sec', cur, [
+     {'key':'overview','label':'Overview','count':none,'icon':'chart-line'},
+     {'key':'issued','label':'Issued','count':issued|length,'icon':'circle-check'},
+     {'key':'inflight','label':'In progress','count':inflight|length,'icon':'loader'},
+     {'key':'expiring','label':'Expiring','count':soon|length,'icon':'triangle-alert'}], wide=true) }}
+
+{% if cur == 'overview' %}
+<div class="ex-tiles">
+  <a class="ex-tile {{ 'quiet' if not orders }}" href="/certs">
+    <span class="ico">{{ glyph('shield', 17) }}</span>
+    <span><span class="big">{{ orders|length }}</span>
+      <span class="cap">order{{ 's' if orders|length != 1 }}</span>
+      <span class="sub">every request kept</span></span></a>
+  <a class="ex-tile ok {{ 'quiet' if not issued }}" href="/certs?sec=issued">
+    <span class="ico">{{ glyph('circle-check', 17) }}</span>
+    <span><span class="big">{{ issued|length }}</span>
+      <span class="cap">issued</span>
+      <span class="sub">live certificates</span></span></a>
+  <a class="ex-tile act {{ 'quiet' if not inflight }}" href="/certs?sec=inflight">
+    <span class="ico">{{ glyph('loader', 17) }}</span>
+    <span><span class="big">{{ inflight|length }}</span>
+      <span class="cap">in progress</span>
+      <span class="sub">ordering / awaiting DNS</span></span></a>
+  <a class="ex-tile bad {{ 'quiet' if not soon }}" href="/certs?sec=expiring">
+    <span class="ico">{{ glyph('triangle-alert', 17) }}</span>
+    <span><span class="big">{{ soon|length }}</span>
+      <span class="cap">expiring soon</span>
+      <span class="sub">within 30 days</span></span></a>
+</div>
+
+{# shared chart overview — certificate health + days of runway #}
+{% set liveN = issued|length - soon|length %}
+{% set otherN = orders|length - issued|length - inflight|length %}
+{% set exprows = [] %}
+{% for o in issued if o.days_left is not none %}{{ exprows.append({'label': o.domains[0], 'n': o.days_left, 'href': '/certs?id=' ~ o.id, 'note': o.ca_label or ''}) or '' }}{% endfor %}
+<div class="apanels">
+  {{ bits.donut_panel('Certificate health',
+       [{'label':'live','value':liveN if liveN > 0 else 0,'color':'var(--ok)','href':'/certs?sec=issued'},
+        {'label':'expiring ≤30d','value':soon|length,'color':'var(--warn)','href':'/certs?sec=expiring'},
+        {'label':'in progress','value':inflight|length,'color':'var(--accent)','href':'/certs?sec=inflight'},
+        {'label':'not issued','value':otherN if otherN > 0 else 0,'color':'var(--danger)'}],
+       centre=(issued|length ~ '/' ~ orders|length), sub='issued', icon='shield-check',
+       hint='by order status') }}
+  {{ bits.bars_panel('Days of runway', exprows | sort(attribute='n'),
+       hint='soonest to expire at top', icon='shield', empty='No issued certificates yet.') }}
+</div>
+
+{% if soon %}
+<div class="flash err">⚠ {{ soon|length }} certificate{{ 's' if soon|length != 1 }}
+  expire{{ '' if soon|length != 1 else 's' }} within 30 days:
+  {% for o in soon %}<a href="/certs?id={{ o.id }}">{{ o.domains[0] }}</a>
+    ({{ o.days_left }}d){{ ', ' if not loop.last }}{% endfor %}</div>
+{% endif %}
+{{ certtable(orders) }}
+
+{% elif cur == 'issued' %}{{ certtable(issued) }}
+{% elif cur == 'inflight' %}{{ certtable(inflight) }}
+{% elif cur == 'expiring' %}{{ certtable(soon) }}
+{% endif %}
+{% endif %}
+{% endif %}
+
+<style>
+  .pickrow { display:flex; gap:11px; align-items:flex-start; padding:11px 13px;
+    border:1px solid var(--line2); border-radius:11px; margin-bottom:8px;
+    cursor:pointer; }
+  .pickrow:hover { border-color:var(--accent-ink); }
+  .pickrow input { margin-top:2px; flex:none; }
+  .pickrow b { font-size:13.5px; }
+  .pickrow small { display:block; color:var(--muted); font-size:11.5px;
+    margin-top:2px; }
+  .pickrow:has(input:checked) { border-color:var(--accent);
+    background:var(--panel2); }
+  .pickrow:has(input:disabled) { opacity:.55; cursor:default; }
+  .hidden { display:none; }
+  /* A record to be copied by hand into somebody else's DNS form: the value is
+     43 characters of base64 where one wrong character fails silently, so it is
+     set big, monospaced, and selectable in one gesture. */
+  .recrow { display:grid; grid-template-columns:minmax(90px,110px) 1fr;
+    gap:8px 14px; align-items:start; padding:14px 0;
+    border-bottom:1px solid var(--line); }
+  .recrow:last-of-type { border-bottom:0; }
+  .reclabel { font-family:var(--mono); font-size:11px; color:var(--muted);
+    text-transform:uppercase; letter-spacing:.5px; padding-top:5px; }
+  .recval { display:flex; gap:8px; align-items:center; min-width:0; }
+  .recval code { font-family:var(--mono); font-size:13px; word-break:break-all;
+    background:var(--well); border:1px solid var(--line);
+    border-radius:8px; padding:6px 10px; display:block; }
+  .copy { padding:5px 12px; font-size:11px; background:var(--panel2);
+    color:var(--muted); border:1px solid var(--line2); border-radius:8px;
+    flex:none; box-shadow:none; }
+  .copy:hover { border-color:var(--accent-ink); color:var(--text); }
+  .copy.done { color:var(--ok-ink); border-color:var(--ok-line); }
+  /* Not table.cmp: that one is for configuration values and carries
+     word-break:break-all with a monospaced face, which turned "Let's Encrypt"
+     into "Let's Encry / pt" and the Open button into "Ope / n". A list of
+     certificates is prose in most columns and a fixed token in the rest. */
+  table.certtbl { width:100%; border-collapse:collapse; font-size:13px; }
+  table.certtbl th { text-align:left; padding:11px 16px; color:var(--muted);
+    font-size:10.5px; text-transform:uppercase; letter-spacing:.9px;
+    border-bottom:1px solid var(--line); font-weight:700; white-space:nowrap; }
+  table.certtbl td { padding:11px 16px; vertical-align:middle;
+    border-bottom:1px solid var(--hairline); }
+  table.certtbl tr:last-child td { border-bottom:0; }
+  table.certtbl td.nowrap, table.certtbl td.act { white-space:nowrap; }
+  table.certtbl td.act { text-align:right; }
+  table.certtbl td.dom { min-width:180px; }
+  table.certtbl tr:hover td { background:var(--panel2); }
+  .certtbl .sub { display:inline; margin:0; }
+  /* the timeline: a fixed-width time column and a message that wraps normally */
+  table.evtbl { width:100%; border-collapse:collapse; font-size:12.5px; }
+  table.evtbl td { padding:8px 16px; vertical-align:top;
+    border-bottom:1px solid var(--hairline); }
+  table.evtbl tr:last-child td { border-bottom:0; }
+  table.evtbl td.at { width:165px; white-space:nowrap; color:var(--muted);
+    font-size:11.5px; font-family:var(--mono); }
+  .tagcode { font-family:var(--mono); font-size:12px; background:var(--well);
+    border:1px solid var(--line); border-radius:7px; padding:2px 8px;
+    margin-right:6px; display:inline-block; }
+  textarea { width:100%; padding:10px 13px; border-radius:9px;
+    border:1px solid var(--line); background:var(--well); color:var(--text);
+    font-family:var(--mono); font-size:12.5px; box-sizing:border-box; }
+  textarea:focus { outline:none; border-color:var(--accent-ink);
+    box-shadow:0 0 0 3px rgba(91,141,239,.15); }
+</style>
+
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  // Copying to the clipboard, with a fallback. navigator.clipboard exists only
+  // in a secure context, and this portal is frequently reached over plain http
+  // on an internal address — where the modern call is simply absent, not
+  // failing, so a version without the fallback silently does nothing.
+  function put(text, btn) {
+    const done = () => {
+      if (!btn) return;
+      const was = btn.textContent;
+      btn.textContent = 'copied'; btn.classList.add('done');
+      setTimeout(() => { btn.textContent = was; btn.classList.remove('done'); },
+                 1400);
+    };
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(done, () => legacy(text, done));
+    } else {
+      legacy(text, done);
+    }
+  }
+  function legacy(text, done) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); done(); } catch (e) { /* nothing to do */ }
+    ta.remove();
+  }
+
+  document.querySelectorAll('.copy').forEach(b => {
+    b.addEventListener('click', () => put(b.dataset.copy, b));
+  });
+
+  const all = document.getElementById('copyall');
+  if (all) {
+    // Every record as text, in the order they are shown: some DNS panels take a
+    // paste of "name TXT value" lines wholesale, and it is the fastest way to
+    // hand the set to somebody else.
+    all.addEventListener('click', () => {
+      const lines = [];
+      document.querySelectorAll('.recrow').forEach(row => {
+        const codes = row.querySelectorAll('.recval code');
+        const name = codes[0] ? codes[0].textContent.trim() : '';
+        for (let i = 2; i < codes.length; i++) {
+          lines.push(`${name}\tTXT\t"${codes[i].textContent.trim()}"`);
+        }
+      });
+      put(lines.join('\n'), all);
+    });
+  }
+
+  // The request form: one panel per key source.
+  const panels = {new: 'src_new', reuse: 'src_reuse', paste: 'src_paste',
+                  csr: 'src_csr'};
+  function showSource() {
+    const picked = document.querySelector('input[name=key_source]:checked');
+    Object.entries(panels).forEach(([k, id]) => {
+      const el = document.getElementById(id);
+      if (el) el.classList.toggle('hidden', !picked || picked.value !== k);
+    });
+    // A pasted CSR carries its own names, so asking for them as well would be
+    // asking a question whose answer is thrown away.
+    const box = document.getElementById('domains');
+    if (box) {
+      const off = picked && picked.value === 'csr';
+      box.disabled = off;
+      box.style.opacity = off ? '.5' : '1';
+    }
+  }
+  document.querySelectorAll('input[name=key_source]').forEach(r => {
+    r.addEventListener('change', showSource);
+  });
+  showSource();
+
+  function showCa() {
+    const picked = document.querySelector('input[name=ca]:checked');
+    const csrCopy = document.getElementById('csrcopy');
+    if (csrCopy && !csrCopy.dataset.wired) {
+      csrCopy.dataset.wired = '1';
+      csrCopy.addEventListener('click', async () => {
+        const t = document.getElementById('csrbox');
+        try {
+          await navigator.clipboard.writeText(t.value);
+          csrCopy.textContent = 'copied';
+        } catch (e) {
+          // clipboard is refused on an insecure origin; selecting the text
+          // still lets somebody copy it with the keyboard
+          t.select();
+          csrCopy.textContent = 'selected — press ⌘C';
+        }
+        setTimeout(() => { csrCopy.textContent = 'copy'; }, 2000);
+      });
+    }
+    const box = document.getElementById('ca_custom');
+    if (box) box.classList.toggle('hidden', !picked || picked.value !== 'custom');
+    // A provider order and an ACME order ask for different things, so the
+    // form shows one set or the other rather than everything at once.
+    const ext = !!picked && picked.value === 'external';
+    const show = (id, on) => {
+      const el = document.getElementById(id);
+      if (el) el.classList.toggle('hidden', !on);
+    };
+    show('subj_fields', ext);
+    show('acme_only', !ext);
+    show('src_choice', !ext);
+    show('src_ext', ext);
+    if (ext) {
+      // Reset to the only source that applies, so a half-filled "paste a key"
+      // panel cannot be submitted against a provider order.
+      const mine = document.querySelector('input[name=key_source][value=new]');
+      if (mine) { mine.checked = true; mine.dispatchEvent(new Event('change', {bubbles: true})); }
+    }
+  }
+  document.querySelectorAll('input[name=ca]').forEach(r => {
+    r.addEventListener('change', showCa);
+  });
+  showCa();
+
+  // While an order is moving, the page is a view of a row that something else is
+  // changing — so it reloads itself. Only while it is moving: a finished order
+  // reloading for ever would be a page nobody could read.
+  {% if order and order.in_flight %}
+  setTimeout(() => {
+    if (window.portalSafeToReload && !window.portalSafeToReload()) return;
+    window.location.reload();
+  }, 12000);
+  {% endif %}
+})();
+</script>
+{% endblock %}

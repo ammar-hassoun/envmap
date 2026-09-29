@@ -1,0 +1,292 @@
+{% extends "base.html" %}
+{% block crumbs %}<a href="/pam">Privileged Access</a> <span class="sep">/</span>
+  <a href="/pam?sec=targets">Targets</a> <span class="sep">/</span>
+  <b>Terminal</b>{% endblock %}
+{% block content %}
+{#- A multi-session SSH workspace: each target is a tab, all connected at once,
+    switch by clicking. The + opens a picker of the targets this person may
+    reach; every tab is its own websocket to /pam/ssh.ws, recorded and audited
+    like any other session. The shell does the echoing and editing — nothing
+    here interprets a keystroke. -#}
+<link rel="stylesheet" href="/static/xterm.css">
+<script nonce="{{ csp_nonce() }}" src="/static/xterm.js"></script>
+<script nonce="{{ csp_nonce() }}" src="/static/addon-fit.js"></script>
+<style>
+  .wsx-head { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:10px; }
+  .wsx-tabs { display:flex; gap:3px; align-items:flex-end; flex-wrap:wrap;
+    margin-bottom:0; position:relative; }
+  .wsx-tab { display:inline-flex; align-items:center; gap:7px; padding:6px 10px;
+    border-radius:9px 9px 0 0; background:var(--overlay); color:var(--text2);
+    cursor:pointer; border:1px solid transparent; border-bottom:none;
+    font-size:12.5px; max-width:220px; user-select:none; }
+  .wsx-tab.on { background:#0b0f16; color:var(--text); border-color:var(--line); }
+  .wsx-tab .nm { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .wsx-tab .dot { width:7px; height:7px; border-radius:50%; flex:0 0 auto;
+    background:var(--muted); }
+  .wsx-tab .dot.on { background:var(--ok); }
+  .wsx-tab .dot.bad { background:var(--danger); }
+  .wsx-tab .x { opacity:.5; font-size:14px; line-height:1; padding:0 2px; }
+  .wsx-tab .x:hover { opacity:1; color:var(--danger-ink, #ff8f8f); }
+  .wsx-add { border:1px dashed var(--line); background:transparent; color:var(--text2);
+    border-radius:9px; width:30px; height:30px; cursor:pointer; font-size:17px;
+    line-height:1; margin-left:4px; }
+  .wsx-add:hover { color:var(--text); border-color:var(--muted); }
+  .wsx-wrap { border:1px solid var(--line); border-radius:0 12px 12px 12px;
+    background:#0b0f16; padding:10px 12px; height:70vh; min-height:340px;
+    overflow:hidden; position:relative; }
+  .wsx-pane { position:absolute; inset:10px 12px; }
+  .wsx-pane .xterm { height:100%; }
+  /* the target picker */
+  .wsx-pick { position:absolute; z-index:40; top:34px; left:0; width:340px;
+    max-width:90vw; background:var(--panel); border:1px solid var(--line2);
+    border-radius:12px; box-shadow:0 12px 40px rgba(0,0,0,.5); padding:8px;
+    display:none; }
+  .wsx-pick.open { display:block; }
+  .wsx-pick input { width:100%; box-sizing:border-box; margin-bottom:6px; }
+  .wsx-list { max-height:300px; overflow:auto; }
+  .wsx-item { display:flex; align-items:center; gap:8px; padding:7px 8px;
+    border-radius:8px; cursor:pointer; font-size:13px; }
+  .wsx-item:hover { background:var(--overlay); }
+  .wsx-item .addr { font-family:var(--mono); font-size:11px; color:var(--muted);
+    margin-left:auto; }
+  .wsx-empty { padding:10px; color:var(--muted); font-size:12.5px; }
+</style>
+
+<div class="wsx-head">
+  <h1 style="margin:0;">Terminal</h1>
+  <span class="hint" id="wsxWhere"></span>
+  <span style="flex:1"></span>
+  {#- Files for whichever tab is FOCUSED. The window is opened with that
+      session's own target, because the page can hold several at once and a
+      transfer must never go to the tab somebody is not looking at. -#}
+  <button type="button" class="btn btn-ghost" id="wsxFiles"
+          title="upload or download files on this target">⇅ Files</button>
+  <a class="btn btn-ghost" href="/pam?sec=targets">← Back to targets</a>
+</div>
+
+<div class="wsx-tabs" id="wsxTabs">
+  <button class="wsx-add" id="wsxAdd" title="connect to another target">＋</button>
+  <div class="wsx-pick" id="wsxPick">
+    <input type="text" id="wsxSearch" placeholder="search targets…" spellcheck="false" autocomplete="off">
+    <div class="wsx-list" id="wsxListEl"></div>
+  </div>
+</div>
+<div class="wsx-wrap" id="wsxWrap"></div>
+<p class="sub" style="margin-top:10px;font-size:11.5px;">
+  Each tab is a separate session, authenticated by the target's brokered
+  credential. Everything typed is recorded and audited — a value the host asks
+  for and does not echo back is never recorded. Close a tab to end that session.</p>
+
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  const wrap = document.getElementById('wsxWrap');
+  const tabsBar = document.getElementById('wsxTabs');
+  const addBtn = document.getElementById('wsxAdd');
+  const pick = document.getElementById('wsxPick');
+  const search = document.getElementById('wsxSearch');
+  const listEl = document.getElementById('wsxListEl');
+  const where = document.getElementById('wsxWhere');
+  if (!window.Terminal) { wrap.textContent = 'terminal library did not load'; return; }
+
+  const THEME = {background:'#0b0f16', foreground:'#d7e2f0', cursor:'#6ee7a8',
+    selectionBackground:'#2b3a52', green:'#6ee7a8', red:'#ff8f8f',
+    yellow:'#febc2e', blue:'#7cb0ff', brightGreen:'#8ff0bf'};
+  const MONO = getComputedStyle(document.body).getPropertyValue('--mono') || 'ui-monospace, monospace';
+
+  const S = [];            // sessions
+  const REASON_MODE = {{ reason_mode|default('prod')|tojson }};
+  let active = -1, targets = null;
+
+  function open(tid, name, address, isProd, confirm, just) {
+    // The pane is opened VISIBLE so xterm can measure a character cell — opened
+    // in a display:none pane it measures nothing, fit returns a couple of
+    // columns, and the first prompt wraps one char per line. switchTo() hides
+    // the others a beat later.
+    S.forEach(o => { o.pane.style.display = 'none'; });
+    const pane = document.createElement('div');
+    pane.className = 'wsx-pane';
+    wrap.appendChild(pane);
+    const term = new Terminal({fontFamily:MONO, fontSize:13, lineHeight:1.25,
+      cursorBlink:true, scrollback:10000, macOptionIsMeta:true, theme:THEME});
+    const fit = new FitAddon.FitAddon(); term.loadAddon(fit); term.open(pane);
+    const s = {tid, name, address, isProd, confirm, just, term, fit, pane, ws:null,
+      open:false, dialed:false, used:false, early:[], state:'connecting…', tab:null, dot:null};
+    term.onData(d => { s.used = true;
+      if (s.open && s.ws) s.ws.send(JSON.stringify({i:d}));
+      else if (s.early.length < 200) s.early.push(d); });
+    S.push(s); renderTabs(); switchTo(S.length - 1);
+    return s;
+  }
+
+  function dial(s) {
+    if (s.dialed) return; s.dialed = true;
+    // Wait for the pane to have a real width before opening the socket: `ssh -tt`
+    // allocates the REMOTE pty at the size in the query, so dialing before the
+    // pane is laid out makes the first prompt wrap one char per line. Poll fit a
+    // few frames until the width is real, then proceed regardless.
+    let tries = 0;
+    const go = () => {
+      try { s.fit.fit(); } catch (e) {}
+      if (s.pane.clientWidth < 200 && tries++ < 30) {
+        requestAnimationFrame(go); return;
+      }
+      _connect(s);
+    };
+    requestAnimationFrame(go);
+  }
+
+  function _connect(s) {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const q = new URLSearchParams({tid: s.tid, rows: s.term.rows, cols: s.term.cols});
+    if (s.isProd && s.confirm) q.set('confirm', s.confirm);
+    if (s.just) { q.set('ticket', s.just.ticket); q.set('stime', s.just.stime);
+                  q.set('summary', s.just.summary); }
+    s.ws = new WebSocket(proto + '//' + location.host + '/pam/ssh.ws?' + q);
+    s.ws.onopen = () => { s.open = true; setState(s, 'connected');
+      // re-fit and tell the host, in case the pane grew between dial and open
+      try { s.fit.fit(); } catch (e) {}
+      s.ws.send(JSON.stringify({r:[s.term.rows, s.term.cols]}));
+      s.early.splice(0).forEach(d => s.ws.send(JSON.stringify({i:d})));
+      if (S[active] === s) s.term.focus(); };
+    s.ws.onmessage = e => s.term.write(e.data);
+    s.ws.onclose = e => { s.open = false; setState(s, 'closed');
+      const never = !s.used || e.code === 4001;
+      s.term.write('\r\n\x1b[90m— ' + (never
+        ? 'session could not start' + (e.reason ? ': ' + e.reason : '') + '.'
+        : 'session closed.') + '\x1b[0m\r\n'); };
+    s.ws.onerror = () => { if (!s.open) s.term.write(
+      '\r\n\x1b[31mCould not open a session.\x1b[0m\r\n'); };
+  }
+
+  function setState(s, txt) { s.state = txt;
+    if (s.dot) s.dot.className = 'dot' + (txt === 'connected' ? ' on'
+      : (txt === 'closed' ? ' bad' : ''));
+    if (S[active] === s) where.textContent = s.address + ' · ' + txt; }
+
+  const filesBtn = document.getElementById('wsxFiles');
+  if (filesBtn) filesBtn.addEventListener('click', () => {
+    const s = S[active];
+    if (!s) return;
+    if (!window.pamFiles) return;
+    // Only an SSH session has a file channel; the button says so rather than
+    // opening a window that cannot list anything.
+    window.pamFiles(s.tid, s.name + ' · ' + s.address);
+  });
+
+  function switchTo(i) {
+    if (i < 0 || i >= S.length) return;
+    active = i;
+    S.forEach((s, j) => { s.pane.style.display = j === i ? '' : 'none'; });
+    const s = S[i]; renderTabs();
+    where.textContent = s.address + ' · ' + s.state;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      try { s.fit.fit(); } catch (e) {}
+      if (!s.dialed) dial(s);
+      else if (s.open && s.ws) s.ws.send(JSON.stringify({r:[s.term.rows, s.term.cols]}));
+      s.term.focus();
+    }));
+    setTimeout(() => { if (!s.dialed) dial(s); }, 160);   // hidden-render fallback
+  }
+
+  function close(i) {
+    const s = S[i];
+    try { if (s.ws) s.ws.close(); } catch (e) {}
+    try { s.term.dispose(); } catch (e) {}
+    s.pane.remove(); S.splice(i, 1);
+    if (!S.length) { location.href = '/pam?sec=targets'; return; }
+    switchTo(Math.min(i, S.length - 1));
+  }
+
+  function renderTabs() {
+    [...tabsBar.querySelectorAll('.wsx-tab')].forEach(e => e.remove());
+    S.forEach((s, i) => {
+      const el = document.createElement('div');
+      el.className = 'wsx-tab' + (i === active ? ' on' : '');
+      const dot = document.createElement('span'); dot.className = 'dot'; s.dot = dot;
+      setState(s, s.state);
+      const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = s.name;
+      const x = document.createElement('span'); x.className = 'x'; x.textContent = '×';
+      x.title = 'close this session';
+      x.onclick = ev => { ev.stopPropagation(); close(i); };
+      el.append(dot, nm, x);
+      el.onclick = () => switchTo(i);
+      tabsBar.insertBefore(el, addBtn);
+    });
+  }
+
+  // ── the + picker ─────────────────────────────────────────────
+  function showPicker() { pick.classList.add('open'); search.value = ''; search.focus(); renderList(''); }
+  function hidePicker() { pick.classList.remove('open'); }
+  addBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    if (pick.classList.contains('open')) { hidePicker(); return; }
+    if (targets) { showPicker(); return; }
+    fetch('/pam/targets.json').then(r => r.json()).then(list => {
+      targets = list; showPicker();
+    }).catch(() => { targets = []; showPicker(); });
+  });
+  document.addEventListener('click', e => {
+    if (!pick.contains(e.target) && e.target !== addBtn) hidePicker(); });
+  search.addEventListener('input', () => renderList(search.value.toLowerCase()));
+
+  function renderList(q) {
+    listEl.innerHTML = '';
+    const rows = (targets || []).filter(t =>
+      !q || t.name.toLowerCase().includes(q) || (t.address || '').includes(q));
+    if (!rows.length) {
+      listEl.innerHTML = '<div class="wsx-empty">no SSH targets you may connect to'
+        + (q ? ' match that' : '') + '.</div>'; return;
+    }
+    rows.forEach(t => {
+      const el = document.createElement('div'); el.className = 'wsx-item';
+      el.innerHTML = '<b></b>' + (t.is_prod ? ' <span class="sv sv-high" '
+        + 'style="font-size:10px;">prod</span>' : '')
+        + '<span class="addr"></span>';
+      el.querySelector('b').textContent = t.name;
+      el.querySelector('.addr').textContent = t.address;
+      el.onclick = () => {
+        let confirm = '';
+        if (t.is_prod) {
+          confirm = window.prompt(t.name + ' is production — type its name to connect:', '');
+          if (confirm !== t.name) return;   // cancelled or wrong
+        }
+        let just = null;
+        if (REASON_MODE === 'always' || (REASON_MODE === 'prod' && t.is_prod)) {
+          const ticket = (window.prompt('Ticket URL for accessing ' + t.name
+            + ' (a full http(s) link):', '') || '').trim();
+          if (!/^https?:\/\//i.test(ticket)) return;   // cancelled or not a URL
+          const stime = (window.prompt('Session time — how long you need '
+            + t.name + ' (e.g. 30 minutes):', '') || '').trim();
+          if (!stime) return;
+          const summary = (window.prompt('Summary — what you will do on '
+            + t.name + ':', '') || '').trim();
+          if (summary.length < 4) return;
+          just = {ticket, stime, summary};
+        }
+        hidePicker();
+        open(t.id, t.name, t.address, t.is_prod, confirm, just);
+      };
+      listEl.appendChild(el);
+    });
+  }
+
+  let sizing;
+  window.addEventListener('resize', () => {
+    clearTimeout(sizing); sizing = setTimeout(() => {
+      const s = S[active]; if (!s) return;
+      try { s.fit.fit(); } catch (e) {}
+      if (s.open && s.ws) s.ws.send(JSON.stringify({r:[s.term.rows, s.term.cols]}));
+    }, 90);
+  });
+  window.addEventListener('pagehide', () => S.forEach(s => { if (s.ws) s.ws.close(); }));
+
+  // the target the page was opened on becomes the first tab; the justification
+  // (if the confirm page collected one) rides in from the query string
+  const FIRST_JUST = {{ ({'ticket': ticket, 'stime': stime, 'summary': summary}
+                         if summary else None)|tojson }};
+  open({{ t.id|tojson }}, {{ t.name|tojson }}, {{ (t.username ~ '@' ~ t.address)|tojson }},
+       {{ (t.is_prod|default(false))|tojson }}, {{ confirm|tojson }}, FIRST_JUST);
+})();
+</script>
+{% include "_pam_files_dialog.html" %}
+{% endblock %}

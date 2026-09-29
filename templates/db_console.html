@@ -1,0 +1,738 @@
+{% extends "base.html" %}
+{% block crumbs %}<a href="/db">Databases</a> <span class="sep">/</span>
+  <b>{{ server.name }}</b>{% endblock %}
+{% block content %}
+
+<style>
+  .bkmask { position:fixed; inset:0; background:rgba(0,0,0,.55);
+    display:flex; align-items:flex-start; justify-content:center;
+    padding:6vh 16px; z-index:60; overflow:auto; }
+  .bkmask[hidden] { display:none; }
+  .bkbox { background:var(--panel); border:1px solid var(--line2);
+    border-radius:14px; width:100%; max-width:620px;
+    box-shadow:0 30px 80px -30px var(--shadow-cast); }
+  .bkscope { display:flex; flex-direction:column; gap:8px; }
+  .bklist { max-height:230px; overflow:auto; border:1px solid var(--line);
+    border-radius:9px; background:var(--well); padding:6px; }
+  .bkrow { display:flex; align-items:center; gap:9px; padding:4px 7px;
+    border-radius:6px; font-size:12.5px; cursor:pointer; }
+  .bkrow:hover { background:var(--panel2); }
+  .bktiny { padding:3px 10px; font-size:11px; }
+</style>
+
+
+<div class="kv" style="margin-bottom:8px;flex-wrap:wrap;gap:8px;">
+  <h1 style="margin:0;">{{ plogo(provider, 22) }} {{ server.name }}</h1>
+  <span class="badge" style="font-family:var(--mono);">{{ where }}</span>
+  <span class="badge">as {{ held.user }}</span>
+  {% if held.write %}
+  <span class="badge" style="color:var(--danger-ink);border-color:var(--danger-line);">
+    ⚠ write mode</span>
+  {% else %}
+  <span class="badge" style="color:var(--ok-ink);">read-only</span>
+  {% endif %}
+  <span style="flex:1"></span>
+  <button class="btn-ghost" id="bkbtn"
+          style="padding:6px 14px;font-size:12px;">⤓ Backup</button>
+  <button class="btn-ghost" id="refresh"
+          style="padding:6px 14px;font-size:12px;">Refresh</button>
+  <form method="post" action="/db/{{ server.id }}/close">
+    <button class="btn-ghost" style="padding:6px 14px;font-size:12px;">Sign out</button></form>
+</div>
+
+{% if msg %}<div class="flash">✓ {{ msg }}</div>{% endif %}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+
+<div id="dbhead">{% include "dbtabs/_head.html" %}</div>
+
+{% set tabs = [('overview','Overview'), ('tables','Tables'), ('query','Query'),
+               ('roles','Roles'), ('activity','Activity'), ('locks','Locks')] %}
+<div class="kv" style="gap:6px;margin-bottom:12px;flex-wrap:wrap;" id="dbtabs">
+  {% for key, lab in tabs %}
+  <button class="{{ 'btn' if tab == key else 'btn-ghost' }} tabbtn"
+          data-tab="{{ key }}" style="padding:6px 15px;font-size:12px;">{{ lab }}</button>
+  {% endfor %}
+  <span style="flex:1"></span>
+  <span class="sec-note" id="tabspin" style="margin:0;visibility:hidden;">working…</span>
+</div>
+
+<div id="dbpanel">{% include "dbtabs/" ~ tab ~ ".html" %}</div>
+
+{# ── backup ──────────────────────────────────────────────────────────────
+   Built from catalogue queries rather than by shelling out to pg_dump or
+   mysqldump: neither is in the portal's image, so a button that needed them
+   would work on a laptop and not in the container anybody runs. The trade is
+   real and is stated in the dialog and again in the file's own header. #}
+<div class="bkmask" id="bkmask" hidden>
+  <div class="bkbox" role="dialog" aria-modal="true" aria-labelledby="bktitle">
+    <div class="card-h">
+      <b id="bktitle" style="font-size:14.5px;">Download a backup</b>
+      <span class="hint" id="bkwhere"></span>
+      <span style="flex:1"></span>
+      <button type="button" class="iconb" id="bkclose" aria-label="Close">✕</button>
+    </div>
+    <div class="card-b">
+      <div class="cmp-lbl">What to include</div>
+      <div class="bkscope" id="bkscope">
+        {# the whole server first: it is the one people come here for after
+           the first time, and burying it under the narrower choices made it
+           look as though the portal could not do it #}
+        <label class="pick"><input type="radio" name="bkwhat" value="server">
+          <span><b>Every database on this server</b><small id="bkallnote">one
+            .sql file per database, in a zip</small></span></label>
+        <label class="pick"><input type="radio" name="bkwhat" value="db" checked>
+          <span><b>The whole database</b><small id="bkdbname">every schema and
+            table this account can see</small></span></label>
+        <label class="pick"><input type="radio" name="bkwhat" value="schema">
+          <span><b>One schema</b><small>choose below</small></span></label>
+        <label class="pick"><input type="radio" name="bkwhat" value="tables">
+          <span><b>Chosen tables</b><small>tick the ones you want</small></span></label>
+      </div>
+
+      <div id="bkempty" hidden class="sec-note"
+           style="margin-top:14px;color:var(--warn-ink);"></div>
+
+      <div id="bkschemawrap" hidden style="margin-top:14px;">
+        <div class="cmp-lbl">Schema</div>
+        <select id="bkschema" style="width:100%;max-width:340px;"></select>
+      </div>
+
+      <div id="bktableswrap" hidden style="margin-top:14px;">
+        <div class="kv" style="justify-content:space-between;">
+          <div class="cmp-lbl" style="margin:0;">Tables
+            <span class="hint" id="bkcount"></span></div>
+          <div class="kv" style="gap:8px;">
+            <button type="button" class="btn-ghost bktiny" id="bkall">all</button>
+            <button type="button" class="btn-ghost bktiny" id="bknone">none</button>
+          </div>
+        </div>
+        <input type="search" id="bkfilter" placeholder="filter…"
+               style="width:100%;margin:8px 0;">
+        <div class="bklist" id="bktables"></div>
+      </div>
+
+      <div class="cmp-lbl" style="margin-top:16px;">Contents</div>
+      <div class="bkscope">
+        <label class="pick"><input type="radio" name="bkdata" value="1" checked>
+          <span><b>Structure and data</b><small>CREATE TABLE and every row</small></span></label>
+        <label class="pick"><input type="radio" name="bkdata" value="0">
+          <span><b>Structure only</b><small>no rows — much smaller and quicker</small></span></label>
+      </div>
+      <label class="pick" style="margin-top:10px;">
+        <input type="checkbox" id="bkdrop">
+        <span><b>Add DROP TABLE before each table</b>
+          <small>for restoring over an existing database — destructive there,
+            harmless here</small></span></label>
+
+      <div class="sec-note" style="margin-top:14px;">A logical export: tables,
+        constraints, indexes and rows. It does <b>not</b> include roles, grants,
+        standalone sequences, triggers, functions or extensions, and it is read
+        table by table rather than from one frozen snapshot. For a restorable
+        backup of a production server, run pg_dump or mysqldump there. Reading
+        is read-only — this cannot change anything on the server.</div>
+
+      <div class="actions" style="margin-top:16px;">
+        <button type="button" class="btn" id="bkgo">⤓ Download backup</button>
+        <span class="hint" id="bkstate" style="margin-left:10px;"></span>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<script nonce="{{ csp_nonce() }}">
+// ── the console's front end ─────────────────────────────────────────────
+// Two jobs. Swap tabs without reloading the page, because on a database in
+// another region a reload meant re-running the counters and the database list
+// for an answer that had not changed. And make the editor worth typing in:
+// colours, and completion that knows this database's tables and columns.
+(function () {
+  const CID = "{{ server.id }}";
+  let db = "{{ database }}", tab = "{{ tab }}";
+  const panel = document.getElementById('dbpanel');
+  const spin = document.getElementById('tabspin');
+
+  const url = (path, extra) => {
+    const q = new URLSearchParams({database: db, ...(extra || {})});
+    return `/db/${CID}${path}?${q}`;
+  };
+
+  function push() {
+    const q = new URLSearchParams({tab, database: db});
+    history.replaceState(null, '', `/db/${CID}?${q}`);
+  }
+
+  async function swap(path, extra) {
+    spin.style.visibility = 'visible';
+    panel.classList.add('busy');
+    try {
+      const r = await fetch(url(path, extra), {headers: {'X-Panel': '1'}});
+      if (r.status === 409) {          // the console was closed underneath us
+        location.href = `/db?open=${CID}&back=` +
+          encodeURIComponent(location.pathname + location.search);
+        return;
+      }
+      panel.innerHTML = await r.text();
+      wire();
+      panel.scrollIntoView({block: 'nearest'});
+    } catch (e) {
+      panel.innerHTML = '<div class="flash err">⚠ could not load that: ' +
+        String(e).replace(/[<>&]/g, '') + '</div>';
+    } finally {
+      spin.style.visibility = 'hidden';
+      panel.classList.remove('busy');
+    }
+  }
+
+  function show(name) {
+    tab = name;
+    document.querySelectorAll('.tabbtn').forEach(b => {
+      const on = b.dataset.tab === name;
+      b.className = (on ? 'btn' : 'btn-ghost') + ' tabbtn';
+    });
+    push();
+    return swap(`/tab/${name}`);
+  }
+
+  document.getElementById('dbtabs').addEventListener('click', e => {
+    const b = e.target.closest('.tabbtn');
+    if (b) show(b.dataset.tab);
+  });
+
+  document.getElementById('refresh').addEventListener('click', async () => {
+    spin.style.visibility = 'visible';
+    const head = await fetch(url('/head', {refresh: '1'}));
+    if (head.ok) {
+      document.getElementById('dbhead').innerHTML = await head.text();
+      wireHead();
+    }
+    await swap(`/tab/${tab}`, {refresh: '1'});
+  });
+
+  function wireHead() {
+    const pick = document.getElementById('dbpick');
+    if (pick) pick.addEventListener('change', () => {
+      db = pick.value;
+      schema = null;                   // a different database, different tables
+      show(tab);
+    });
+    document.querySelectorAll('#dbhead [data-tab]').forEach(a =>
+      a.addEventListener('click', e => { e.preventDefault(); show(a.dataset.tab); }));
+  }
+
+  // ── what the panel offers, whichever tab it is ──────────────
+  function wire() {
+    panel.querySelectorAll('.tablink').forEach(a =>
+      a.addEventListener('click', e => {
+        e.preventDefault();
+        swap('/table', {schema: a.dataset.schema, name: a.dataset.name});
+      }));
+    panel.querySelectorAll('.backtab').forEach(a =>
+      a.addEventListener('click', e => { e.preventDefault(); show(a.dataset.tab); }));
+    panel.querySelectorAll('.dbgo').forEach(b =>
+      b.addEventListener('click', () => {
+        db = b.dataset.db;
+        const pick = document.getElementById('dbpick');
+        if (pick) pick.value = db;
+        schema = null;
+        show(b.dataset.tab);
+      }));
+    panel.querySelectorAll('.sqlfill').forEach(el =>
+      el.addEventListener('click', async () => {
+        const sql = el.dataset.sql;
+        if (tab !== 'query') await show('query');
+        const box = document.getElementById('sql');
+        if (box) { box.value = sql; box.dispatchEvent(new Event('input')); box.focus(); }
+      }));
+
+    const filter = panel.querySelector('#tfilter');
+    if (filter) filter.addEventListener('input', () => {
+      const want = filter.value.trim().toLowerCase();
+      panel.querySelectorAll('#ttable tbody tr').forEach(tr => {
+        tr.hidden = want && !tr.dataset.n.includes(want);
+      });
+    });
+
+    // paging and sorting inside a table, without leaving the panel
+    const t = panel.querySelector('#tctx');
+    if (t) {
+      const base = {schema: t.dataset.schema, name: t.dataset.name};
+      // paging keeps the sort it already has; sorting goes back to page one,
+      // because staying on page 40 of a different ordering shows nothing you
+      // were looking at
+      panel.querySelectorAll('.pagelink').forEach(a =>
+        a.addEventListener('click', e => {
+          e.preventDefault();
+          swap('/table', {...base, page: a.dataset.page,
+                          order: t.dataset.order, desc: t.dataset.desc});
+        }));
+      panel.querySelectorAll('.sortlink').forEach(a =>
+        a.addEventListener('click', e => {
+          e.preventDefault();
+          swap('/table', {...base, page: 1, order: a.dataset.col,
+                          desc: a.dataset.desc ? '1' : ''});
+        }));
+    }
+
+    const form = panel.querySelector('#qform');
+    if (form) editor(form);
+  }
+
+  // ── the editor ─────────────────────────────────────────────
+  let schema = null;                   // {tables:[{qualified,schema,name,columns}]}
+
+  async function loadSchema() {
+    if (schema) return schema;
+    try {
+      const r = await fetch(url('/schema.json'));
+      schema = r.ok ? await r.json() : {tables: [], keywords: []};
+    } catch (e) {
+      schema = {tables: [], keywords: []};
+    }
+    return schema;
+  }
+
+  const KW = new Set(('SELECT FROM WHERE GROUP ORDER BY HAVING LIMIT OFFSET ' +
+    'JOIN LEFT RIGHT INNER OUTER FULL CROSS ON AS AND OR NOT IN EXISTS ' +
+    'BETWEEN LIKE ILIKE IS NULL CASE WHEN THEN ELSE END WITH UNION ALL ' +
+    'INTERSECT EXCEPT DISTINCT INSERT INTO VALUES UPDATE SET DELETE ' +
+    'RETURNING CREATE ALTER DROP TABLE INDEX VIEW TRUNCATE BEGIN COMMIT ' +
+    'ROLLBACK EXPLAIN ANALYZE VACUUM GRANT REVOKE ASC DESC OVER PARTITION ' +
+    'LATERAL USING CAST COUNT SUM AVG MIN MAX COALESCE TRUE FALSE').split(' '));
+
+  const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  // One left-to-right pass, emitting every character exactly once.
+  //
+  // This layer sits behind the textarea and must line up with it character for
+  // character. The first version lifted strings and quoted names out into
+  // short numbered placeholders and put them back at the end, so
+  // `public."Admins"` became `public. 0 ` — fifteen characters of typing
+  // behind ten of highlight, the two overlapping into something unreadable.
+  // It never even restored them: the number pass wrapped the placeholder's
+  // digit in a span first, so the pattern that put them back stopped matching.
+  //
+  // A tokeniser cannot drift, because nothing is removed. It also gets
+  // "Admins" right for a second reason — in PostgreSQL double quotes mark an
+  // identifier, not a string, so it should not be coloured like one.
+  const TOKEN = new RegExp([
+    "('(?:[^']|'')*'?)",              // string literal, unterminated allowed
+    '("(?:[^"]|"")*"?)',              // quoted identifier
+    '(`(?:[^`]|``)*`?)',              // MySQL quoted identifier
+    '(--[^\\n]*)',                    // line comment
+    '(/\\*[\\s\\S]*?(?:\\*/|$))',     // block comment
+    '(\\b\\d+(?:\\.\\d+)?\\b)',       // number
+    '([A-Za-z_][A-Za-z0-9_$]*)',      // word
+  ].join('|'), 'g');
+
+  function paint(text) {
+    let out = '', last = 0, m;
+    TOKEN.lastIndex = 0;
+    while ((m = TOKEN.exec(text)) !== null) {
+      out += esc(text.slice(last, m.index));
+      const t = m[0];
+      if (!t) { TOKEN.lastIndex++; continue; }
+      if (m[1]) out += '<span class="s">' + esc(t) + '</span>';
+      else if (m[2] || m[3]) out += esc(t);        // an identifier, uncoloured
+      else if (m[4] || m[5]) out += '<span class="c">' + esc(t) + '</span>';
+      else if (m[6]) out += '<span class="n">' + esc(t) + '</span>';
+      else if (KW.has(t.toUpperCase())) out += '<span class="k">' + esc(t) + '</span>';
+      else out += esc(t);
+      last = m.index + t.length;
+    }
+    return out + esc(text.slice(last));
+  }
+
+  function editor(form) {
+    const box = form.querySelector('#sql');
+    const hi = form.querySelector('#sqlhi');
+    const ac = form.querySelector('#acbox');
+    if (!box) return;
+    let items = [], at = 0, tokenStart = 0;
+
+    // What is in the editor survives changing tab and reloading the page.
+    // Tabs are fragments now, so the query panel is rebuilt from scratch every
+    // time it is shown — without this, glancing at Tables and coming back
+    // silently threw away whatever had been typed, and the next Run posted an
+    // empty statement.
+    const KEY = `sql:${CID}:${db}`;
+    if (!box.value) {
+      const kept = sessionStorage.getItem(KEY);
+      if (kept) box.value = kept;
+    }
+    const remember = () => {
+      if (box.value.trim()) sessionStorage.setItem(KEY, box.value);
+      else sessionStorage.removeItem(KEY);
+    };
+
+    const repaint = () => {
+      hi.innerHTML = paint(box.value) + '\n';
+      hi.scrollTop = box.scrollTop;
+      hi.scrollLeft = box.scrollLeft;
+    };
+    box.addEventListener('input', () => { remember(); repaint(); suggest(); });
+    box.addEventListener('scroll', repaint);
+    repaint();
+    loadSchema();
+
+    // FROM x AS y / JOIN a.b c — so "c." can offer that table's columns.
+    // The name may be quoted (FROM public."Admins"), which is exactly the case
+    // the completion itself produces, so the pattern has to accept it or the
+    // columns of every mixed-case table go missing.
+    const ID = '(?:"[^"]*"|`[^`]*`|[A-Za-z_][\\w$]*)';
+    const unquote = (s) => String(s || '').split('.')
+      .map(p => p.replace(/^["`]|["`]$/g, '').replace(/""/g, '"'))
+      .join('.');
+
+    function aliases() {
+      const out = {};
+      const re = new RegExp(
+        `\\b(?:FROM|JOIN|UPDATE|INTO)\\s+(${ID}(?:\\.${ID})?)` +
+        `(?:\\s+(?:AS\\s+)?([A-Za-z_][\\w$]*))?`, 'gi');
+      let m;
+      while ((m = re.exec(box.value))) {
+        const target = unquote(m[1]);
+        out[target.toLowerCase()] = target;
+        const short = target.includes('.') ? target.split('.').pop() : target;
+        out[short.toLowerCase()] = target;
+        if (m[2] && !/^(WHERE|ON|SET|GROUP|ORDER|LIMIT|USING|LEFT|RIGHT|INNER|JOIN|AND|OR)$/i.test(m[2])) {
+          out[m[2].toLowerCase()] = target;
+        }
+      }
+      return out;
+    }
+
+    function tableFor(name) {
+      if (!schema) return null;
+      const want = unquote(name).toLowerCase();
+      return schema.tables.find(t => t.qualified.toLowerCase() === want) ||
+             schema.tables.find(t => t.name.toLowerCase() === want) || null;
+    }
+
+    function suggest(force) {
+      if (!schema) { hide(); return; }
+      const upto = box.value.slice(0, box.selectionStart);
+      // qualified: something. — offer that table's columns and nothing else
+      const dotted = upto.match(new RegExp(`(${ID}(?:\\.${ID})?)\\.([\\w$]*)$`));
+      let word, pool = [];
+      if (dotted) {
+        word = dotted[2];
+        tokenStart = box.selectionStart - word.length;
+        const known = aliases();
+        const q = unquote(dotted[1]).toLowerCase();
+        const t = tableFor(known[q] || dotted[1]);
+        if (t) {
+          pool = t.columns.map(c => ({text: c.name, insert: c.insert,
+                                      note: c.type, kind: 'column'}));
+        } else {
+          pool = schema.tables.filter(x => x.schema.toLowerCase() === q)
+                              .map(x => ({text: x.name, insert: x.insert_name,
+                                          note: 'table', kind: 'table'}));
+        }
+      } else {
+        const m = upto.match(/([\w$]*)$/);
+        word = m ? m[1] : '';
+        tokenStart = box.selectionStart - word.length;
+        if (!word && !force) { hide(); return; }
+        const after = /\b(FROM|JOIN|UPDATE|INTO|TABLE)\s+[\w$.]*$/i.test(upto);
+        const known = aliases();
+        pool = schema.tables.map(t => ({text: t.qualified, insert: t.insert,
+                                        note: t.columns.length + ' cols',
+                                        kind: 'table'}));
+        if (!after) {
+          // columns of whatever this statement already mentions come first:
+          // most of the time that is what is being typed
+          const seen = new Set();
+          Object.values(known).forEach(q => {
+            const t = tableFor(q);
+            if (t && !seen.has(t.qualified)) {
+              seen.add(t.qualified);
+              t.columns.forEach(c => pool.push(
+                {text: c.name, insert: c.insert,
+                 note: t.name + ' · ' + c.type, kind: 'column'}));
+            }
+          });
+          pool = pool.concat((schema.keywords || []).map(
+            k => ({text: k, note: '', kind: 'keyword'})));
+        }
+      }
+      const want = word.toLowerCase();
+      const starts = [], contains = [];
+      for (const p of pool) {
+        const t = p.text.toLowerCase();
+        if (!want || t.startsWith(want)) starts.push(p);
+        else if (t.includes(want)) contains.push(p);
+        if (starts.length > 60) break;
+      }
+      items = starts.concat(contains).slice(0, 40);
+      if (!items.length) { hide(); return; }
+      at = 0;
+      draw();
+    }
+
+    function draw() {
+      ac.innerHTML = items.map((p, i) =>
+        `<div class="acitem${i === at ? ' on' : ''}" data-i="${i}">` +
+        `<b>${esc(p.text)}</b><span>${
+          p.insert && p.insert !== p.text ? 'needs quotes · ' : ''}${
+          esc(p.note)}</span></div>`).join('');
+      ac.hidden = false;
+      // under the caret line, roughly: the textarea gives no caret geometry,
+      // so the current line and column drive it
+      const before = box.value.slice(0, box.selectionStart);
+      const line = before.split('\n').length - 1;
+      const col = before.length - before.lastIndexOf('\n') - 1;
+      const cs = getComputedStyle(box);
+      const lh = parseFloat(cs.lineHeight) || 20;
+      ac.style.top = (box.offsetTop + 34 + (line + 1) * lh - box.scrollTop) + 'px';
+      ac.style.left = Math.min(box.offsetLeft + 14 + col * 7.2,
+                               box.offsetWidth - 260) + 'px';
+      ac.querySelectorAll('.acitem').forEach(el =>
+        el.addEventListener('mousedown', e => {
+          e.preventDefault();
+          accept(items[+el.dataset.i]);
+        }));
+    }
+
+    const hide = () => { ac.hidden = true; items = []; };
+
+    function accept(pick) {
+      if (!pick) return;
+      // What goes in is `insert`, not the label: a name that needs quoting is
+      // shown as Admins and typed as "Admins", because PostgreSQL folds an
+      // unquoted identifier to lower case and would not find it.
+      const put = pick.insert || pick.text;
+      const end = box.selectionStart;
+      box.value = box.value.slice(0, tokenStart) + put + box.value.slice(end);
+      const to = tokenStart + put.length;
+      box.setSelectionRange(to, to);
+      hide();
+      remember();
+      repaint();
+      box.focus();
+    }
+
+    box.addEventListener('keydown', e => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        e.preventDefault();
+        hide();
+        run(form, false);
+        return;
+      }
+      if (e.ctrlKey && e.code === 'Space') {
+        e.preventDefault();
+        loadSchema().then(() => suggest(true));
+        return;
+      }
+      if (ac.hidden) return;
+      if (e.key === 'ArrowDown') { e.preventDefault(); at = (at + 1) % items.length; draw(); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); at = (at - 1 + items.length) % items.length; draw(); }
+      else if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); accept(items[at]); }
+      else if (e.key === 'Escape') { e.preventDefault(); hide(); }
+    });
+    box.addEventListener('blur', () => setTimeout(hide, 120));
+
+    form.addEventListener('submit', e => { e.preventDefault(); run(form, false); });
+
+    // Explain asks the database how it would run this and where the time goes.
+    // It does not touch what is in the editor: the first version prefixed the
+    // text with EXPLAIN ANALYZE, which edited the operator's own query to
+    // answer a question about it.
+    const explain = form.querySelector('#explain');
+    if (explain) explain.addEventListener('click', () => run(form, true));
+
+    const tidy = form.querySelector('#fmt');
+    if (tidy) tidy.addEventListener('click', () => {
+      // A line break before the clauses that start a thought. Not a formatter
+      // — a formatter needs a parser, and this is the 90% that makes a pasted
+      // one-liner readable.
+      box.value = box.value
+        .replace(/\s+/g, ' ')
+        .replace(/\s*\b(FROM|WHERE|GROUP BY|ORDER BY|HAVING|LIMIT|OFFSET|UNION ALL|UNION|LEFT JOIN|RIGHT JOIN|INNER JOIN|FULL JOIN|CROSS JOIN|JOIN|VALUES|SET|RETURNING)\b/gi,
+                 (m, k) => '\n' + k.toUpperCase())
+        .replace(/\s*\b(AND|OR)\b/gi, (m, k) => '\n  ' + k.toUpperCase())
+        .trim();
+      remember();
+      repaint();
+    });
+  }
+
+  async function run(form, explain) {
+    const box = form.querySelector('#sql');
+    // An empty editor is not a failed statement. Posting it produced "nothing
+    // to run" in red and a blank row in the history, which reads like the
+    // database refused something.
+    if (box && !box.value.trim()) {
+      box.focus();
+      box.placeholder = 'Type a statement first — then Run, or ⌘/Ctrl+Enter.';
+      return;
+    }
+    spin.style.visibility = 'visible';
+    panel.classList.add('busy');
+    try {
+      const body = new FormData(form);
+      if (explain) body.append('explain', '1');
+      const r = await fetch(form.action, {method: 'POST', body});
+      if (r.status === 409) {
+        location.href = `/db?open=${CID}&back=` +
+          encodeURIComponent(location.pathname + location.search);
+        return;
+      }
+      panel.innerHTML = await r.text();
+      wire();
+      const nb = document.getElementById('sql');
+      if (nb) nb.focus();
+    } finally {
+      spin.style.visibility = 'hidden';
+      panel.classList.remove('busy');
+    }
+  }
+
+  wireHead();
+  wire();
+})();
+// ── the backup dialog ──────────────────────────────────────────────────────
+// The table list is fetched once per database, on first open, from the same
+// cached schema map the editor's completion uses — so opening this costs
+// nothing on a server that has already been browsed.
+(function () {
+  const CID = {{ server.id|tojson }};
+  const mask = document.getElementById('bkmask');
+  if (!mask) return;
+  const $ = id => document.getElementById(id);
+  let loadedFor = null, targets = {};
+
+  // The picker is #dbpick. Guessing at select[name=database] matched nothing,
+  // so every request went out with an empty database name and the dialog
+  // reported "0 schemas, 0 tables" on a server with seven of them.
+  const dbNow = () => {
+    const sel = document.getElementById('dbpick');
+    return sel ? sel.value : '';
+  };
+
+  function paintTables() {
+    const sch = $('bkschema').value;
+    const filter = ($('bkfilter').value || '').toLowerCase();
+    const list = (targets[sch] || []).filter(t => t.toLowerCase().includes(filter));
+    $('bktables').innerHTML = list.map(t =>
+      `<label class="bkrow"><input type="checkbox" value="${sch}.${t}" checked>` +
+      `<span>${t}</span></label>`).join('') ||
+      '<div class="sec-note" style="padding:10px;">nothing matches</div>';
+    countTables();
+  }
+  function countTables() {
+    const boxes = [...$('bktables').querySelectorAll('input')];
+    const on = boxes.filter(b => b.checked).length;
+    $('bkcount').textContent = boxes.length ? `· ${on} of ${boxes.length}` : '';
+  }
+
+  async function load() {
+    const db = dbNow();
+    if (loadedFor === db) return;
+    $('bkstate').textContent = 'reading the table list…';
+    try {
+      const r = await fetch(`/db/${CID}/export/targets.json?database=` +
+                            encodeURIComponent(db));
+      const got = await r.json();
+      if (got.error) throw new Error(got.error);
+      targets = got.schemas || {};
+      loadedFor = db;
+      const names = Object.keys(targets);
+      const total = names.reduce((a, n) => a + targets[n].length, 0);
+      $('bkschema').innerHTML = names.map(n =>
+        `<option value="${n}">${n} · ${targets[n].length} tables</option>`).join('');
+      $('bkdbname').textContent = `${names.length} schema(s), ${total} tables`;
+      // A silent zero reads as a broken dialog — which is exactly how this was
+      // reported. An empty database is a normal thing; it just has to say so,
+      // and the button must not offer to download a file with nothing in it.
+      const none = total === 0;
+      $('bkgo').dataset.none = none ? '1' : '0';
+      $('bkempty').hidden = !none;
+      $('bkempty').textContent = none
+        ? `Nothing to export from "${db}" — this account can see no tables in `
+          + `it. Pick a different database in the picker behind this dialog.`
+        : '';
+      paintTables();
+      showParts();
+      $('bkstate').textContent = '';
+    } catch (e) {
+      $('bkstate').textContent = String(e.message || e);
+      $('bkgo').disabled = true;
+      $('bkgo').style.opacity = .5;
+    }
+  }
+
+  function showParts() {
+    const what = document.querySelector('input[name=bkwhat]:checked').value;
+    $('bkschemawrap').hidden = (what === 'db' || what === 'server');
+    $('bktableswrap').hidden = what !== 'tables';
+    // the whole server is not a question about this database, so the count
+    // and the empty-database warning both stop applying to it
+    const none = $('bkgo').dataset.none === '1';
+    $('bkempty').hidden = none ? what === 'server' : true;
+    $('bkgo').disabled = none && what !== 'server';
+    $('bkgo').style.opacity = $('bkgo').disabled ? .5 : 1;
+    $('bkgo').textContent = what === 'server'
+      ? '⤓ Download every database' : '⤓ Download backup';
+  }
+
+  const picker = document.getElementById('dbpick');
+  if (picker) picker.addEventListener('change', () => { loadedFor = null; });
+
+  $('bkbtn').addEventListener('click', () => {
+    $('bkwhere').textContent = dbNow() || '';
+    mask.hidden = false;
+    showParts();
+    load();
+  });
+  const close = () => { mask.hidden = true; };
+  $('bkclose').addEventListener('click', close);
+  mask.addEventListener('click', e => { if (e.target === mask) close(); });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && !mask.hidden) close();
+  });
+  $('bkscope').addEventListener('change', showParts);
+  $('bkschema').addEventListener('change', paintTables);
+  $('bkfilter').addEventListener('input', paintTables);
+  $('bktables').addEventListener('change', countTables);
+  $('bkall').addEventListener('click', () => {
+    $('bktables').querySelectorAll('input').forEach(b => { b.checked = true; });
+    countTables();
+  });
+  $('bknone').addEventListener('click', () => {
+    $('bktables').querySelectorAll('input').forEach(b => { b.checked = false; });
+    countTables();
+  });
+
+  $('bkgo').addEventListener('click', () => {
+    const what = document.querySelector('input[name=bkwhat]:checked').value;
+    if (what === 'server') {
+      const q = new URLSearchParams({
+        data: document.querySelector('input[name=bkdata]:checked').value });
+      if ($('bkdrop').checked) q.set('drop', '1');
+      window.location = `/db/${CID}/export-all.zip?` + q.toString();
+      $('bkstate').textContent = 'building the archive — this can take a while…';
+      setTimeout(() => { $('bkstate').textContent = ''; close(); }, 3500);
+      return;
+    }
+    const q = new URLSearchParams({ database: dbNow() });
+    if (what === 'schema') q.set('schema', $('bkschema').value);
+    if (what === 'tables') {
+      const picked = [...$('bktables').querySelectorAll('input')]
+        .filter(b => b.checked).map(b => b.value);
+      if (!picked.length) { $('bkstate').textContent = 'tick at least one table'; return; }
+      q.set('schema', $('bkschema').value);
+      q.set('tables', picked.join(','));
+    }
+    q.set('data', document.querySelector('input[name=bkdata]:checked').value);
+    if ($('bkdrop').checked) q.set('drop', '1');
+    // a plain navigation, so the browser owns the download and the streaming
+    // response is written to disk as it arrives rather than buffered by fetch
+    window.location = `/db/${CID}/export.sql?` + q.toString();
+    $('bkstate').textContent = 'the download will start shortly…';
+    setTimeout(() => { $('bkstate').textContent = ''; close(); }, 2500);
+  });
+})();
+
+</script>
+{% endblock %}

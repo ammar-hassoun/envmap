@@ -1,0 +1,2131 @@
+{% extends "base.html" %}
+{% block crumbs %}<a href="/gitops">GitOps</a> <span class="sep">/</span>
+  <a href="/gitops?conn={{ conn.id }}">{{ conn.name }}</a>
+  <span class="sep">/</span> <b>{{ app.name if app else 'application' }}</b>{% endblock %}
+{% block content %}
+
+{% if msg %}<div class="flash">✓ {{ msg }}</div>{% endif %}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+
+{% if app %}
+<style>
+/* ── the toolbar and the three cards, in Argo CD's shape. Inline, not app.css:
+   app.css is served with a year-long immutable cache keyed to the release, so
+   a component styled there is invisible until one. ─────────────────────── */
+/* The toolbar spans the page: it is the application's control surface, and a
+   cluster of natural-width buttons hugging the left edge of a wide screen read
+   as an afterthought. Each item grows, so the row fills the width and the
+   targets are large. */
+.atools { display:flex; gap:7px; flex-wrap:wrap; align-items:stretch;
+  margin:0 0 14px; width:100%; }
+.atools > .atool, .atools > .arefresh { flex:1 1 auto; }
+.atools > .atool { justify-content:center; }
+.atools .arefresh { display:flex; }
+.atools .arefresh > form { display:contents; }
+.atools .arefresh .atool:not(.arefmore) { flex:1; justify-content:center; }
+.atool { display:inline-flex; align-items:center; gap:6px; height:32px;
+  box-sizing:border-box; padding:0 12px; font:inherit; font-size:12px;
+  font-weight:600; color:var(--text); background:var(--panel);
+  border:1px solid var(--line); border-radius:8px; cursor:pointer;
+  white-space:nowrap; }
+.atool:hover:not([disabled]) { border-color:var(--accent); }
+.atool.go { background:var(--accent); border-color:var(--accent); color:var(--ink-on-accent); }
+.atool.danger:hover { border-color:var(--danger); color:var(--danger-ink); }
+.arefresh { position:relative; display:inline-flex; }
+.arefresh .atool { border-top-right-radius:0; border-bottom-right-radius:0; }
+.arefmore { border-left:0; border-top-left-radius:0; border-bottom-left-radius:0; padding:0 9px; }
+.arefmenu { position:absolute; right:0; top:calc(100% + 5px); z-index:60;
+  min-width:170px; background:var(--panel); border:1px solid var(--line);
+  border-radius:9px; padding:5px; box-shadow:var(--shadow); }
+.arefitem { display:block; width:100%; text-align:left; padding:7px 10px;
+  font:inherit; font-size:12.5px; color:var(--text); background:none; border:0;
+  border-radius:6px; cursor:pointer; }
+.arefitem:hover { background:var(--overlay); }
+.acards { display:grid; gap:12px; margin-bottom:14px;
+  grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); }
+.acard { border:1px solid var(--line); border-radius:11px;
+  background:var(--panel); overflow:hidden; }
+.acard-h { font-size:10.5px; text-transform:uppercase; letter-spacing:.06em;
+  color:var(--muted); padding:9px 13px 0; }
+.acard-b { padding:6px 13px 12px; }
+.astate { display:flex; align-items:center; gap:7px; font-size:16px;
+  font-weight:600; margin-bottom:6px; flex-wrap:wrap; }
+.astate.ok { color:var(--ok-ink); }
+.astate.warn { color:var(--warn-ink); }
+.astate.bad { color:var(--danger-ink); }
+.arev { font-size:11.5px; font-weight:400; color:var(--muted); font-family:var(--mono); }
+.ameta { font-size:11.5px; color:var(--muted); line-height:1.5; overflow-wrap:anywhere; }
+.ameta b { color:var(--text); font-weight:600; }
+</style>
+<style>
+/* the filter rail beside the map, and the map's own surface */
+.acols { display:block; }
+/* the diagram is the PAGE: no card, no border, no inner panel — just the map,
+   its controls above it, and as much height as the viewport can give it */
+.gsurface { border:0; border-radius:0; background:none; }
+/* the map is taller than the screen, so its controls come along: sticky, or
+   zooming means scrolling back up to find the buttons */
+.gtopbar { display:flex; align-items:center; gap:9px; flex-wrap:wrap;
+  padding:8px 0 10px; font-size:13.5px; font-weight:600;
+  position:sticky; top:0; z-index:4; background:var(--bg); }
+/* The canvas is as tall as the diagram, not as tall as the screen. A viewport
+   -height box clipped the tree and made the reader scroll INSIDE it to find a
+   resource — two scrollbars, and the one that mattered was the inner one. Now
+   the whole map is laid out and the PAGE scrolls, which is what a diagram this
+   size wants. The height is set from the content in sizeBox(). */
+.gsurface .gwrap { border:0; border-radius:10px; background:var(--well);
+  height:auto; min-height:360px; }
+.gsurface .gwrap.gfull { height:auto; }
+.gtopbar input[type=search] { box-sizing:border-box;
+  background:var(--well); border:1px solid var(--line); border-radius:7px;
+  color:var(--text); font-size:12px; padding:5px 9px; }
+/* These three filters used to be `class="no-dd"` with the native select
+   styled directly — which meant three OS-drawn light option lists on a dark
+   page, the exact thing the global themed dropdown exists to prevent. The
+   reason for the opt-out was width: `.dd` is width:100% and would blow the
+   toolbar apart. So they use the component, and the WRAPPER is what gets
+   sized here — styling `select` was always dead anyway, since base.html
+   hides it. */
+.gtopbar .dd { width:auto; }
+.gtopbar .dd-btn { padding:5px 9px; font-size:12px; background:var(--well);
+  border-radius:7px; }
+.glistwrap { padding:0 0 6px; overflow-x:auto; }
+#ggraph { padding:0; }
+.gopbar { margin:0 0 10px; padding:7px 11px; border-radius:8px; font-size:12px;
+  font-weight:600; border:1px solid var(--line); background:var(--overlay);
+  color:var(--muted); }
+.gopbar.run { border-color:var(--accent); color:var(--accent); }
+.gopbar.ok { border-color:var(--ok); color:var(--ok-ink); }
+.gopbar.bad { border-color:var(--danger); color:var(--danger-ink); }
+/* app.css owns `.actrow`; only the `oneline` variant is mirrored here, which
+   is what the cache-warm rule allows. This page used to redefine the base with
+   a different gap and no justify-content, so its action rows were left-aligned
+   at a different spacing from every other table. */
+.actrow.oneline { flex-wrap:nowrap; }
+</style>
+<style>
+/* one colour per resource FAMILY: the map reads by hue before it reads by word */
+:root { --k-workload:#5b8cff; --k-replica:#7a6cff; --k-pod:#00b8a9;
+  --k-job:#c98bff; --k-network:#28b4d7; --k-config:#8aa0b8;
+  --k-secret:#e0a03a; --k-rbac:#d2748f; --k-storage:#4aa9e0;
+  --k-data:#3fbf7f; --k-scale:#b0b53f; --k-cert:#48c0a0;
+  --k-scope:#8f9bb3; --k-other:#7f8ba0; }
+.gk-workload .gedgemark, .gleg.gk-workload i { fill:var(--k-workload); background:var(--k-workload); }
+.gk-replica .gedgemark, .gleg.gk-replica i { fill:var(--k-replica); background:var(--k-replica); }
+.gk-pod .gedgemark, .gleg.gk-pod i { fill:var(--k-pod); background:var(--k-pod); }
+.gk-job .gedgemark, .gleg.gk-job i { fill:var(--k-job); background:var(--k-job); }
+.gk-network .gedgemark, .gleg.gk-network i { fill:var(--k-network); background:var(--k-network); }
+.gk-config .gedgemark, .gleg.gk-config i { fill:var(--k-config); background:var(--k-config); }
+.gk-secret .gedgemark, .gleg.gk-secret i { fill:var(--k-secret); background:var(--k-secret); }
+.gk-rbac .gedgemark, .gleg.gk-rbac i { fill:var(--k-rbac); background:var(--k-rbac); }
+.gk-storage .gedgemark, .gleg.gk-storage i { fill:var(--k-storage); background:var(--k-storage); }
+.gk-data .gedgemark, .gleg.gk-data i { fill:var(--k-data); background:var(--k-data); }
+.gk-scale .gedgemark, .gleg.gk-scale i { fill:var(--k-scale); background:var(--k-scale); }
+.gk-cert .gedgemark, .gleg.gk-cert i { fill:var(--k-cert); background:var(--k-cert); }
+.gk-scope .gedgemark, .gleg.gk-scope i { fill:var(--k-scope); background:var(--k-scope); }
+.gk-other .gedgemark, .gleg.gk-other i { fill:var(--k-other); background:var(--k-other); }
+.gk-workload .gkind { fill:var(--k-workload); }
+.gk-replica .gkind { fill:var(--k-replica); }
+.gk-pod .gkind { fill:var(--k-pod); }
+.gk-job .gkind { fill:var(--k-job); }
+.gk-network .gkind { fill:var(--k-network); }
+.gk-config .gkind { fill:var(--k-config); }
+.gk-secret .gkind { fill:var(--k-secret); }
+.gk-rbac .gkind { fill:var(--k-rbac); }
+.gk-storage .gkind { fill:var(--k-storage); }
+.gk-data .gkind { fill:var(--k-data); }
+.gk-scale .gkind { fill:var(--k-scale); }
+.gk-cert .gkind { fill:var(--k-cert); }
+.gk-scope .gkind { fill:var(--k-scope); }
+.glegend { display:flex; gap:12px; flex-wrap:wrap; margin-top:11px; }
+.gleg { display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--muted); }
+.gleg i { width:9px; height:9px; border-radius:3px; display:inline-block; background:var(--k-other); }
+</style>
+<style>
+/* the arrows MOVE, parent → child: the picture says which way the application
+   is applied, and looks alive rather than like a drawing of something stopped */
+.gflow { fill:none; stroke:var(--accent); stroke-width:1.6; opacity:.42;
+  stroke-dasharray:5 9; animation:gflowdash 1.1s linear infinite; }
+@keyframes gflowdash { to { stroke-dashoffset:-14; } }
+@media (prefers-reduced-motion:reduce) { .gflow { animation:none; opacity:.22; } }
+/* a node the filters exclude is DIMMED, never removed: the shape of the tree is
+   the information, so hiding boxes would rearrange what is being read */
+.gnode.gdim { opacity:.16; }
+.gnode.gdim:hover { opacity:.4; }
+.gsync { font-size:10.5px; fill:var(--warn-ink); font-weight:600; }
+.gstate2 { font-size:10.5px; fill:var(--danger-ink); font-weight:600; }
+/* in flight is not broken: a pod pulling an image was painted the same red as
+   one crash-looping, which reads as an incident when it is just a rollout */
+.gwork { font-size:10.5px; fill:var(--accent-ink); font-weight:600; }
+.gchip { font-size:10.5px; fill:var(--muted); }
+/* age, quiet in the corner of every box — Argo puts it there and an operator
+   reads it constantly: a pod two minutes old is a different story from one
+   that has been up a fortnight */
+.gage { font-size:10.5px; fill:var(--muted); opacity:.8; }
+
+/* ── the Synchronize drawer: Argo's own right-hand panel ── */
+.sdrawer.wide { width:min(860px,96vw); }
+.resacts { display:flex; align-items:center; gap:6px; flex-wrap:nowrap; }
+.resacts .abtn { padding:3px 9px; font-size:11px; }
+/* Click anywhere off the drawer to shut it — the same gesture as every other
+   overlay in the portal, and the one everybody tries first. */
+.sdrawer-scrim { position:fixed; inset:0; z-index:129; background:transparent; }
+/* Drag the left edge to make it wider or narrower: a manifest wants the room,
+   a summary does not, and the reader is the one who knows which. */
+.sdrawer-grip { position:absolute; left:-3px; top:0; bottom:0; width:9px;
+  cursor:col-resize; z-index:2; }
+.sdrawer-grip::after { content:''; position:absolute; left:3px; top:50%;
+  width:3px; height:42px; margin-top:-21px; border-radius:3px;
+  background:var(--line); transition:background .12s; }
+.sdrawer-grip:hover::after, .sdrawer.sizing .sdrawer-grip::after {
+  background:var(--accent); }
+.sdrawer.sizing { animation:none; user-select:none; }
+.sdrawer { position:fixed; top:0; right:0; bottom:0; width:min(520px,94vw);
+  z-index:130; background:var(--panel); border-left:1px solid var(--line);
+  box-shadow:var(--shadow); display:flex; flex-direction:column;
+  animation:sslide .18s ease-out; }
+@keyframes sslide { from { transform:translateX(24px); opacity:.4; } }
+.sdrawer form { display:flex; flex-direction:column; min-height:0; flex:1; }
+.sdrawer-h { display:flex; align-items:center; gap:9px; padding:12px 14px;
+  border-bottom:1px solid var(--line); flex:none; }
+.sdrawer-b { padding:14px; overflow-y:auto; flex:1; min-height:0; }
+.sfield { display:block; margin-bottom:14px; }
+.sfield > span { display:block; font-size:10.5px; text-transform:uppercase;
+  letter-spacing:.05em; color:var(--muted); margin-bottom:5px; }
+.sfield input, .sfield select { width:100%; box-sizing:border-box;
+  background:var(--well); border:1px solid var(--line); border-radius:7px;
+  color:var(--text); font-size:13px; padding:7px 10px; font-family:var(--mono); }
+.sfield.row { display:flex; align-items:center; gap:10px; }
+.sfield.row > span { margin:0; flex:none; }
+.srow { display:flex; gap:14px; flex-wrap:wrap; margin-bottom:14px; }
+.srow.two { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr));
+  gap:7px 14px; }
+.schk { display:flex; align-items:center; gap:7px; font-size:12.5px;
+  color:var(--text); cursor:pointer; }
+.schk input { margin:0; }
+.swarn { color:var(--warn-ink); }
+.sgroup { font-size:10.5px; text-transform:uppercase; letter-spacing:.05em;
+  color:var(--muted); margin:16px 0 8px; padding-bottom:5px;
+  border-bottom:1px solid var(--line); display:flex; align-items:center; }
+.spick { margin-left:auto; text-transform:none; letter-spacing:0; }
+.spick a { color:var(--accent); }
+.sres { max-height:34vh; overflow-y:auto; border:1px solid var(--line);
+  border-radius:8px; padding:8px 10px; }
+.sresi { padding:3px 0; }
+.sresk { font-family:var(--mono); font-size:11px; overflow-wrap:anywhere; }
+.sconfirm { display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+  margin-top:16px; padding-top:12px; border-top:1px solid var(--line); }
+.sconfirm input { width:130px; background:var(--well); color:var(--text);
+  border:1px solid var(--line); border-radius:7px; padding:6px 9px;
+  font-family:var(--mono); font-size:12px; }
+/* the application's own box: the root of the map, so it reads as the thing
+   everything else belongs to rather than one more object */
+.gnode.gapp .gbox { fill:var(--panel2, var(--panel)); stroke:var(--accent);
+  stroke-width:1.6; }
+.gnode.gapp .gkind { fill:var(--accent); }
+.gnode.gapp .gname { font-size:14px; }
+/* the node's own type reads at a glance now: bigger label, bigger name */
+.gnode .gkind { font-size:10.5px; letter-spacing:.07em; }
+.gnode .gname { font-size:13.5px; }
+.gicon { pointer-events:none; }
+.gicon svg { overflow:visible; }
+.gk-workload .gicon { color:var(--k-workload); }
+.gk-replica .gicon { color:var(--k-replica); }
+.gk-pod .gicon { color:var(--k-pod); }
+.gk-job .gicon { color:var(--k-job); }
+.gk-network .gicon { color:var(--k-network); }
+.gk-config .gicon { color:var(--k-config); }
+.gk-secret .gicon { color:var(--k-secret); }
+.gk-rbac .gicon { color:var(--k-rbac); }
+.gk-storage .gicon { color:var(--k-storage); }
+.gk-data .gicon { color:var(--k-data); }
+.gk-scale .gicon { color:var(--k-scale); }
+.gk-cert .gicon { color:var(--k-cert); }
+.gk-scope .gicon { color:var(--k-scope); }
+.gk-other .gicon { color:var(--k-other); }
+.gmark-d { fill:var(--accent); }
+.gsyncing .gmark-d { animation:gpulse 1s ease-in-out infinite; }
+.gsynced .gmark-d { fill:var(--ok); }
+.gsyncbad .gmark-d { fill:var(--danger); }
+@keyframes gpulse { 50% { opacity:.25; } }
+.gnode.gsyncing .gbox { stroke:var(--accent); stroke-width:2; }
+.gnode.gsynced .gbox { stroke:var(--ok); }
+.gnode.gsyncbad .gbox { stroke:var(--danger); stroke-width:2; }
+/* a box that has just APPEARED: it grows in and rings once, so a new pod
+   arriving is something you watch rather than something you notice later */
+.gin { transform-box:fill-box; transform-origin:50% 50%; }
+.gnode.gnew .gin { animation:gpop .45s cubic-bezier(.2,.9,.3,1.2) both; }
+.gnode.gnew .gbox { stroke:var(--ok); stroke-width:2;
+  animation:gring 1.5s ease-out 3; }
+@keyframes gpop { from { opacity:0; transform:scale(.82); } }
+@keyframes gring { 0% { stroke-opacity:1; } 70% { stroke-opacity:.35; }
+  100% { stroke-opacity:1; } }
+/* a box on its way OUT: dashed, draining, and it says so before it leaves —
+   a pod that simply vanished read as a glitch rather than a termination */
+.gnode.gterm { pointer-events:none; }
+.gnode.gterm .gin { animation:gdrain 2.6s ease-in forwards; }
+.gnode.gterm .gbox { stroke:var(--warn-ink); stroke-dasharray:6 4; }
+.gnode.gterm .gedgemark { fill:var(--warn-ink); }
+@keyframes gdrain { 0% { opacity:1; } 55% { opacity:.55; }
+  100% { opacity:0; transform:scale(.94); } }
+@media (prefers-reduced-motion:reduce) {
+  .gnode.gnew .gin { animation:none; }
+  .gnode.gnew .gbox { animation:none; }
+  .gnode.gterm .gin { animation:gfade 2.6s linear forwards; }
+  @keyframes gfade { to { opacity:0; } }
+}
+/* A pod Kubernetes is deleting: still in the tree, still readable, visibly on
+   its way out. Distinct from .gterm — that one is for a box that has already
+   LEFT the tree and is being animated away. Both look like draining, because
+   to the reader they are the same event a moment apart. */
+.gnode.gdrain .gbox { stroke:var(--warn-ink); stroke-dasharray:6 4; }
+.gnode.gdrain .gedgemark { fill:var(--warn-ink); }
+.gnode.gdrain .gin { animation:gpulseout 1.8s ease-in-out infinite; }
+.gsdrain { fill:var(--warn-ink) !important; }
+@keyframes gpulseout { 0%, 100% { opacity:1; } 50% { opacity:.62; } }
+@media (prefers-reduced-motion:reduce) {
+  .gnode.gdrain .gin { animation:none; opacity:.75; }
+}
+.gkebab { opacity:0; cursor:pointer; }
+.gnode:hover .gkebab, .gnode:focus-visible .gkebab { opacity:1; }
+.gkebab circle { fill:var(--muted); }
+.gkebab:hover circle { fill:var(--accent); }
+.gkebab-hit { fill:transparent; }
+.gmenu { position:fixed; z-index:130; min-width:186px; padding:5px;
+  background:var(--panel); border:1px solid var(--line); border-radius:10px;
+  box-shadow:var(--shadow); }
+.gmenu-h { font-size:10.5px; text-transform:uppercase; letter-spacing:.05em;
+  color:var(--muted); padding:6px 9px 5px; overflow-wrap:anywhere; }
+.gmenu-i { display:block; width:100%; text-align:left; padding:7px 9px;
+  font:inherit; font-size:12.5px; color:var(--text); background:none; border:0;
+  border-radius:6px; cursor:pointer; }
+.gmenu-i:hover { background:var(--overlay); }
+.gmenu-i.danger { color:var(--danger-ink); }
+.gmenu-sep { height:1px; background:var(--line); margin:4px 3px; }
+</style>
+<style>
+/* the windows, the diff rows and the line-numbered manifests */
+#resDrawer .rm-in .card { margin:0; border:0; box-shadow:none; }
+#diffDlg { width:min(1100px,95vw); padding:0; }
+#detailsDlg, #histDlg, #statusDlg { width:min(940px,94vw); padding:0; }
+.psh .rm-in { max-height:80vh; overflow:auto; padding:12px; }
+#resDrawer .rm-in .card .card-h, #resDrawer .rm-in .card .card-b {
+  padding-left:0; padding-right:0; }
+#diffDlg .rm-in .card { margin:0; border:0; box-shadow:none; }
+.df-a { color:var(--ok-ink); }
+.df-r { color:var(--danger-ink); }
+.df-h { color:var(--accent); }
+.gdrow { border:1px solid var(--line); border-radius:9px; margin-bottom:9px;
+  overflow:hidden; }
+.gdhead { display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+  padding:9px 11px; background:var(--overlay); cursor:pointer; font-size:13px; }
+.gdbody { margin:0; padding:10px 12px; max-height:34vh; overflow:auto;
+  font-size:11.5px; border-top:1px solid var(--line); }
+.ddl.lineno { padding-left:0; }
+.ddl.lineno .ln { display:inline-block; width:42px; margin-right:10px;
+  text-align:right; color:var(--muted); opacity:.55; user-select:none;
+  border-right:1px solid var(--line); padding-right:7px; }
+table.rsum th { width:150px; text-align:left; color:var(--muted); font-weight:600;
+  font-size:11px; text-transform:uppercase; letter-spacing:.04em;
+  vertical-align:top; }
+table.rsum td { font-size:12.5px; }
+</style>
+
+{# ── the toolbar, in Argo CD's own order and words, so somebody who knows
+   that UI does not have to learn this one. Everything read-only is a plain
+   button; everything that changes the cluster opens a dialog that says what
+   it will do. ─────────────────────────────────────────────────────────── #}
+<div class="page-head" style="align-items:flex-start;">
+  <div>
+    <h1 style="margin:0;">{{ app.name }}</h1>
+    <p class="sub">{{ app.dest or '—' }}{% if app.project %} · project
+      {{ app.project }}{% endif %}
+      {%- if app.url %} · <a href="{{ app.url }}" target="_blank" rel="noopener"
+        >open in Argo CD ↗</a>{% endif %}</p>
+  </div>
+</div>
+
+<div class="atools">
+  <button type="button" class="atool" id="gdetailsBtn">{{ glyph('clipboard-list', 14) }} App details</button>
+  <button type="button" class="atool" id="gdiffBtn">{{ glyph('git-compare-arrows', 14) }} App diff</button>
+  <button type="button" class="atool go"
+          data-call="gsyncOpen">{{ glyph('rocket', 14) }} Sync</button>
+  <button type="button" class="atool" id="gstatusBtn">{{ glyph('activity', 14) }} Sync status</button>
+  <button type="button" class="atool" id="ghistBtn">{{ glyph('history', 14) }} History and rollback</button>
+  <button type="button" class="atool" id="gpolicyBtn"
+          title="Auto-sync, self-heal and prune for this application"
+          >{{ glyph('settings', 14) }} App settings</button>
+  <button type="button" class="atool danger" id="gappdelBtn">{{ glyph('trash-2', 14) }} Delete</button>
+  <div class="arefresh">
+    <form method="post" style="display:contents;"
+          action="/gitops/app/refresh?conn={{ conn.id }}&name={{ app.name|urlencode }}">
+      <button class="atool" title="Ask Argo CD to re-read git. Nothing in the
+              cluster changes.">{{ glyph('history', 14) }} Refresh</button>
+    </form>
+    <button type="button" class="atool arefmore" id="grefmore" title="more">▾</button>
+    <div class="arefmenu" id="grefmenu" hidden>
+      <form method="post"
+            action="/gitops/app/refresh?conn={{ conn.id }}&name={{ app.name|urlencode }}">
+        <input type="hidden" name="hard" value="1">
+        <button class="arefitem" title="Re-render the manifests from scratch,
+                ignoring Argo CD's cache. Still changes nothing.">Hard refresh</button>
+      </form>
+      <form method="post"
+            action="/gitops/app/sync?conn={{ conn.id }}&name={{ app.name|urlencode }}">
+        <input type="hidden" name="dry" value="1">
+        <button class="arefitem" title="Show what a sync would do, without
+                doing it.">Dry run</button>
+      </form>
+    </div>
+  </div>
+  {% if op and op.running %}
+  <form method="post" id="gterm" style="display:contents;"
+        action="/gitops/app/terminate?conn={{ conn.id }}&name={{ app.name|urlencode }}">
+    <button class="atool danger" title="Stop the operation that is running.
+            What was already applied stays applied.">■ Terminate</button>
+  </form>
+  {% endif %}
+</div>
+
+{# ── the three cards Argo leads with: health, where git is, what the last
+   sync did — each with the author and comment behind the revision, which is
+   the part that answers "who changed this and why". ──────────────────── #}
+<div class="acards">
+  <div class="acard">
+    <div class="acard-h">App health</div>
+    <div class="acard-b">
+      <div class="astate {{ 'ok' if app.health == 'Healthy'
+           else 'bad' if app.health in ('Degraded','Missing') else 'warn' }}">
+        {{ glyph('activity', 17) }} {{ app.health }}</div>
+      {% if app.health_why %}
+      <div class="ameta" style="color:var(--warn-ink);">{{ app.health_why }}</div>
+      {% endif %}
+      <div class="ameta">{{ tree.count }} object{{ 's' if tree.count != 1 }}
+        {%- for h, n in tree.by_health.items() %} · {{ n }} {{ h|lower }}{% endfor %}</div>
+    </div>
+  </div>
+  <div class="acard">
+    <div class="acard-h">Sync status</div>
+    <div class="acard-b">
+      <div class="astate {{ 'ok' if app.sync == 'Synced' else 'warn' }}">
+        {{ glyph('git-branch', 17) }} {{ app.sync }}
+        {% if app.revision %}<span class="arev">to {{ app.target or 'HEAD' }}
+          ({{ app.revision }})</span>{% endif %}</div>
+      <div class="ameta">{{ 'Auto sync is enabled' if app.auto
+        else 'Auto sync is disabled' }}{% if app.self_heal %} · self-heal{% endif %}{%
+        if app.auto_prune %} · prune{% endif %}</div>
+      {% if rev_meta.author %}
+      <div class="ameta"><b>Author:</b> {{ rev_meta.author }}</div>{% endif %}
+      {% if rev_meta.message %}
+      <div class="ameta"><b>Comment:</b> {{ rev_meta.message|truncate(90) }}</div>{% endif %}
+    </div>
+  </div>
+  <div class="acard">
+    <div class="acard-h">Last sync</div>
+    <div class="acard-b">
+      {% if op and op.phase %}
+      <div class="astate {{ 'ok' if op.ok else 'bad' if op.failed
+           or op.phase in ('Failed','Error') else 'warn' }}">
+        {{ glyph('circle-check' if op.ok else 'triangle-alert', 17) }}
+        Sync {{ 'OK' if op.ok else op.phase }}
+        {% if op.revision %}<span class="arev">to {{ op.revision }}</span>{% endif %}</div>
+      <div class="ameta">{{ op.phase }}{% if op.finished %} ·
+        {{ op.finished }}{% endif %}{% if op.dry_run %} · dry run{% endif %}</div>
+      {% if op_meta.author %}
+      <div class="ameta"><b>Author:</b> {{ op_meta.author }}</div>{% endif %}
+      {% if op_meta.message %}
+      <div class="ameta"><b>Comment:</b> {{ op_meta.message|truncate(90) }}</div>{% endif %}
+      {% if op.message %}<div class="ameta">{{ op.message|truncate(110) }}</div>{% endif %}
+      {% else %}
+      <div class="astate warn">{{ glyph('hourglass', 17) }} never synced here</div>
+      <div class="ameta">Argo CD has not recorded an operation for this
+        application yet.</div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+{# The conditions card and the sync-result table used to sit here. Both are
+   gone from the page on purpose: what the controller is saying now shows on
+   the cards above, and what a sync DID shows on the diagram itself — marked on
+   the very boxes it touched, which is the question the table was answering
+   badly. The fragment still exists for the Sync status window. #}
+{# The filter rail lives on the applications list now — here the map IS the
+   page, and 210px of rail was 210px the diagram wanted more. Nothing is lost:
+   the same four filters sit in the map's own toolbar, where they cost no
+   height at all. ────────────────────────────────────────────────────── #}
+<div class="acols">
+<div style="min-width:0;">
+<div class="gsurface">
+  <div class="gtopbar" id="gbar">Resources
+    <span class="hint">{{ tree.count }} object{{ 's' if tree.count != 1 }}
+      {%- for h, n in tree.by_health.items() %} · {{ n }} {{ h|lower }}{% endfor %}</span>
+    <span style="flex:1"></span>
+    {# a graph is the right picture and the wrong index: with ninety objects,
+       "where is that ReplicaSet" is a search, not a hunt. Both, one click
+       apart, and the list filters as you type — no round-trip. #}
+    <input type="search" id="gfind" placeholder="filter resources…"
+           autocomplete="off"
+           style="width:170px;font-size:12px;padding:5px 9px;">
+    {% if tree.by_kind %}
+    <select id="gfkind">
+      <option value="">any kind</option>
+      {% for k, n in tree.by_kind.items() %}
+      <option value="{{ k }}">{{ k }} ({{ n }})</option>
+      {% endfor %}
+    </select>
+    {% endif %}
+    <select id="gfsync">
+      <option value="">any sync</option>
+      {% for st in ['Synced', 'OutOfSync'] %}
+      <option value="{{ st }}">{{ st }} ({{ tree.by_sync.get(st, 0) }})</option>
+      {% endfor %}
+    </select>
+    <select id="gfhealth">
+      <option value="">any health</option>
+      {% for h, n in tree.by_health.items() %}
+      <option value="{{ h }}">{{ h }} ({{ n }})</option>{% endfor %}
+    </select>
+    <button type="button" class="btn-ghost" id="gfclear"
+            style="padding:5px 11px;font-size:11.5px;">clear</button>
+    <button type="button" class="btn-ghost" id="gview"
+            style="padding:5px 12px;font-size:11.5px;"
+            data-mode="graph">list ▤</button>
+    <div class="pbtns">
+      <button class="pbtn" id="gzout" title="Zoom out" aria-label="Zoom out">
+        <svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.3"/>
+          <path d="M10.2 10.2 14 14M5 7h4"/></svg></button>
+      <button class="pbtn" id="gzin" title="Zoom in" aria-label="Zoom in">
+        <svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.3"/>
+          <path d="M10.2 10.2 14 14M5 7h4M7 5v4"/></svg></button>
+      <button class="pbtn" id="gfit" title="Fit what will fit, readably"
+              aria-label="Fit">
+        {# brackets pointing in: bring it back to what fits #}
+        <svg viewBox="0 0 16 16"><path d="M2.5 6.5H6V3M13.5 6.5H10V3M2.5 9.5H6V13M13.5 9.5H10V13"/></svg></button>
+      <button class="pbtn" id="gfull" title="Full screen"
+              aria-label="Full screen">
+        <svg viewBox="0 0 16 16"><path d="M6 2H2v4M10 2h4v4M6 14H2v-4M10 14h4v-4"/></svg></button>
+    </div>
+  </div>
+  {# what the last (or running) operation did, on one line above the map #}
+  <div class="gopbar" id="gopbar" hidden></div>
+  <div class="glistwrap" id="glist" hidden>
+    <table class="jenkins" id="gltable">
+      <thead><tr><th style="width:150px;">kind</th><th>name</th>
+        <th style="width:150px;">namespace</th><th style="width:110px;">sync</th>
+        <th style="width:118px;">health</th>
+        <th class="actcol" style="width:150px;min-width:150px;"></th></tr></thead>
+      <tbody>
+        {% for n in tree.flat %}
+        <tr data-kind="{{ n.kind }}" data-rname="{{ n.name }}"
+            data-ns="{{ n.namespace }}" data-health="{{ n.health }}"
+            data-sync="{{ n.sync }}">
+          <td><span class="badge">{{ n.kind }}</span></td>
+          <td class="jname"><a href="#" class="glopen" data-uid="{{ n.uid }}"
+                 data-tab="">{{ n.name }}</a>
+            {% if n.health_why %}<span class="jbranch">{{ n.health_why|truncate(60) }}</span>{% endif %}</td>
+          <td class="hint">{{ n.namespace or '—' }}</td>
+          <td>{% if n.sync %}<span class="sv {{ 'sv-ok' if n.sync == 'Synced'
+                else 'sv-medium' }}">{{ n.sync }}</span>
+              {% else %}<span class="na">—</span>{% endif %}</td>
+          <td>{% if n.health %}<span class="sv {{ 'sv-ok' if n.health == 'Healthy'
+                else 'sv-high' if n.health in ('Degraded','Missing')
+                else 'sv-medium' }}">{{ n.health }}</span>
+              {% else %}<span class="na">—</span>{% endif %}</td>
+          <td class="actcol"><span class="actrow oneline">
+            <button type="button" class="abtn glopen" data-uid="{{ n.uid }}"
+                    data-tab="manifest">yaml</button>
+            <button type="button" class="abtn glopen" data-uid="{{ n.uid }}"
+                    data-tab="actions">actions</button>
+          </span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div class="sec-note" id="glnone" hidden style="margin-top:10px;">Nothing
+      matches that filter.</div>
+  </div>
+  <div id="ggraph">
+    {% if not graph.nodes %}
+    <p class="sub" style="margin:0;">Argo CD reports no resources for this
+      application yet. That is normal immediately after creating it, and worth
+      a Refresh otherwise.</p>
+    {% else %}
+    <div class="gwrap" id="gwrap">
+      <svg id="gsvg" viewBox="0 0 {{ graph.width }} {{ graph.height }}"
+           width="{{ graph.width }}" height="{{ graph.height }}"
+           role="img" aria-label="The resources this application manages">
+        <g id="gpan">
+          {% include "_gitops_graph.html" %}
+        </g>
+      </svg>
+    </div>
+    <div class="glegend">
+      {% for f in graph.families %}
+      <span class="gleg gk-{{ f }}"><i></i>{{
+        {'workload':'workloads','replica':'replica sets','pod':'pods',
+         'job':'jobs','network':'networking','config':'config',
+         'secret':'secrets','rbac':'access','storage':'storage',
+         'data':'databases','scale':'scaling','cert':'certificates',
+         'scope':'scope','other':'other'}.get(f, f) }}</span>
+      {% endfor %}
+    </div>
+    <div class="sec-note" style="margin-top:10px;">Drag to pan,
+      <b>⌘/Ctrl + scroll</b> or pinch to zoom — a plain scroll belongs to the
+      page. A box opens the object: its manifest, what git wants instead, what
+      Kubernetes has recorded, and — for a pod — what it is saying.</div>
+    {% endif %}
+  </div>
+</div>
+
+</div>
+</div>
+
+
+
+{# the app-wide diff and the rollback both open in the house psh window #}
+{# one menu, moved to whichever box's ⋮ was clicked — Argo's per-node actions
+   without leaving the map, which is the whole point of the diagram #}
+<div class="gmenu" id="gmenu" hidden>
+  <div class="gmenu-h" id="gmenuWhat"></div>
+  <button type="button" class="gmenu-i" data-gm="summary">Details</button>
+  <button type="button" class="gmenu-i" data-gm="logs" id="gmLogs">Logs</button>
+  <button type="button" class="gmenu-i" data-gm="manifest">Live manifest</button>
+  <button type="button" class="gmenu-i" data-gm="changes">Diff</button>
+  <div class="gmenu-sep"></div>
+  <button type="button" class="gmenu-i" data-gm="restart" id="gmRestart">Restart</button>
+  <button type="button" class="gmenu-i" data-gm="syncone">Sync just this</button>
+  <button type="button" class="gmenu-i" data-gm="actions">More actions…</button>
+  <div class="gmenu-sep"></div>
+  <button type="button" class="gmenu-i danger" data-gm="delete">Delete</button>
+</div>
+
+{# one hidden form for every action a box's ⋮ can take. The action-name field
+   is reached by id, not through `form.action` — that property is the form's own
+   URL, so reading the input back through it gets the endpoint, not the value. #}
+<form method="post" id="gnodeForm" style="display:none;">
+  <input type="hidden" name="rkind"><input type="hidden" name="rname">
+  <input type="hidden" name="rns"><input type="hidden" name="rgroup">
+  <input type="hidden" name="rversion">
+  <input type="hidden" name="action" id="gnfAction">
+  <input type="hidden" name="confirm"><input type="hidden" name="res">
+</form>
+
+{# ── the windows. Every one of them is the SAME psh shape as the pod-logs
+   dialog, per the house rule, and every one is draggable by its bar. ──── #}
+
+<dialog id="detailsDlg" class="psh">
+  <div class="psh-bar">
+    <span class="psh-dots"><b title="close" data-adlg="detailsDlg">✕</b></span>
+    <b>app details</b>
+    <span class="psh-ns">{{ app.name }}</span>
+    <span style="flex:1"></span>
+    <button type="button" class="psh-x" data-adlg="detailsDlg">close</button>
+  </div>
+  <div class="rm-in">
+    <div class="card" style="margin:0 0 12px;">
+      <div class="card-h">Source</div>
+      <div class="card-b">
+        <table class="jenkins rsum"><tbody>
+          <tr><th>Repository</th>
+            <td style="font-family:var(--mono);font-size:11.5px;">{{ app.repo or '—' }}</td></tr>
+          <tr><th>Path</th>
+            <td style="font-family:var(--mono);font-size:11.5px;">{{ app.path or '—' }}</td></tr>
+          <tr><th>Target revision</th><td>{{ app.target or 'HEAD' }}</td></tr>
+          <tr><th>Revision</th>
+            <td style="font-family:var(--mono);">{{ app.revision or '—' }}</td></tr>
+          <tr><th>Destination</th><td>{{ app.dest or '—' }}</td></tr>
+          <tr><th>Project</th><td>{{ app.project or '—' }}</td></tr>
+          <tr><th>Sync policy</th>
+            <td>{{ 'automated' if app.auto else 'manual' }}{% if app.self_heal %},
+              self-heal{% endif %}{% if app.auto_prune %}, prune{% endif %}</td></tr>
+          {% if rev_meta.author %}<tr><th>Commit author</th><td>{{ rev_meta.author }}</td></tr>{% endif %}
+          {% if rev_meta.date %}<tr><th>Commit date</th><td>{{ rev_meta.date }}</td></tr>{% endif %}
+          {% if rev_meta.message %}<tr><th>Commit message</th>
+            <td style="white-space:normal;">{{ rev_meta.message }}</td></tr>{% endif %}
+        </tbody></table>
+        {% if app.conditions %}
+        <div class="fdet-sec"><h4>Conditions the controller reports</h4>
+          {% for c in app.conditions %}
+          <div class="sec-note" style="margin:0 0 6px;color:{{ 'var(--danger-ink)'
+               if 'Error' in c.type else 'var(--warn-ink)' }};">
+            <b>{{ c.type }}:</b> {{ c.message }}</div>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </div>
+    </div>
+
+    {% if parms and (parms.helm_params or parms.value_files or parms.inline_values
+                     or parms.kust_images or parms.images or parms.sync_options) %}
+    <div class="card" style="margin:0 0 12px;">
+      <div class="card-h">Rendered with
+        {% if parms.kind %}<span class="badge">{{ parms.kind }}</span>{% endif %}
+        {% if parms.release %}<span class="hint">release {{ parms.release }}</span>{% endif %}
+        {% if parms.sources > 1 %}<span class="hint">{{ parms.sources }} sources</span>{% endif %}
+        {% if parms.ignore_diffs %}<span class="hint">{{ parms.ignore_diffs }}
+          ignoreDifferences rule{{ 's' if parms.ignore_diffs != 1 }}</span>{% endif %}
+      </div>
+      <div class="card-b">
+        {% if parms.helm_params %}
+        <div class="fdet-sec" style="margin-top:0;"><h4>Parameters</h4>
+          <table class="jenkins"><tbody>
+            {% for p in parms.helm_params %}
+            <tr><td class="jname" style="font-family:var(--mono);font-size:11.5px;">{{ p.name }}</td>
+              <td style="font-family:var(--mono);font-size:11.5px;">{{ p.value }}</td></tr>
+            {% endfor %}
+          </tbody></table>
+        </div>
+        {% endif %}
+        {% if parms.value_files %}
+        <div class="fdet-sec"><h4>Value files</h4>
+          {% for v in parms.value_files %}<span class="badge"
+            style="font-family:var(--mono);">{{ v }}</span>{% endfor %}
+        </div>
+        {% endif %}
+        {% if parms.kust_images %}
+        <div class="fdet-sec"><h4>Kustomize image overrides</h4>
+          {% for i in parms.kust_images %}<span class="badge"
+            style="font-family:var(--mono);">{{ i }}</span>{% endfor %}
+        </div>
+        {% endif %}
+        {% if parms.images %}
+        <div class="fdet-sec"><h4>Images running</h4>
+          {% for i in parms.images %}<span class="badge"
+            style="font-family:var(--mono);">{{ i }}</span>{% endfor %}
+        </div>
+        {% endif %}
+        {% if parms.sync_options %}
+        <div class="fdet-sec"><h4>Sync options</h4>
+          {% for o in parms.sync_options %}<span class="badge">{{ o }}</span>{% endfor %}
+        </div>
+        {% endif %}
+        {% if parms.inline_values %}
+        <div class="fdet-sec"><h4>Inline values</h4>
+          <pre class="ddl" style="max-height:34vh;overflow:auto;">{{ parms.inline_values }}</pre>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
+
+    {% if app_events %}
+    <div class="card" style="margin:0;">
+      <div class="card-h">What the application itself reports
+        <span class="hint">Kubernetes events on the Application object</span></div>
+      <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+        <table class="jenkins">
+          <thead><tr><th style="width:96px;">type</th><th style="width:190px;">reason</th>
+            <th>message</th><th class="num" style="width:70px;">count</th>
+            <th style="width:150px;">when</th></tr></thead>
+          <tbody>
+            {% for e in app_events %}
+            <tr>
+              <td><span class="sv {{ 'sv-high' if e.type == 'Warning' else 'sv-ok' }}"
+                    >{{ e.type }}</span></td>
+              <td><b>{{ e.reason }}</b></td>
+              <td class="hint" style="white-space:normal;">{{ e.message }}</td>
+              <td class="num">{{ e.count }}</td>
+              <td class="hint">{{ e.at }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+</dialog>
+
+<dialog id="histDlg" class="psh">
+  <div class="psh-bar">
+    <span class="psh-dots"><b title="close" data-adlg="histDlg">✕</b></span>
+    <b>history and rollback</b>
+    <span class="psh-ns">{{ app.name }}</span>
+    <span style="flex:1"></span>
+    <button type="button" class="psh-x" data-adlg="histDlg">close</button>
+  </div>
+  <div class="rm-in">
+    <div class="card" style="margin:0;">
+      <div class="card-h">Deployments <span class="hint">most recent first</span></div>
+      <div class="card-b">
+        {% if not history %}
+        <p class="sub" style="margin:0;">No deployment history recorded yet.</p>
+        {% else %}
+        <table class="jenkins">
+          <thead><tr><th class="num">#</th><th>revision</th><th>target</th>
+            <th>deployed</th>
+            <th class="actcol" style="width:104px;min-width:104px;"></th></tr></thead>
+          <tbody>
+            {% for h in history %}
+            <tr>
+              <td class="num">{{ h.id }}</td>
+              <td style="font-family:var(--mono);font-size:11.5px;">{{ h.revision }}</td>
+              <td>{{ h.target or '—' }}</td>
+              <td class="hint">{{ h.at }}</td>
+              <td class="actcol"><span class="actrow oneline">
+                {# Argo rolls back by history id, not revision — two entries can
+                   share a revision, and the id is what its API takes #}
+                <button type="button" class="abtn gback" data-id="{{ h.id }}"
+                        data-rev="{{ h.revision }}"
+                        {% if loop.first %}disabled title="already deployed"{% endif %}
+                        >roll back</button>
+              </span></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="statusDlg" class="psh">
+  <div class="psh-bar">
+    <span class="psh-dots"><b title="close" data-adlg="statusDlg">✕</b></span>
+    <b>sync status</b>
+    <span class="psh-ns">{{ app.name }}</span>
+    <span style="flex:1"></span>
+    <button type="button" class="psh-x" data-adlg="statusDlg">close</button>
+  </div>
+  <div class="rm-in" id="statusDlgBody"></div>
+</dialog>
+
+{# ── the action dialog: one click, no typing. A restart or a single-resource
+   sync is OPERATIONAL — the house rule reserves the typed word for destroying
+   a resource — and a browser confirm() has no business in a product that looks
+   like this. Delete reuses the same window and keeps its typed word. ────── #}
+<dialog id="gactDlg" class="pdialog">
+  <div class="dhead">
+    <span>
+      <span class="dtitle" id="gactTitle">Run this action</span>
+      <span class="dwhere" id="gactWhere"></span>
+    </span>
+  </div>
+  <div class="dbody">
+    <p class="sub" id="gactBody" style="margin:0;"></p>
+    <div id="gactTyped" hidden style="margin-top:12px;">
+      <div class="kv" style="gap:9px;align-items:center;flex-wrap:wrap;">
+        <input id="gactConfirm" autocomplete="off" placeholder="type delete"
+               style="width:140px;font-family:var(--mono);font-size:12px;">
+        <span class="sec-note" style="margin:0;">deleting an object is the one
+          thing here that asks you to type</span>
+      </div>
+    </div>
+  </div>
+  <div class="dfoot">
+    <button type="button" class="btn-ghost" id="gactCancel">Cancel</button>
+    <button type="button" class="btn" id="gactGo">Run</button>
+  </div>
+</dialog>
+
+<dialog id="appdelDlg" class="pdialog">
+  <form method="post"
+        action="/gitops/app/delete?conn={{ conn.id }}&name={{ app.name|urlencode }}"
+        data-del-skip>
+    <div class="dhead">
+      <span>
+        <span class="dtitle">Delete this application</span>
+        <span class="dwhere">{{ app.name }} → {{ app.dest }}</span>
+      </span>
+    </div>
+    <div class="dbody">
+      <p class="sub" style="margin:0 0 10px;">Removes the application from Argo
+        CD. <b>Cascade</b> — Argo's own default — also deletes the
+        {{ tree.count }} object{{ 's' if tree.count != 1 }} it deployed. Without
+        it the objects keep running, unmanaged.</p>
+      <label class="chk" style="font-size:12.5px;">
+        <input type="checkbox" name="cascade" checked> also delete everything it
+        deployed (cascade)</label>
+      <div class="kv" style="gap:9px;margin-top:12px;align-items:center;flex-wrap:wrap;">
+        <input name="confirm" autocomplete="off"
+               placeholder="type {{ app.name }}"
+               style="width:230px;font-family:var(--mono);font-size:12px;">
+        <span class="sec-note" style="margin:0;">the application's own name —
+          a habit cannot destroy an estate</span>
+      </div>
+    </div>
+    <div class="dfoot">
+      <button type="button" class="btn-ghost"
+              data-dlg-close="appdelDlg">Cancel</button>
+      <button class="btn" type="submit"
+              style="background:var(--danger);border-color:var(--danger);"
+              >Delete application</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="diffDlg" class="psh">
+  <div class="psh-bar">
+    <span class="psh-dots"><b title="close" id="diffDlgDot">✕</b></span>
+    <b>review changes</b>
+    <span class="psh-ns">{{ app.name }} · git vs cluster</span>
+    <span style="flex:1"></span>
+    <button type="button" class="psh-x" id="diffDlgClose">close</button>
+  </div>
+  <div class="rm-in" id="diffDlgBody"></div>
+</dialog>
+
+<dialog id="rbDlg" class="pdialog">
+  <form method="post"
+        action="/gitops/app/rollback?conn={{ conn.id }}&name={{ app.name|urlencode }}">
+    <input type="hidden" name="id" id="rbId">
+    <div class="dhead">
+      <span>
+        <span class="dtitle">Deploy a revision again</span>
+        <span class="dwhere">{{ app.name }} → <span id="rbRev"></span></span>
+      </span>
+    </div>
+    <div class="dbody">
+      <p class="sub" style="margin:0 0 10px;">Argo CD will deploy that history
+        entry as it was. If auto-sync is on, the controller will pull the
+        application back to git shortly afterwards — turn it off first if the
+        rollback is meant to hold.</p>
+      <label class="chk" style="font-size:12.5px;">
+        <input type="checkbox" name="prune"> prune objects the old revision
+        does not declare</label>
+      <div class="kv" style="gap:9px;margin-top:12px;align-items:center;">
+        <input name="confirm" autocomplete="off" placeholder="type rollback"
+               style="width:140px;font-family:var(--mono);font-size:12px;">
+        <span class="sec-note" style="margin:0;">audited</span>
+      </div>
+    </div>
+    <div class="dfoot">
+      <button type="button" class="btn-ghost"
+              data-dlg-close="rbDlg">Cancel</button>
+      <button class="btn" type="submit">Roll back</button>
+    </div>
+  </form>
+</dialog>
+
+{# ── Argo CD's Synchronize panel: a right-side drawer, every switch its own
+   dialog offers, and the resource list to sync a subset. Same shape as the
+   real thing so somebody who knows it does not have to learn ours. ────── #}
+{# Clicking a box opens it HERE — a right-hand drawer, the same shape as the
+   Synchronize panel — rather than above the map. The map is the page, and a
+   panel that pushed it down moved the very box that had just been clicked. #}
+<div id="resDrawer" class="sdrawer wide" hidden>
+  <div class="sdrawer-h">
+    <b id="resDrawerWhat" style="font-size:13px;overflow:hidden;
+       text-overflow:ellipsis;white-space:nowrap;">resource</b>
+    <span style="flex:1"></span>
+    <span class="resacts" id="resDrawerActs"></span>
+    <button type="button" class="psh-x" id="resDrawerClose">✕</button>
+  </div>
+  <div class="sdrawer-b" id="resDrawerBody"></div>
+</div>
+
+{# ── the application's own settings ────────────────────────────────────
+   Argo CD's automated-sync policy, which is the setting people come to this
+   page looking for: an application with auto-sync off applies nothing until
+   somebody syncs it. `automated=False` sends null rather than an empty object,
+   because an empty `automated: {}` still reads as ON to the controller — see
+   gitops.set_sync_policy. #}
+<div id="policyPanel" class="sdrawer" hidden>
+  <form method="post"
+        action="/gitops/app/policy?conn={{ conn.id }}&name={{ app.name|urlencode }}">
+    <div class="sdrawer-h">
+      <button class="btn" type="submit">Save</button>
+      <button type="button" class="btn-ghost" id="policyCancel">Cancel</button>
+      <span style="flex:1"></span>
+      <button type="button" class="psh-x" id="policyClose">✕</button>
+    </div>
+    <div class="sdrawer-b">
+      <div class="sfield">
+        <span>automated sync</span>
+        <label class="schk" style="margin-bottom:9px;">
+          <input type="checkbox" name="automated" id="polauto"
+                 {% if app.auto %}checked{% endif %}>
+          Argo CD applies git on its own</label>
+        <div class="hint">Off means nothing reaches the cluster until somebody
+          presses Sync — which is what you want for an application you release
+          deliberately, and not what you want for everything else.</div>
+      </div>
+      <div class="sfield" id="polsub">
+        <span>while automated</span>
+        <label class="schk" style="margin-bottom:9px;">
+          <input type="checkbox" name="self_heal" {% if app.self_heal %}checked{% endif %}>
+          self-heal — put back anything changed in the cluster</label>
+        <div class="hint" style="margin:-4px 0 12px;">A live edit to a managed
+          object is reverted on the next reconcile. It is why an edit made here
+          can disappear, and that is the setting behind it.</div>
+        <label class="schk" style="margin-bottom:9px;">
+          <input type="checkbox" name="prune" {% if app.auto_prune %}checked{% endif %}>
+          prune — delete objects git no longer declares</label>
+        <div class="hint">Without it, removing something from git leaves it
+          running in the cluster for ever.</div>
+      </div>
+      <div class="hint" style="border-top:1px solid var(--line);padding-top:12px;">
+        This writes Argo CD's own <code>spec.syncPolicy</code> through the
+        controller, so it is the same change its UI makes — and it is audited.
+      </div>
+    </div>
+  </form>
+</div>
+
+<div id="syncPanel" class="sdrawer" hidden>
+{% include "_gitops_sync.html" %}
+</div>
+
+{% else %}
+<div class="empty"><div class="big">{{ glyph("git-merge", 40) }}</div><h2>Cannot read that application</h2>
+  <p>{{ err or 'It may have been deleted, or this account cannot see it.' }}</p>
+  <a class="btn" href="/gitops?conn={{ conn.id }}">← back to {{ conn.name }}</a></div>
+{% endif %}
+
+<script nonce="{{ csp_nonce() }}">
+// Argo CD's sync is asynchronous: the POST queues it and returns. The page
+// follows it ON THE DIAGRAM — every box the operation touches is marked as it
+// happens, with the phase result painted on the box itself. The old version
+// polled a table underneath the map, which meant reading a list of names to
+// work out which picture had changed.
+(function () {
+  const CONN = "{{ conn.id }}", NAME = {{ app.name|tojson }};
+  const svg = document.getElementById('gsvg');
+  if (!svg) return;
+  const bar = document.getElementById('gopbar');
+  let timer = null, tries = 0, watching = false;
+
+  const key = (kind, ns, name) => (kind || '') + '/' + (ns || '') + '/' + (name || '');
+  const nodeIndex = () => {
+    const m = new Map();
+    svg.querySelectorAll('.gnode').forEach(n =>
+      m.set(key(n.dataset.kind, n.dataset.ns, n.dataset.rname), n));
+    return m;
+  };
+
+  function paint(op) {
+    const idx = nodeIndex();
+    svg.querySelectorAll('.gnode').forEach(n => {
+      n.classList.remove('gsyncing', 'gsynced', 'gsyncbad');
+      const mk = n.querySelector('.gmark');
+      if (mk) mk.setAttribute('opacity', '0');
+    });
+    (op.resources || []).forEach(r => {
+      const n = idx.get(key(r.kind, r.namespace, r.name));
+      if (!n) return;
+      const bad = ['SyncFailed', 'Failed', 'Error', 'ServerError'].includes(r.status);
+      const done = r.status === 'Synced' || r.status === 'Running';
+      n.classList.add(bad ? 'gsyncbad' : done ? 'gsynced' : 'gsyncing');
+      const mk = n.querySelector('.gmark');
+      if (mk) {
+        mk.setAttribute('opacity', '1');
+        const t = mk.querySelector('title') ||
+                  document.createElementNS('http://www.w3.org/2000/svg', 'title');
+        t.textContent = (r.status || 'pending') + (r.message ? ' — ' + r.message : '');
+        mk.appendChild(t);
+      }
+    });
+    if (bar) {
+      const n = (op.resources || []).length;
+      const nbad = op.failed || 0;
+      // a Failed PHASE is bad even when no single resource reported a failure —
+      // the operation can fail before it touches anything, and a green bar
+      // reading "Failed" is the page contradicting itself
+      const bad = nbad > 0 ||
+        ['Failed', 'Error'].includes(op.phase) || (op.phase && !op.running && !op.ok);
+      bar.hidden = !op.phase;
+      bar.className = 'gopbar' + (op.running ? ' run' : bad ? ' bad' : ' ok');
+      bar.textContent = op.running
+        ? `syncing — ${n} object${n === 1 ? '' : 's'} so far`
+        : `${op.phase}${nbad ? ` · ${nbad} failed` : ''}` +
+          (n ? ` · ${n} object${n === 1 ? '' : 's'} touched` : '');
+    }
+  }
+
+  async function poll() {
+    let op;
+    try {
+      const r = await fetch(`/gitops/app/op.json?conn=${encodeURIComponent(CONN)}` +
+                            `&name=${encodeURIComponent(NAME)}`);
+      if (!r.ok) return stop();
+      op = await r.json();
+    } catch (e) {
+      return stop();                       // a blip should not spin forever
+    }
+    paint(op);
+    // a sync changes the objects as well as their status, so the map is
+    // re-read on the same beat: the boxes move while the sync runs
+    if (op.running && window.grefresh) window.grefresh(true);
+    if (!op.running) {
+      const wasWatching = watching;
+      stop();
+      // Health and sync state settle after the operation does, so the page is
+      // re-read once — but ONLY if we were actually following a sync. Without
+      // that guard the paint-on-load poll found "not running", reloaded, and
+      // the fresh page did it again: an endless reload that read as the status
+      // bar flashing on and off for ever.
+      if (wasWatching) setTimeout(() => location.reload(), 1400);
+      return;
+    }
+    if (++tries > 300) stop();   // ten minutes of 2s polls is enough for any sync
+  }
+
+  function stop() { clearInterval(timer); timer = null; watching = false; }
+  function start() {
+    if (timer) return;
+    watching = true;
+    timer = setInterval(poll, 2000);
+    poll();
+  }
+  window.gopStart = start;      // the kebab's actions start the watch too
+  window.gopPaint = paint;      // so the marking path can be exercised directly
+  if (new URLSearchParams(location.search).has('watch')) start();
+  else poll();                  // paint whatever the last operation did
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) stop();
+  });
+})();
+</script>
+
+<script nonce="{{ csp_nonce() }}">
+// Opening a node of the tree. The panel lands above the tree, not in a modal
+// over it: the tree is the context for whatever you are reading, and Argo CD's
+// own slide-over covers it up.
+(function () {
+  const CONN = "{{ conn.id }}", APP = {{ app.name|tojson }};
+  // the app's git source, for the Edit tab's "edit in git" option
+  const AREPO = {{ (app.repo or '')|tojson }}, APATH = {{ (app.path or '')|tojson }};
+  const svg = document.getElementById('gsvg');
+  const pan = document.getElementById('gpan');
+  const box = document.getElementById('gwrap');
+  if (!svg || !pan || !box) return;
+  let open = '';
+
+  // ── pan and zoom ──
+  // The graph is wider than any panel the moment an application has three
+  // levels, so it has to be movable. A transform on one group, not a viewBox
+  // rewrite: the boxes keep their crispness and the maths stays obvious.
+  let scale = 1, tx = 0, ty = 0;
+  const apply = () => pan.setAttribute(
+    'transform', `translate(${tx},${ty}) scale(${scale})`);
+  // mutable: a rollout adds and removes boxes, so the canvas size changes
+  // under us. Baked in as consts, the next fit() used the OLD dimensions and
+  // pushed the whole tree out of view — which is exactly what it did.
+  let NW = {{ graph.width or 1 }}, NH = {{ graph.height or 1 }};
+  let viewTouched = false;      // has the reader panned or zoomed themselves?
+  // Below this the labels stop being words. Sixty objects will not fit a panel
+  // at a readable size and shrinking until they do produced a grey smudge —
+  // so it fits what it can and the rest is a pan away.
+  const MIN_READABLE = 0.55;
+
+  // The canvas takes the diagram's own height so nothing is cut off: the page
+  // scrolls to the rest of the tree instead of a scrollbar inside a box.
+  function sizeBox() {
+    if (box.classList.contains('gfull')) { box.style.height = ''; return; }
+    box.style.height = Math.max(360, Math.round(NH * scale) + 18) + 'px';
+  }
+
+  function fit() {
+    const w = box.clientWidth - 8;
+    if (box.classList.contains('gfull')) {
+      // full screen is the one case with a fixed frame to fit INTO
+      const h = box.clientHeight - 8;
+      scale = Math.max(MIN_READABLE, Math.min(1, Math.min(w / NW, h / NH)));
+      ty = NH * scale <= h ? (h - NH * scale) / 2 : 8;
+    } else {
+      // otherwise only the width has to fit; the height is ours to take
+      scale = Math.max(MIN_READABLE, Math.min(1, w / NW));
+      ty = 8;
+    }
+    // centre only what actually fits; otherwise start at the beginning of the
+    // tree, because the roots are where anybody reads from
+    tx = NW * scale <= w ? (w - NW * scale) / 2 : 8;
+    sizeBox();
+    apply();
+  }
+  function zoom(by, cx, cy) {
+    viewTouched = true;
+    const next = Math.min(2.5, Math.max(0.25, scale * by));
+    // keep whatever is under the pointer under the pointer
+    tx = cx - (cx - tx) * (next / scale);
+    ty = cy - (cy - ty) * (next / scale);
+    scale = next;
+    sizeBox();
+    apply();
+  }
+  svg.setAttribute('width', '100%');
+  svg.setAttribute('height', '100%');
+  svg.removeAttribute('viewBox');
+  fit();
+  window.addEventListener('resize', fit);
+  document.getElementById('gzin').addEventListener('click',
+    () => zoom(1.25, box.clientWidth / 2, box.clientHeight / 2));
+  document.getElementById('gzout').addEventListener('click',
+    () => zoom(0.8, box.clientWidth / 2, box.clientHeight / 2));
+  document.getElementById('gfit').addEventListener('click', fit);
+
+  // full screen, as a panel over the app rather than the browser's own: the
+  // portal's chrome and theme come with it, and Escape behaves the way the
+  // rest of the portal's overlays do
+  const full = document.getElementById('gfull');
+  function setFull(on) {
+    box.classList.toggle('gfull', on);
+    document.body.classList.toggle('gfull-open', on);
+    full.classList.toggle('on', on);
+    full.title = on ? 'Leave full screen' : 'Full screen';
+    requestAnimationFrame(() => { fit(); keepVisible(); });
+    setTimeout(() => { fit(); keepVisible(); }, 60);
+  }
+
+  // Opening the drawer covers the right of the canvas, which is exactly where
+  // a box three columns deep sits. Nudge the view so the thing just clicked is
+  // still on screen rather than behind the panel.
+  function keepVisible() {
+    if (!open) return;
+    const n = document.querySelector(`.gnode[data-uid="${CSS.escape(open)}"]`);
+    if (!n) return;
+    const m = /translate\(([-\d.]+),([-\d.]+)\)/.exec(n.getAttribute('transform'));
+    if (!m) return;
+    const dr = document.getElementById('resDrawer');
+    const drawer = (dr && !dr.hidden) ? dr.getBoundingClientRect().width : 0;
+    const visible = box.clientWidth - drawer;
+    const right = (+m[1] + {{ graph.box_w or 236 }}) * scale + tx;
+    if (right > visible - 24) {
+      tx -= right - (visible - 24);
+      apply();
+    }
+  }
+  full.addEventListener('click', () => setFull(!box.classList.contains('gfull')));
+  window.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && box.classList.contains('gfull')) {
+      e.preventDefault();
+      setFull(false);
+    }
+  });
+  box.addEventListener('wheel', e => {
+    // the drawer is a child of this element, so without this the graph zoomed
+    // while the reader was trying to scroll a log
+    if (e.target.closest('#resDrawer')) return;
+    const r = box.getBoundingClientRect();
+
+    // A plain wheel belongs to the page. Taking it meant that scrolling past
+    // this card stopped the page dead and started zooming a diagram nobody had
+    // asked to zoom — the reader loses control of the scroll they started.
+    // ctrlKey is also what a trackpad pinch arrives as, so pinch zooms too.
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      zoom(e.deltaY < 0 ? 1.12 : 0.89, e.clientX - r.left, e.clientY - r.top);
+      return;
+    }
+
+    // Full screen has no page behind it to scroll, so the wheel pans the
+    // canvas instead — and only while there is somewhere to pan to, so the
+    // gesture still falls through at the edges rather than feeling stuck.
+    if (box.classList.contains('gfull')) {
+      const room = NH * scale - (box.clientHeight - 52);
+      if (room > 0) {
+        e.preventDefault();
+        ty = Math.min(8, Math.max(-room, ty - e.deltaY));
+        apply();
+      }
+    }
+  }, {passive: false});
+  box.addEventListener('pointerdown', e => {
+    // a box is a click, not a drag; and a drag inside the drawer is somebody
+    // selecting text, not moving the canvas
+    if (e.target.closest('.gnode') || e.target.closest('#resDrawer')) return;
+    e.preventDefault();
+    box.classList.add('panning');
+    const sx = e.clientX - tx, sy = e.clientY - ty;
+    const move = ev => {
+      viewTouched = true;
+      tx = ev.clientX - sx; ty = ev.clientY - sy; apply();
+    };
+    const up = () => {
+      box.classList.remove('panning');
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  });
+
+  let curRef = null;      // the last kind/name ref opened (pseudo-node panels)
+  // Every open is numbered. Two boxes clicked in quick succession are two
+  // fetches, and the slower one used to land last and fill the drawer with the
+  // wrong object under the right title.
+  let showSeq = 0;
+  async function show(uid, tab, container, ref) {
+    stopFollow();
+    const mySeq = ++showSeq;
+    if (ref) curRef = ref;
+    if (uid) curRef = null;          // a real tree node needs no ref
+    const q = new URLSearchParams({conn: CONN, name: APP, uid: uid || '',
+                                   tab: tab || '', container: container || ''});
+    if (!uid && curRef) {
+      for (const [k, v] of Object.entries(curRef)) q.set(k, v || '');
+    }
+    q.set('bare', '1');
+    q.set('arepo', AREPO);
+    q.set('apath', APATH);
+    const dr = document.getElementById('resDrawer');
+    const body = document.getElementById('resDrawerBody');
+    const what = document.getElementById('resDrawerWhat');
+    const node = uid ? svg.querySelector(`.gnode[data-uid="${CSS.escape(uid)}"]`)
+                     : null;
+    const label = node ? node.dataset.kind + '/' + node.dataset.rname
+                       : (curRef ? curRef.rkind + '/' + curRef.rname : 'resource');
+    what.textContent = label;
+    body.innerHTML = '<p class="sub" style="margin:0;display:flex;' +
+      'align-items:center;gap:10px;"><span class="opspin"></span>' +
+      'Reading it from Argo CD…</p>';
+    if (window.gdrawerOpen) window.gdrawerOpen(dr); else dr.hidden = false;
+    // the actions for THIS object, in the drawer's own header — everything a
+    // reader can do to it, without hunting for the ⋮ again
+    const acts = document.getElementById('resDrawerActs');
+    acts.innerHTML = '';
+    if (node) {
+      const items = [['summary', 'details'], ['logs', 'logs'],
+                     ['manifest', 'yaml'], ['changes', 'diff'],
+                     ['syncone', 'sync'], ['restart', 'restart'],
+                     ['delete', 'delete']];
+      items.forEach(([act, text]) => {
+        if (act === 'logs' && node.dataset.kind !== 'Pod') return;
+        if (act === 'restart' && node.dataset.restart !== '1') return;
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'abtn' + (act === 'delete' ? ' danger' : '');
+        b.textContent = text;
+        b.onclick = () => window.gnodeAct(node, act);
+        acts.appendChild(b);
+      });
+    }
+    try {
+      const r = await fetch('/gitops/app/resource?' + q);
+      if (r.status === 409) { location.reload(); return; }
+      const text = await r.text();
+      if (mySeq !== showSeq) return;        // a newer click already won
+      body.innerHTML = text;
+    } catch (e) {
+      if (mySeq !== showSeq) return;
+      body.innerHTML = '<div class="flash err">could not read it: ' +
+        String(e).replace(/[<>&]/g, '') + '</div>';
+    }
+    open = uid;
+    mark();
+    // the panel's own tab strip and log tools, now inside the drawer
+    body.querySelectorAll('.restab').forEach(b =>
+      b.addEventListener('click', () => show(open, b.dataset.tab)));
+    body.querySelectorAll('.rescont').forEach(b =>
+      b.addEventListener('click', () => show(open, 'logs', b.dataset.container)));
+    logTools();
+    const x = body.querySelector('#resclose');
+    if (x) x.addEventListener('click', () => {
+      window.gdrawerClose(dr); open = ''; mark();
+    });
+  }
+
+  // ── the log pane: follow, wrap, download ──
+  let following = null;
+  function stopFollow() {
+    if (following) clearInterval(following);
+    following = null;
+  }
+
+  function logTools() {
+    stopFollow();
+    const pre = document.getElementById('reslog');
+    if (!pre) return;
+    pre.scrollTop = pre.scrollHeight;          // newest line, not the oldest
+
+    const cont = document.getElementById('resDrawerBody')
+      ?.querySelector('.rescont.btn')?.dataset.container || '';
+    const url = '/gitops/app/log?' + new URLSearchParams(
+      {conn: CONN, name: APP, uid: open, container: cont});
+
+    const dl = document.getElementById('resdl');
+    if (dl) dl.addEventListener('click', () => {
+      // the text is already here; asking Argo for it twice is waste
+      dl.href = URL.createObjectURL(
+        new Blob([pre.textContent], {type: 'text/plain'}));
+    });
+
+    const wrapBtn = document.getElementById('reswrapx');
+    if (wrapBtn) wrapBtn.addEventListener('click', () => {
+      pre.classList.toggle('wrapped');
+      wrapBtn.classList.toggle('btn');
+      wrapBtn.classList.toggle('btn-ghost');
+    });
+
+    const live = document.getElementById('reslive');
+    const note = document.getElementById('reslivenote');
+    if (!live) return;
+    live.addEventListener('click', () => {
+      if (following) {
+        stopFollow();
+        live.classList.remove('btn'); live.classList.add('btn-ghost');
+        note.textContent = '';
+        return;
+      }
+      live.classList.add('btn'); live.classList.remove('btn-ghost');
+      note.textContent = 'following…';
+      const tick = async () => {
+        try {
+          const r = await fetch(url);
+          if (!r.ok) throw new Error(r.status);
+          const text = await r.text();
+          if (text === pre.textContent) return;
+          // only chase the bottom if the reader was already there — otherwise
+          // following yanks the page away from what they were reading
+          const atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 24;
+          pre.textContent = text;
+          if (atEnd) pre.scrollTop = pre.scrollHeight;
+          note.textContent = 'following · updated just now';
+        } catch (e) {
+          note.textContent = 'following stopped — ' + e.message;
+          stopFollow();
+          live.classList.remove('btn'); live.classList.add('btn-ghost');
+        }
+      };
+      following = setInterval(tick, 3000);
+      tick();
+    });
+  }
+
+  // a poll must not outlive the thing it is polling
+  window.addEventListener('beforeunload', stopFollow);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) stopFollow();
+  });
+
+  function mark() {
+    document.querySelectorAll('.gnode').forEach(
+      n => n.classList.toggle('picked', n.dataset.uid === open));
+  }
+
+  // ── the filter rail: name, kind, sync and health — applied to the LIST and
+  // to the GRAPH at once, entirely in the browser (measured in single-digit
+  // milliseconds, which is the point: Argo's own filters cost a render) ──
+  (() => {
+    const find = document.getElementById('gfind');
+    const kind = document.getElementById('gfkind');
+    const list = document.getElementById('glist');
+    const graphBox = document.getElementById('ggraph');
+    const toggle = document.getElementById('gview');
+    const none = document.getElementById('glnone');
+    const clear = document.getElementById('gfclear');
+    const syncSel = document.getElementById('gfsync');
+    const healthSel = document.getElementById('gfhealth');
+    if (!find || !list) return;
+    const rows = [...list.querySelectorAll('tbody tr')];
+
+    function match(kindV, nameV, nsV, healthV, syncV) {
+      const q = find.value.trim().toLowerCase();
+      const k = kind ? kind.value : '';
+      const wantS = syncSel ? syncSel.value : '';
+      const wantH = healthSel ? healthSel.value : '';
+      if (q && !((kindV + ' ' + nameV + ' ' + nsV).toLowerCase().includes(q)))
+        return false;
+      if (k && kindV !== k) return false;
+      if (wantS && syncV !== wantS) return false;
+      if (wantH && (healthV || 'Unknown') !== wantH) return false;
+      return true;
+    }
+
+    function paint() {
+      let shown = 0;
+      rows.forEach(r => {
+        const hit = match(r.dataset.kind || '', r.dataset.rname || '',
+                          r.dataset.ns || '', r.dataset.health || '',
+                          r.dataset.sync || '');
+        r.hidden = !hit;
+        if (hit) shown++;
+      });
+      if (none) none.hidden = shown > 0;
+      // the same rule dims the graph, so the two views never disagree
+      svg.querySelectorAll('.gnode').forEach(n => {
+        const hit = match(n.dataset.kind || '', n.dataset.rname || '',
+                          n.dataset.ns || '', n.dataset.health2 || '',
+                          n.dataset.sync || '');
+        n.classList.toggle('gdim', !hit);
+      });
+    }
+    function setMode(mode) {
+      if (!toggle) return;
+      toggle.dataset.mode = mode;
+      const asList = mode === 'list';
+      list.hidden = !asList;
+      graphBox.hidden = asList;
+      toggle.textContent = asList ? 'graph ⑃' : 'list ▤';
+    }
+    find.addEventListener('input', paint);
+    [kind, syncSel, healthSel].forEach(sel =>
+      sel && sel.addEventListener('change', paint));
+    if (clear) clear.addEventListener('click', () => {
+      find.value = '';
+      // ddRefresh after setting .value in code: the themed dropdown has no DOM
+      // observer, so without it the button keeps showing the old filter while
+      // the native select underneath says "any". CLAUDE.md names this exact
+      // trap — and it only became reachable here when these three stopped
+      // being `no-dd` native selects.
+      [kind, syncSel, healthSel].forEach(sel => {
+        if (!sel) return;
+        sel.value = '';
+        if (window.ddRefresh) window.ddRefresh(sel);
+      });
+      paint();
+    });
+    if (toggle) toggle.addEventListener('click', () =>
+      setMode(toggle.dataset.mode === 'list' ? 'graph' : 'list'));
+    list.addEventListener('click', e => {
+      const a = e.target.closest('.glopen');
+      if (!a) return;
+      e.preventDefault();
+      show(a.dataset.uid, a.dataset.tab || '');
+    });
+    paint();
+  })();
+
+  // ── the map, kept live: after an action the tree is re-read and the
+  // DIFFERENCE is animated — a box that appeared fades in, one that has gone
+  // shows as terminating before it leaves. That is what makes a restart
+  // visible: the new pod arrives and the old one drains, on the picture.
+  const gflash = (text, bad) => {
+    const bar = document.getElementById('gopbar');
+    if (!bar) return;
+    bar.hidden = false;
+    bar.className = 'gopbar ' + (bad ? 'bad' : 'run');
+    bar.textContent = text;
+  };
+
+  let treeTimer = null, treeTries = 0;
+  async function refreshGraph(animate) {
+    let got;
+    try {
+      const r = await fetch('/gitops/app/graph.json?conn=' +
+                            encodeURIComponent(CONN) + '&name=' +
+                            encodeURIComponent(APP) + '&fresh=1');
+      if (!r.ok) return null;
+      got = await r.json();
+      if (got.error) return null;
+    } catch (e) { return null; }
+
+    // PATCH, never replace. Swapping innerHTML every two seconds re-created
+    // every box, so each poll re-ran the enter animation on things that had
+    // not changed — the whole map blinked. So: boxes that still exist are
+    // MOVED and re-labelled in place, new ones are added, gone ones drain.
+    const probe = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    probe.innerHTML = got.inner;
+    const incoming = new Map();
+    probe.querySelectorAll('.gnode').forEach(n =>
+      incoming.set(n.getAttribute('data-uid'), n));
+    const here = new Map();
+    pan.querySelectorAll('.gnode:not(.gterm)').forEach(n =>
+      here.set(n.dataset.uid, n));
+
+    let added = 0, gone = 0;
+    // 1. the ones that stay: move and re-label, no re-creation, no flicker
+    here.forEach((el, uid) => {
+      const fresh = incoming.get(uid);
+      if (!fresh) return;
+      const t = fresh.getAttribute('transform');
+      if (el.getAttribute('transform') !== t) el.setAttribute('transform', t);
+      if (el.getAttribute('class') !== fresh.getAttribute('class')) {
+        // keep any animation class we own; take the health/family from Argo
+        const mine = el.classList.contains('gnew') ? ' gnew' : '';
+        el.setAttribute('class', fresh.getAttribute('class') + mine);
+      }
+      ['data-health2', 'data-sync', 'data-kind', 'data-rname', 'data-ns',
+       'data-restart', 'data-group', 'data-version'].forEach(a => {
+          const v = fresh.getAttribute(a);
+          if (v !== null && el.getAttribute(a) !== v) el.setAttribute(a, v);
+        });
+      // The CONTENT is swapped wholesale when it differs — patching text node
+      // by text node could not cope with the third line changing ELEMENT
+      // ("progressing" is .gstate2, "Running · 1/1" is .gchip), so a pod that
+      // had settled kept the word "progressing" until the page was reloaded.
+      // Replacing the inner group keeps the box's identity and position, so
+      // there is no flicker and no enter animation — and it is always right.
+      const mineIn = el.querySelector('.gin'), freshIn = fresh.querySelector('.gin');
+      if (mineIn && freshIn && mineIn.innerHTML !== freshIn.innerHTML) {
+        mineIn.innerHTML = freshIn.innerHTML;
+      }
+    });
+    // 2. the ones that have gone: kept a moment, draining, then removed
+    here.forEach((el, uid) => {
+      if (incoming.has(uid)) return;
+      gone++;
+      if (!animate) { el.remove(); return; }
+      el.classList.add('gterm');
+      el.classList.remove('gnew');
+      setTimeout(() => el.remove(), 2600);
+    });
+    // 3. the new ones
+    incoming.forEach((fresh, uid) => {
+      if (here.has(uid)) return;
+      added++;
+      const el = fresh.cloneNode(true);
+      if (animate) {
+        el.classList.add('gnew');
+        // the green ring is the ARRIVAL, not a permanent badge: left on, every
+        // pod from the last rollout still looked like it had just landed
+        setTimeout(() => el.classList.remove('gnew'), 4600);
+      }
+      pan.appendChild(el);
+    });
+    // 4. the elbows, only when they actually differ — replacing identical
+    //    paths every poll is another source of flicker
+    const oldEdges = [...pan.querySelectorAll('.gedge')]
+      .map(p => p.getAttribute('d')).join('|');
+    const newEdgeEls = [...probe.querySelectorAll('.gedge')];
+    if (oldEdges !== newEdgeEls.map(p => p.getAttribute('d')).join('|')) {
+      pan.querySelectorAll('.gedge, .gflow').forEach(p => p.remove());
+      const first = pan.firstChild;
+      probe.querySelectorAll('.gedge, .gflow').forEach(p =>
+        pan.insertBefore(p.cloneNode(true), first));
+    }
+
+    NW = got.width || NW;
+    NH = got.height || NH;
+    // a rollout makes the tree taller, so the canvas has to grow with it even
+    // when the reader has their own pan and zoom and fit() must not run
+    if (!viewTouched) fit();
+    else { sizeBox(); apply(); }
+
+    const head = document.getElementById('gbar');
+    if (head) {
+      const hint = head.querySelector('.hint');
+      if (hint) {
+        const bits = [`${got.count} object${got.count === 1 ? '' : 's'}`];
+        Object.entries(got.by_health || {}).forEach(([h, n]) =>
+          bits.push(`${n} ${h.toLowerCase()}`));
+        hint.textContent = bits.join(' · ');
+      }
+    }
+    mark();
+    return {added: added, gone: gone};
+  }
+  window.grefresh = refreshGraph;
+
+  // ?sync=1 / ?del=1 — the applications list links here rather than acting
+  addEventListener('load', () => {
+    const p = new URLSearchParams(location.search);
+    if (p.get('sync') === '1' && window.gsyncOpen) window.gsyncOpen();
+    if (p.get('del') === '1') {
+      const d = document.getElementById('appdelDlg');
+      if (d && !d.open) d.showModal();
+    }
+  });
+
+  // How many objects are still mid-flight, straight off the map.
+  const unsettled = () => svg.querySelectorAll(
+    '.gnode:not(.gterm)[data-health2="Progressing"],' +
+    '.gnode:not(.gterm)[data-sync="OutOfSync"]').length;
+
+  function watchTree(what) {
+    treeTries = 0;
+    if (treeTimer) clearInterval(treeTimer);
+    let seenNew = 0, seenGone = 0, quiet = 0;
+    const tick = async () => {
+      const d = await refreshGraph(true);
+      if (d) {
+        seenNew += d.added;
+        seenGone += d.gone;
+        quiet = (d.added || d.gone) ? 0 : quiet + 1;
+        const left = unsettled();
+        const bits = [];
+        if (seenNew) bits.push(`${seenNew} appeared`);
+        if (seenGone) bits.push(`${seenGone} terminating`);
+        if (left) bits.push(`${left} still settling`);
+        gflash(what + (bits.length ? ' — ' + bits.join(', ') : ' — watching…'));
+        // Stop when it has SETTLED, not on a stopwatch: a fixed minute left a
+        // slower rollout frozen on its last frame saying "progressing" until
+        // the page was reloaded. Settled = nothing appeared or left for three
+        // polls AND nothing is progressing or out of sync.
+        if (!left && quiet >= 3) {
+          clearInterval(treeTimer);
+          treeTimer = null;
+          gflash(what + ' — done'
+                 + (seenNew ? `, ${seenNew} new` : '')
+                 + (seenGone ? `, ${seenGone} replaced` : ''), false);
+          return;
+        }
+      }
+      // a backstop, generous enough for a real rolling update on a busy node
+      if (++treeTries > 150) {
+        clearInterval(treeTimer);
+        treeTimer = null;
+        const left = unsettled();
+        gflash(what + (left ? ` — ${left} still settling after five minutes`
+                            : ' — done'), !!left);
+      }
+    };
+    treeTimer = setInterval(tick, 2000);
+    tick();
+  }
+
+  // ── the ⋮ on a box: Argo's per-node actions, without leaving the map ──
+  (() => {
+    const menu = document.getElementById('gmenu');
+    if (!menu) return;
+    const what = document.getElementById('gmenuWhat');
+    const logsItem = document.getElementById('gmLogs');
+    const restartItem = document.getElementById('gmRestart');
+    const form = document.getElementById('gnodeForm');
+    let node = null;
+
+    const shut = () => { menu.hidden = true; node = null; };
+    function openFor(n, x, y) {
+      node = n;
+      what.textContent = n.dataset.kind + '/' + n.dataset.rname;
+      logsItem.hidden = n.dataset.kind !== 'Pod';
+      restartItem.hidden = n.dataset.restart !== '1';
+      menu.hidden = false;
+      // keep it on screen: a box near the right edge would push it off
+      const r = menu.getBoundingClientRect();
+      menu.style.left = Math.min(x, window.innerWidth - r.width - 10) + 'px';
+      menu.style.top = Math.min(y, window.innerHeight - r.height - 10) + 'px';
+    }
+    svg.addEventListener('click', e => {
+      const k = e.target.closest('.gkebab');
+      if (!k) return;
+      e.stopPropagation();
+      e.preventDefault();
+      const n = k.closest('.gnode');
+      const box = k.getBoundingClientRect();
+      openFor(n, box.right + 6, box.top);
+    }, true);
+    document.addEventListener('click', e => {
+      if (!menu.hidden && !menu.contains(e.target)) shut();
+    });
+    window.addEventListener('keydown', e => {
+      if (e.key === 'Escape' && !menu.hidden) shut();
+    });
+
+    // The action is POSTed with fetch, not by navigating: leaving the page to
+    // come back to it is what made a restart invisible — by the time the new
+    // page rendered, the churn it was supposed to show had already happened
+    // somewhere the reader could not see. Now the click stays put and the map
+    // starts moving.
+    async function post(url, n, extra, watchLabel) {
+      const body = new URLSearchParams({
+        rkind: n.dataset.kind, rname: n.dataset.rname,
+        rns: n.dataset.ns || '', rgroup: n.dataset.group || '',
+        rversion: n.dataset.version || 'v1', ...(extra || {})});
+      gflash(watchLabel + ' — asking Argo CD…');
+      let res;
+      try {
+        res = await fetch(url, {method: 'POST', body: body});
+      } catch (e) {
+        gflash('could not reach the portal', true);
+        return;
+      }
+      // the routes answer with a redirect carrying the outcome in its query,
+      // so the message the page would have flashed is read from there
+      let msg = '', err = '';
+      try {
+        const u = new URL(res.url);
+        msg = u.searchParams.get('msg') || '';
+        err = u.searchParams.get('err') || '';
+      } catch (e) { /* same-origin always parses; belt and braces */ }
+      if (err) { gflash(err, true); return; }
+      watchTree(msg || watchLabel);
+    }
+
+    // one dialog for every per-node action. Operational ones (restart, sync a
+    // single object) are ONE CLICK — no word to type, because the house rule
+    // reserves that for destroying a resource, and a browser confirm() has no
+    // place in a product that looks like this.
+    const adlg = document.getElementById('gactDlg');
+    function gact(o) {
+      document.getElementById('gactTitle').textContent = o.title;
+      document.getElementById('gactWhere').textContent = o.where || '';
+      document.getElementById('gactBody').textContent = o.body || '';
+      const typed = document.getElementById('gactTyped');
+      const field = document.getElementById('gactConfirm');
+      typed.hidden = !o.typed;
+      field.value = '';
+      field.placeholder = 'type ' + (o.typed || '');
+      const go = document.getElementById('gactGo');
+      go.textContent = o.verb || 'Run';
+      go.style.background = o.danger ? 'var(--danger)' : '';
+      go.style.borderColor = o.danger ? 'var(--danger)' : '';
+      const run = () => {
+        if (o.typed && field.value.trim().toLowerCase() !== o.typed) {
+          field.style.borderColor = 'var(--danger)';
+          field.focus();
+          return;
+        }
+        adlg.close();
+        post(o.url, o.node, o.extra, o.watch);
+      };
+      go.onclick = run;
+      field.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); run(); } };
+      document.getElementById('gactCancel').onclick = () => adlg.close();
+      adlg.showModal();
+      if (o.typed) field.focus(); else go.focus();
+    }
+
+    // One definition of "what can be done to this object", so the ⋮ menu and
+    // the drawer's own header offer exactly the same set with the same guards.
+    async function runFor(n, act) {
+      const label = n.dataset.kind + '/' + n.dataset.rname;
+      shut();
+      if (['summary', 'logs', 'manifest', 'changes', 'actions'].includes(act)) {
+        show(n.dataset.uid, act === 'summary' ? 'summary' : act);
+        return;
+      }
+      if (act === 'restart') {
+        gact({
+          title: 'Restart ' + n.dataset.kind, where: label, verb: 'Restart',
+          body: 'Argo CD rolls its pods one at a time. You will watch the new '
+                + 'ones arrive and the old ones drain on the map.',
+          url: `/gitops/app/resource/action?conn=${encodeURIComponent(CONN)}` +
+               `&name=${encodeURIComponent(APP)}`,
+          extra: {action: 'restart'}, node: n, watch: 'restarting ' + label});
+        return;
+      }
+      if (act === 'syncone') {
+        gact({
+          title: 'Sync this object only', where: label, verb: 'Sync',
+          body: 'Git is applied to this object and nothing else in the '
+                + 'application.',
+          url: `/gitops/app/sync?conn=${encodeURIComponent(CONN)}` +
+               `&name=${encodeURIComponent(APP)}`,
+          extra: {confirm: 'sync',
+                  res: [n.dataset.group || '', n.dataset.kind, n.dataset.rname,
+                        n.dataset.ns || ''].join('|')},
+          node: n, watch: 'syncing ' + label});
+        return;
+      }
+      if (act === 'delete') {
+        gact({
+          title: 'Delete ' + n.dataset.kind, where: label, verb: 'Delete',
+          danger: true, typed: 'delete',
+          body: 'Removes it from the cluster. If git still declares it, Argo '
+                + 'CD puts it back on the next sync — which is the usual way '
+                + 'to make a stuck object rebuild.',
+          url: `/gitops/app/resource/delete?conn=${encodeURIComponent(CONN)}` +
+               `&name=${encodeURIComponent(APP)}`,
+          extra: {confirm: 'delete'}, node: n, watch: 'deleting ' + label});
+      }
+    }
+    window.gnodeAct = runFor;
+    menu.addEventListener('click', e => {
+      const b = e.target.closest('.gmenu-i');
+      if (b && node) runFor(node, b.dataset.gm);
+    });
+  })();
+
+  // ── what every drawer on this page does: a scrim you can click away, a
+  //    working close button, Escape, and a draggable edge. One implementation,
+  //    because two drawers with two behaviours is how one of them ends up
+  //    without a working ✕. ──
+  (() => {
+    const scrim = document.createElement('div');
+    scrim.className = 'sdrawer-scrim';
+    scrim.hidden = true;
+    document.body.appendChild(scrim);
+    const drawers = [...document.querySelectorAll('.sdrawer')];
+    const openOne = () => drawers.find(d => !d.hidden);
+
+    function close(d) {
+      if (d) d.hidden = true;
+      if (!openOne()) scrim.hidden = true;
+    }
+    function open(d) {
+      drawers.forEach(o => { if (o !== d) o.hidden = true; });
+      const w = localStorage.getItem('gdrawer-w-' + d.id);
+      if (w) d.style.width = w + 'px';
+      d.hidden = false;
+      scrim.hidden = false;
+    }
+    window.gdrawerOpen = open;
+    window.gdrawerClose = close;
+    scrim.addEventListener('click', e => {
+      close(openOne());
+      // Clicking a DIFFERENT box should open that box, not merely dismiss the
+      // drawer and make the reader click twice. The scrim is invisible, so it
+      // hands the click on to whatever it was covering.
+      scrim.hidden = true;
+      const under = document.elementFromPoint(e.clientX, e.clientY);
+      const node = under && under.closest && under.closest('.gnode');
+      if (node) node.dispatchEvent(new MouseEvent('click', {bubbles: true}));
+    });
+    window.addEventListener('keydown', e => {
+      const d = openOne();
+      if (e.key === 'Escape' && d) { e.preventDefault(); close(d); }
+    });
+
+    drawers.forEach(d => {
+      // the close button, for every drawer, without each one remembering to
+      d.querySelectorAll('.psh-x, [data-sclose]').forEach(b =>
+        b.addEventListener('click', () => close(d)));
+      const grip = document.createElement('div');
+      grip.className = 'sdrawer-grip';
+      grip.title = 'Drag to resize';
+      d.appendChild(grip);
+      grip.addEventListener('pointerdown', e => {
+        e.preventDefault();
+        d.classList.add('sizing');
+        const startX = e.clientX, startW = d.getBoundingClientRect().width;
+        const move = ev => {
+          // dragging left widens it: the drawer is anchored to the right edge
+          const w = Math.min(window.innerWidth - 40,
+                             Math.max(360, startW + (startX - ev.clientX)));
+          d.style.width = w + 'px';
+        };
+        const up = () => {
+          d.classList.remove('sizing');
+          localStorage.setItem('gdrawer-w-' + d.id,
+                               Math.round(d.getBoundingClientRect().width));
+          window.removeEventListener('pointermove', move);
+          window.removeEventListener('pointerup', up);
+        };
+        window.addEventListener('pointermove', move);
+        window.addEventListener('pointerup', up);
+      });
+    });
+  })();
+
+  // ── the application's own settings ──
+  (() => {
+    const dr = document.getElementById('policyPanel');
+    if (!dr) return;
+    const open = () => window.gdrawerOpen(dr);
+    const shut = () => window.gdrawerClose(dr);
+    document.getElementById('gpolicyBtn')?.addEventListener('click', open);
+    document.getElementById('policyCancel')?.addEventListener('click', shut);
+    // the sub-options only mean anything while automated is on, so they dim
+    // with it rather than looking like settings that are being ignored
+    const auto = document.getElementById('polauto');
+    const sub = document.getElementById('polsub');
+    const paint = () => {
+      sub.style.opacity = auto.checked ? '1' : '.45';
+      sub.querySelectorAll('input').forEach(i => { i.disabled = !auto.checked; });
+    };
+    auto?.addEventListener('change', paint);
+    paint();
+  })();
+
+  // ── the Synchronize drawer ──
+  (() => {
+    const dr = document.getElementById('syncPanel');
+    if (!dr) return;
+    const open = () => { window.gdrawerOpen(dr);
+      const w = document.getElementById('syncWord'); if (w) w.focus(); };
+    const shut = () => window.gdrawerClose(dr);
+    window.gsyncOpen = open;
+    document.getElementById('syncCancel').addEventListener('click', shut);
+    // all / out of sync / none, the way Argo's panel offers it
+    dr.addEventListener('click', e => {
+      const a = e.target.closest('[data-spick]');
+      if (!a) return;
+      e.preventDefault();
+      const how = a.dataset.spick;
+      dr.querySelectorAll('.sres input[type=checkbox]').forEach(c => {
+        c.checked = how === 'all' ? true
+                  : how === 'oos' ? c.dataset.oos === '1' : false;
+      });
+    });
+  })();
+
+  // ── the toolbar's slide-overs, all the one psh window ──
+  (() => {
+    function wire(dlg) {
+      if (!dlg) return;
+      const bar = dlg.querySelector('.psh-bar');
+      if (bar) {
+        bar.style.cursor = 'move';
+        bar.addEventListener('pointerdown', e => {
+          if (e.target.closest('button') || e.target.closest('.psh-dots')) return;
+          e.preventDefault();
+          const r = dlg.getBoundingClientRect();
+          dlg.style.position = 'fixed'; dlg.style.margin = '0';
+          dlg.style.left = r.left + 'px'; dlg.style.top = r.top + 'px';
+          const sx = e.clientX - r.left, sy = e.clientY - r.top;
+          const mv = ev => {
+            dlg.style.left = (ev.clientX - sx) + 'px';
+            dlg.style.top = Math.max(0, ev.clientY - sy) + 'px';
+          };
+          const up = () => {
+            window.removeEventListener('pointermove', mv);
+            window.removeEventListener('pointerup', up);
+          };
+          window.addEventListener('pointermove', mv);
+          window.addEventListener('pointerup', up);
+        });
+      }
+      dlg.addEventListener('click', e => { if (e.target === dlg) dlg.close(); });
+    }
+    ['detailsDlg', 'histDlg', 'statusDlg'].forEach(id =>
+      wire(document.getElementById(id)));
+    document.addEventListener('click', e => {
+      const b = e.target.closest('[data-adlg]');
+      if (!b) return;
+      const d = document.getElementById(b.dataset.adlg);
+      if (d && d.open) d.close();
+    });
+    const open = (id) => {
+      const d = document.getElementById(id);
+      if (d) d.showModal();
+    };
+    const det = document.getElementById('gdetailsBtn');
+    if (det) det.addEventListener('click', () => open('detailsDlg'));
+    const hist = document.getElementById('ghistBtn');
+    if (hist) hist.addEventListener('click', () => open('histDlg'));
+    const del = document.getElementById('gappdelBtn');
+    if (del) del.addEventListener('click', () => open('appdelDlg'));
+    // sync status is the live operation, fetched — the same fragment the
+    // watcher polls, so it is never a second opinion about the same sync
+    const st = document.getElementById('gstatusBtn');
+    if (st) st.addEventListener('click', async () => {
+      const body = document.getElementById('statusDlgBody');
+      body.innerHTML = '<div class="card"><div class="card-b">' +
+        '<p class="sub" style="margin:0;display:flex;align-items:center;gap:10px;">' +
+        '<span class="opspin"></span>Reading the operation…</p></div></div>';
+      open('statusDlg');
+      try {
+        const r = await fetch('/gitops/app/op?conn=' + encodeURIComponent(CONN) +
+                              '&name=' + encodeURIComponent(APP));
+        const txt = (await r.text()).trim();
+        body.innerHTML = txt || '<div class="card"><div class="card-b">' +
+          '<p class="sub" style="margin:0;">Argo CD has not recorded an ' +
+          'operation for this application yet.</p></div></div>';
+      } catch (e) {
+        body.innerHTML = '<div class="flash err">could not read it</div>';
+      }
+    });
+    // the refresh split-button's menu
+    const more = document.getElementById('grefmore');
+    const menu = document.getElementById('grefmenu');
+    if (more && menu) {
+      more.addEventListener('click', e => {
+        e.stopPropagation();
+        menu.hidden = !menu.hidden;
+      });
+      document.addEventListener('click', e => {
+        if (!menu.hidden && !menu.contains(e.target) && e.target !== more)
+          menu.hidden = true;
+      });
+    }
+  })();
+
+  // ── review changes: the whole app diff, in the house window ──
+  (() => {
+    const btn = document.getElementById('gdiffBtn');
+    const dlg = document.getElementById('diffDlg');
+    if (!btn || !dlg) return;
+    const body = document.getElementById('diffDlgBody');
+    const shut = () => { dlg.close(); body.innerHTML = ''; };
+    document.getElementById('diffDlgClose').addEventListener('click', shut);
+    document.getElementById('diffDlgDot').addEventListener('click', shut);
+    dlg.addEventListener('click', e => { if (e.target === dlg) shut(); });
+    const bar = dlg.querySelector('.psh-bar');
+    bar.style.cursor = 'move';
+    bar.addEventListener('pointerdown', e => {
+      if (e.target.closest('button') || e.target.closest('.psh-dots')) return;
+      e.preventDefault();
+      const r = dlg.getBoundingClientRect();
+      dlg.style.position = 'fixed'; dlg.style.margin = '0';
+      dlg.style.left = r.left + 'px'; dlg.style.top = r.top + 'px';
+      const sx = e.clientX - r.left, sy = e.clientY - r.top;
+      const move = ev => {
+        dlg.style.left = (ev.clientX - sx) + 'px';
+        dlg.style.top = Math.max(0, ev.clientY - sy) + 'px';
+      };
+      const up = () => {
+        window.removeEventListener('pointermove', move);
+        window.removeEventListener('pointerup', up);
+      };
+      window.addEventListener('pointermove', move);
+      window.addEventListener('pointerup', up);
+    });
+    btn.addEventListener('click', async () => {
+      body.innerHTML = '<div class="card"><div class="card-b">' +
+        '<p class="sub" style="margin:0;display:flex;align-items:center;gap:10px;">' +
+        '<span class="opspin"></span>Comparing git with the cluster…</p></div></div>';
+      dlg.showModal();
+      try {
+        const r = await fetch('/gitops/app/diff?conn=' + encodeURIComponent(CONN) +
+                              '&name=' + encodeURIComponent(APP));
+        body.innerHTML = await r.text();
+      } catch (e) {
+        body.innerHTML = '<div class="flash err">could not compare: ' +
+          String(e).replace(/[<>&]/g, '') + '</div>';
+      }
+      // the selective-sync helpers live inside the fetched fragment
+      const picks = [...body.querySelectorAll('.gdpick')];
+      const count = body.querySelector('#gdCount');
+      const all = body.querySelector('#gdAll');
+      const tell = () => {
+        const n = picks.filter(p => p.checked).length;
+        if (count) count.textContent = n ? n + ' selected — only these will be '
+          + 'applied' : 'none selected — a sync would apply everything';
+      };
+      picks.forEach(p => p.addEventListener('change', tell));
+      if (all) all.addEventListener('click', () => {
+        const on = picks.some(p => !p.checked);
+        picks.forEach(p => { p.checked = on; });
+        tell();
+      });
+      tell();
+    });
+  })();
+
+  // ── rollback + terminate + resource actions: confirm, then post ──
+  document.addEventListener('click', e => {
+    const b = e.target.closest('.gback');
+    if (!b) return;
+    document.getElementById('rbId').value = b.dataset.id;
+    document.getElementById('rbRev').textContent =
+      '#' + b.dataset.id + ' · ' + (b.dataset.rev || '');
+    document.getElementById('rbDlg').showModal();
+  });
+  const term = document.getElementById('gterm');
+  if (term) term.addEventListener('submit', e => {
+    // operational, not destructive: a plain confirmation is the house rule
+    if (!confirm('Stop the running operation? What has already been applied ' +
+                 'stays applied.')) e.preventDefault();
+  });
+  document.addEventListener('submit', e => {
+    const f = e.target.closest('form.gact');
+    if (!f) return;
+    const label = (f.querySelector('button') || {}).dataset || {};
+    if (!confirm('Run "' + (label.actLabel || 'this action') +
+                 '" through Argo CD now?')) e.preventDefault();
+  });
+  // a row in a list (the sync-status table, the diff review) opens the same
+  // drawer as a box on the map — by reference, since a listed object may not
+  // be in the tree at all
+  document.addEventListener('click', e => {
+    const b = e.target.closest('.resact');
+    if (!b) return;
+    show('', b.dataset.restab || '', '',
+         {rkind: b.dataset.kind || '', rname: b.dataset.rname || '',
+          rns: b.dataset.ns || '', rgroup: b.dataset.group || '',
+          rversion: b.dataset.version || ''});
+  });
+
+  function openNode(n) {
+    // the synthesised root is the APPLICATION, not a Kubernetes object: there
+    // is no live manifest to read, so it opens what it actually is
+    if (n.dataset.uid === '__app__') {
+      const d = document.getElementById('detailsDlg');
+      if (d && !d.open) d.showModal();
+      return;
+    }
+    const dr = document.getElementById('resDrawer');
+    if (n.dataset.uid === open && dr && !dr.hidden) {   // a second click shuts it
+      window.gdrawerClose(dr); open = ''; mark();
+      return;
+    }
+    show(n.dataset.uid);
+  }
+  svg.addEventListener('click', e => {
+    const n = e.target.closest('.gnode');
+    if (!n) return;
+    openNode(n);
+  });
+  svg.addEventListener('keydown', e => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const n = e.target.closest('.gnode');
+    if (!n) return;
+    e.preventDefault();
+    openNode(n);
+  });
+})();
+</script>
+{% endblock %}

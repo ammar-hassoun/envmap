@@ -1,0 +1,50 @@
+{# The button itself, to be placed inside whichever card a page already has for
+   updates. The progress card and the script come from _update_progress.html.
+
+   Wants in the context: upd, selfupd, can_update, version, release.
+#}
+{% if upd.available %}
+{% if selfupd.possible and can_update %}
+{# One click. The version is submitted, but the route compares it against what the
+   update feed announced and refuses anything else — the form is not what
+   decides where this installation goes. #}
+<form method="post" action="/about/update" id="updform">
+  <input type="hidden" name="version" value="{{ upd.latest }}">
+  <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;">
+    <button class="btn" type="submit">Update to {{ upd.latest }}</button>
+    <span class="sub" style="margin:0;">Restarts this portal. The database is
+      copied first, automatically.</span>
+  </div>
+</form>
+<details style="margin-top:14px;">
+  <summary class="sub" style="cursor:pointer;">what the button does</summary>
+  <div class="sub" style="margin-top:8px;">
+    It changes one field: the image tag on this installation's own deployment,
+    from <code>{{ version }}</code> to <code>{{ upd.latest }}</code>. It cannot
+    change the registry — that is read from what is already running — and it
+    cannot move to any version other than the one announced above. Kubernetes
+    does the rest.
+    <div class="sec-note" style="margin-top:8px;">Afterwards, Helm still records
+      {{ version }}. Run the upgrade below when convenient, or the next Helm
+      operation will put {{ version }} back.</div>
+  </div>
+</details>
+{% elif can_update and selfupd.why %}
+<p class="sub" style="margin:0;">One-click updating is not available here:
+  {{ selfupd.why }}.</p>
+{% else %}
+<p class="sub" style="margin:0;">Upgrading is a Helm command run by whoever owns
+  this cluster. Its configuration lives in the database rather than the chart, so
+  an upgrade never overwrites it.</p>
+{% endif %}
+
+{# No registry path here. It is the vendor's, it does not belong in a page a
+   customer reads, and the chart an install came from is theirs to know —
+   --reuse-values keeps whatever they set. This page used to print the vendor's
+   own chart repository, which is exactly what the other one refuses to do. #}
+<pre class="ddl" style="margin:14px 0 0;">helm repo update
+helm upgrade {{ release or 'portal' }} &lt;chart&gt; --version {{ upd.latest }} --reuse-values</pre>
+<div class="sec-note" style="margin-top:8px;">The database is copied
+  automatically before the new version changes anything in it.</div>
+{% endif %}
+

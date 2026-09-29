@@ -1,0 +1,651 @@
+{# The assistant, as a bubble in the corner rather than a page.
+
+   It belongs here because a question about the estate is something you have
+   *while looking at something else* — a cluster page, a pipeline, an alert. A
+   sidebar entry made it a destination you had to leave your work for; a panel
+   lets you ask without losing your place. Closed by default: it is an aid, not
+   a feature to be advertised on every page load.
+
+   The state (open/closed, and the conversation) lives in the tab, so it follows
+   you across page loads within a session and is gone when the tab is. #}
+<button type="button" class="askbtn" id="askLaunch" aria-expanded="false"
+        aria-controls="askPanel" title="Ask about this estate (⌘K)">
+  <svg class="askbtn-ico" viewBox="0 0 16 16" aria-hidden="true">
+    <path d="M8 1.5l1.4 3.6L13 6.5l-3.6 1.4L8 11.5 6.6 7.9 3 6.5l3.6-1.4z"/>
+    <path d="M12.6 10.9l.6 1.5 1.5.6-1.5.6-.6 1.5-.6-1.5-1.5-.6 1.5-.6z"/>
+  </svg>
+  <span class="askbtn-label">Ask</span>
+</button>
+
+<section class="askpanel" id="askPanel" hidden aria-label="Assistant">
+  <div class="askgrip" id="askGrip" title="Drag to resize"></div>
+  <header class="askhead">
+    <b>Assistant</b>
+    {# The model's name is deliberately not here. It told a reader nothing they
+       could act on, it changes the header's width every time somebody switches
+       model, and on a white-labelled install it advertises which vendor the
+       customer's estate is being described to. It is on the Assistant settings
+       page, where choosing it happens. #}
+    <span class="hint" id="askModel">live queries</span>
+    <span style="flex:1"></span>
+    {# proper icon buttons: the glyphs ⤢ ⟲ ✕ render at different weights and
+       baselines in every font, which is why they looked mismatched. These are
+       stroked SVG on a 16px grid, so they line up and scale with the theme. #}
+    <button type="button" class="iconbtn" id="askWide" title="Wider / narrower"
+            aria-label="Wider or narrower">
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M6.5 2.5H2.5v4M9.5 13.5h4v-4M2.5 2.5l4.5 4.5M13.5 13.5L9 9"/>
+      </svg>
+    </button>
+    <button type="button" class="iconbtn" id="askClear" title="Clear the conversation"
+            aria-label="Clear the conversation">
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M13.5 8a5.5 5.5 0 1 1-1.9-4.15"/>
+        <path d="M13.5 2v3.2h-3.2"/>
+      </svg>
+    </button>
+    <button type="button" class="iconbtn danger" id="askClose" title="Close (Esc)"
+            aria-label="Close">
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/>
+      </svg>
+    </button>
+  </header>
+
+  <div class="asklog" id="askLog">
+    <div class="ask-empty" id="askEmpty">
+      <p class="sub" style="margin:0 0 10px;">Answers come from real queries
+        against live state — never a guess. Name a cluster and it will scope to
+        it.</p>
+      <div class="chipgrid">
+        <button type="button" class="chip" data-ask="which clusters are unreachable">Unreachable clusters</button>
+        <button type="button" class="chip" data-ask="which pods need attention">Pods needing attention</button>
+        <button type="button" class="chip" data-ask="which integrations are unhealthy">Unhealthy integrations</button>
+        <button type="button" class="chip" data-ask="which nodes are not ready">Nodes not ready</button>
+        <button type="button" class="chip" data-ask="which pipelines are failing">Failing pipelines</button>
+        <button type="button" class="chip" data-ask="give me the list of connected repositories">Repositories</button>
+        <button type="button" class="chip" data-ask="what is the last pipeline that ran">Last build</button>
+      </div>
+    </div>
+  </div>
+
+  <form class="askbar" id="askForm">
+    <textarea id="askInput" rows="1" autocomplete="off"
+              placeholder="Ask about pods, nodes, clusters, pipelines…"></textarea>
+    <button type="submit" id="askSend">Ask</button>
+  </form>
+</section>
+
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  const launch = document.getElementById('askLaunch');
+  const panel = document.getElementById('askPanel');
+  const log = document.getElementById('askLog');
+  const empty = document.getElementById('askEmpty');
+  const form = document.getElementById('askForm');
+  const box = document.getElementById('askInput');
+  const send = document.getElementById('askSend');
+  const HAS_MODEL = {{ 'true' if assistant_has_model() else 'false' }};
+  const OPEN_KEY = 'portal-ask-open';
+  const WIDE_KEY = 'portal-ask-wide';
+  // at or below this many rows, the written answer can hold every value,
+  // so the table is tucked away as evidence instead of repeating it
+  const SHOW_AS_PROSE = 3;
+  // above this many rows a written characterisation adds something the
+  // generated one-liner cannot; below it, it only repeats it
+  const MODEL_ABOVE = 10;
+
+  function el(tag, cls, text) {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined) n.textContent = text;
+    return n;
+  }
+
+  function setOpen(on) {
+    panel.hidden = !on;
+    launch.setAttribute('aria-expanded', on ? 'true' : 'false');
+    launch.classList.toggle('hidden', on);
+    // The class is on <body>, not the panel: it is what pads the shell out of
+    // the rail's way, and the shell is not a descendant of the panel.
+    document.body.classList.toggle('railopen', on);
+    sessionStorage.setItem(OPEN_KEY, on ? '1' : '0');
+    if (on) box.focus();
+  }
+
+  // ── the rail's width ──────────────────────────────────────────────────
+  // One number on :root, read by the rail and by the page's padding. Drag sets
+  // it; the wide button sets it. It used to be two mechanisms — a class that
+  // redefined the variable on the panel and a drag that wrote it on :root —
+  // and the class won, so the drag silently did nothing once wide was pressed.
+  const WKEY = 'ask.railw';
+  const MIN = 320;
+  const maxW = () => Math.max(MIN, window.innerWidth - 240);
+  function setWidth(px, remember) {
+    const w = Math.round(Math.max(MIN, Math.min(px, maxW())));
+    document.documentElement.style.setProperty('--railw', w + 'px');
+    if (remember) localStorage.setItem(WKEY, String(w));
+    return w;
+  }
+  function width() {
+    return parseInt(getComputedStyle(document.documentElement)
+                    .getPropertyValue('--railw'), 10) || 400;
+  }
+  setWidth(parseInt(localStorage.getItem(WKEY) || '', 10) || 400, false);
+
+  (function () {
+    const grip = document.getElementById('askGrip');
+    let dragging = false;
+    grip.addEventListener('pointerdown', e => {
+      dragging = true;
+      grip.setPointerCapture(e.pointerId);
+      document.body.style.userSelect = 'none';
+      // A drag over the page must not be read as a click on whatever is under
+      // the cursor, and without this the text of the page selects as you go.
+      e.preventDefault();
+    });
+    grip.addEventListener('pointermove', e => {
+      if (dragging) setWidth(window.innerWidth - e.clientX, false);
+    });
+    const stop = e => {
+      if (!dragging) return;
+      dragging = false;
+      try { grip.releasePointerCapture(e.pointerId); } catch (_) {}
+      document.body.style.userSelect = '';
+      setWidth(width(), true);
+    };
+    grip.addEventListener('pointerup', stop);
+    grip.addEventListener('pointercancel', stop);
+    // Double-click the edge to snap back to the default, which is the way out
+    // of having dragged it somewhere useless.
+    grip.addEventListener('dblclick', () => setWidth(400, true));
+    // Keep it on screen when the window shrinks under it.
+    window.addEventListener('resize', () => setWidth(width(), false));
+  })();
+  launch.addEventListener('click', () => setOpen(true));
+  document.getElementById('askClose').addEventListener('click', () => setOpen(false));
+  document.addEventListener('keydown', e => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+      e.preventDefault(); setOpen(panel.hidden);
+    } else if (e.key === 'Escape' && !panel.hidden) {
+      setOpen(false);
+    }
+  });
+  document.getElementById('askWide').addEventListener('click', () => {
+    // Two useful widths, one variable: a comfortable reading column, and half
+    // the window for when an answer is a table.
+    const wide = Math.min(680, Math.round(window.innerWidth * 0.5));
+    setWidth(width() >= wide - 8 ? 400 : wide, true);
+  });
+  document.getElementById('askClear').addEventListener('click', () => {
+    log.querySelectorAll('.askmsg').forEach(n => n.remove());
+    if (empty) log.appendChild(empty);
+    empty.hidden = false;
+    history = [];
+    previous = null;
+    sessionStorage.removeItem(HIST_KEY);
+    sessionStorage.removeItem(DRAFT_KEY);
+  });
+
+  function table(doc) {
+    const box2 = el('div', 'askTable');
+    const t = el('table', 'jenkins');
+    const thead = el('thead'), hr = el('tr');
+    doc.columns.forEach(c => hr.appendChild(el('th', null, c)));
+    thead.appendChild(hr); t.appendChild(thead);
+    const tb = el('tbody');
+    doc.rows.forEach(r => {
+      const tr = el('tr');
+      doc.columns.forEach(c => {
+        const v = (r[c] === null || r[c] === undefined) ? '' : String(r[c]);
+        const td = el('td');
+        // a value that is a location is a link: an answer you can act on beats
+        // one you have to copy out by hand
+        if (/^(https?:\/\/|\/[a-z0-9])/i.test(v)) {
+          const a = el('a', null, v);
+          a.href = v;
+          if (v.startsWith('http')) { a.target = '_blank'; a.rel = 'noopener'; }
+          td.appendChild(a);
+        } else {
+          td.textContent = v;
+        }
+        if (/^(NO|Failed|Degraded|OutOfSync|CrashLoopBackOff|Error|unknown)$/i.test(v))
+          td.style.color = 'var(--danger-ink)';
+        else if (/^(yes|Running|Healthy|Synced|Succeeded|online|On)$/i.test(v))
+          td.style.color = 'var(--ok-ink)';
+        tr.appendChild(td);
+      });
+      tb.appendChild(tr);
+    });
+    t.appendChild(tb); box2.appendChild(t);
+    return box2;
+  }
+
+  async function summarise(wrap, question, query, focus, onDone) {
+    const p = el('div', 'askbub ai', '…');
+    wrap.insertBefore(p, wrap.firstChild);
+    let out = '';
+    try {
+      const r = await fetch('/assistant/summarise', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({question: question, query: query,
+                              focus: focus || ''})
+      });
+      if (!r.ok || !r.body) { p.remove(); return; }
+      const reader = r.body.getReader(), dec = new TextDecoder();
+      let buf = '';
+      for (;;) {
+        const {value, done} = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, {stream: true});
+        let cut;
+        while ((cut = buf.indexOf('\n\n')) >= 0) {
+          const frame = buf.slice(0, cut); buf = buf.slice(cut + 2);
+          let ev = 'message', data = '';
+          for (const line of frame.split('\n')) {
+            if (line.startsWith('event:')) ev = line.slice(6).trim();
+            else if (line.startsWith('data:')) data += line.slice(5).trim();
+          }
+          if (!data) continue;
+          let d = {}; try { d = JSON.parse(data); } catch (e) { continue; }
+          if (ev === 'error') { p.remove(); return; }
+          if (d.text) { out += d.text; p.textContent = out; log.scrollTop = log.scrollHeight; }
+        }
+      }
+      if (!out) { p.remove(); return; }
+      // Lift any proposed actions out of the prose and offer them as cards.
+      const split = takeActions(out);
+      p.textContent = split.text.trim() || '…';
+      for (const want of split.actions) offerAction(wrap, want);
+      if (onDone) onDone(split.text);
+    } catch (e) { p.remove(); }
+  }
+
+
+  // ── proposed actions ────────────────────────────────────────────────────
+  // The model emits a fenced block; this pulls it out so the prose reads
+  // normally and the action becomes a control. What the block says is never
+  // trusted — it is sent to /assistant/propose, and the SERVER decides what
+  // the command is, whether this person may run it, and what confirmation it
+  // needs. A model that invents a cluster id gets a refusal, not a button.
+  function takeActions(text) {
+    const actions = [];
+    const clean = text.replace(/```envmap-action\s*([\s\S]*?)```/g, (_, body) => {
+      try {
+        const d = JSON.parse(body.trim());
+        if (d && d.action && d.cluster) actions.push(d);
+      } catch (e) { /* a half-streamed block is not an action */ }
+      return '';
+    });
+    // A block whose closing fence never arrived — the model was cut off, or
+    // the stream ended mid-write. The regex above only matches a CLOSED fence,
+    // so without this the reader is shown raw JSON as though it were prose.
+    // Nothing is offered for it: an action parsed from half a line is a guess.
+    const open = clean.indexOf('```envmap-action');
+    return {text: open >= 0 ? clean.slice(0, open) : clean,
+            actions: actions.slice(0, 2)};
+  }
+
+  async function offerAction(wrap, want) {
+    let plan;
+    try {
+      const r = await fetch('/assistant/propose', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(want)
+      });
+      plan = await r.json();
+    } catch (e) { return; }
+
+    const card = el('div', 'actcard' + (plan.prod ? ' prod' : ''));
+    if (plan.denied) {
+      card.appendChild(el('div', 'actcard-h', 'Cannot offer that'));
+      card.appendChild(el('div', 'actcard-note', plan.denied)).style.padding = '10px 12px';
+      wrap.appendChild(card);
+      return;
+    }
+
+    const head = el('div', 'actcard-h');
+    head.appendChild(el('b', '', plan.label));
+    head.appendChild(el('span', 'actcard-note', plan.cluster_name));
+    const spacer = el('span'); spacer.style.flex = '1'; head.appendChild(spacer);
+    if (plan.destructive) head.appendChild(el('span', 'acttag danger', 'destructive'));
+    if (plan.prod) head.appendChild(el('span', 'acttag prod', 'prod'));
+    card.appendChild(head);
+    card.appendChild(el('div', 'actcard-cmd', plan.command));
+
+    const body = el('div', 'actcard-b');
+    if (plan.note) body.appendChild(el('div', 'actcard-note', plan.note));
+    let confirmBox = null;
+    if (plan.confirm_required) {
+      body.appendChild(el('div', 'actcard-note', plan.confirm_prompt));
+      confirmBox = document.createElement('input');
+      confirmBox.type = 'text';
+      confirmBox.placeholder = plan.confirm_required;
+      body.appendChild(confirmBox);
+    }
+    const row = el('div', 'actcard-row');
+    const run = el('button', 'btn', 'Run');
+    run.type = 'button';
+    const drop = el('button', 'btn btn-ghost', 'Dismiss');
+    drop.type = 'button';
+    row.appendChild(run); row.appendChild(drop);
+    body.appendChild(row);
+    card.appendChild(body);
+    wrap.appendChild(card);
+    log.scrollTop = log.scrollHeight;
+
+    drop.addEventListener('click', () => card.remove());
+    run.addEventListener('click', async () => {
+      run.disabled = drop.disabled = true;
+      run.textContent = 'running…';
+      let res = {};
+      try {
+        const r = await fetch('/assistant/act', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({...want,
+            confirm: confirmBox ? confirmBox.value : ''})
+        });
+        res = await r.json();
+      } catch (e) { res = {denied: 'could not reach the portal'}; }
+      if (res.denied) {
+        // Still refusable: the confirmation may be wrong, or a role may have
+        // changed since the card was drawn. Leave it usable rather than dead.
+        run.disabled = drop.disabled = false;
+        run.textContent = 'Run';
+        const bad = el('div', 'actcard-out bad', res.denied);
+        card.appendChild(bad);
+        return;
+      }
+      card.classList.add('done');
+      card.appendChild(el('div', 'actcard-out' + (res.ok ? '' : ' bad'),
+        (res.ok ? '✓ ' : '✕ ') + (res.summary || '') +
+        (res.stderr ? '\n' + res.stderr : '')));
+      log.scrollTop = log.scrollHeight;
+    });
+  }
+
+  // the last exchange, so a follow-up ("give me the one for za preprod") can
+  // inherit the subject of the question before it
+  let previous = null;
+
+  // ── the conversation outlives the page ──────────────────────────────────
+  // The overview refreshes itself on a timer, and a refresh is a navigation:
+  // the chat went with it. Every turn is kept for this tab, so a reload — the
+  // timer's, or the person's — comes back to the conversation it left.
+  const HIST_KEY = 'portal-ask-log';
+  const DRAFT_KEY = 'portal-ask-draft';
+  const KEEP_TURNS = 12;        // enough to scroll back through, small to store
+  const KEEP_ROWS = 60;         // the table is evidence; the whole export is not
+  let history = [];
+
+  function saveHistory() {
+    try {
+      sessionStorage.setItem(HIST_KEY, JSON.stringify(history.slice(-KEEP_TURNS)));
+    } catch (e) {
+      // a quota refusal must not break the chat: drop the oldest and retry once
+      history = history.slice(-3);
+      try { sessionStorage.setItem(HIST_KEY, JSON.stringify(history)); } catch (e2) {}
+    }
+  }
+
+  function remember(turn) {
+    history.push(turn);
+    if (history.length > KEEP_TURNS) history = history.slice(-KEEP_TURNS);
+    saveHistory();
+  }
+
+  function trim(doc) {
+    // stored without the bulk: the row cap keeps a wide answer from filling
+    // the tab's storage on its own
+    const copy = Object.assign({}, doc);
+    if (Array.isArray(copy.rows) && copy.rows.length > KEEP_ROWS)
+      copy.rows = copy.rows.slice(0, KEEP_ROWS);
+    return copy;
+  }
+
+  // ── painting one answer, from a fresh reply or a stored one ─────────────
+  function paint(wrap, status, question, doc, turn, replay) {
+    if (!doc.matched) {
+      wrap.appendChild(el('div', 'askbub ai', doc.message));
+      const list = el('div', 'chipgrid');
+      (doc.capabilities || []).forEach(c => {
+        const b = el('button', 'chip', c.label);
+        b.type = 'button';
+        b.addEventListener('click', () => ask(c.label));
+        list.appendChild(b);
+      });
+      wrap.appendChild(list);
+      return;
+    }
+    status.textContent = doc.note + ' — ' + doc.count + ' row'
+      + (doc.count === 1 ? '' : 's')
+      + (doc.how && doc.how.indexOf('continuing') === 0 ? ' · continued' : '')
+      + ' · ' + doc.seconds + 's';
+    // remember what this turn resolved to, and the question the server
+    // actually answered, so the next follow-up chains from it
+    previous = {query: doc.query, question: doc.effective || question,
+                cluster_phrase: doc.cluster_phrase || '',
+                focus: doc.focus || ''};
+    // the answer itself, generated from the rows by the portal — no model,
+    // no waiting, and the same sentence every time for the same data
+    if (doc.headline) {
+      const b = el('div', 'askbub ai');
+      // linkify paths and URLs inside the sentence, without ever inserting
+      // markup from the server: each piece is added as text or as an anchor
+      String(doc.headline).split(/(\s+)/).forEach(piece => {
+        if (/^(https?:\/\/|\/[a-z0-9])[^\s]*$/i.test(piece)) {
+          const trimmed = piece.replace(/[.,;]+$/, '');
+          const a = el('a', null, trimmed);
+          a.href = trimmed;
+          if (trimmed.startsWith('http')) { a.target = '_blank'; a.rel = 'noopener'; }
+          b.appendChild(a);
+          if (piece !== trimmed) b.appendChild(document.createTextNode(piece.slice(trimmed.length)));
+        } else {
+          b.appendChild(document.createTextNode(piece));
+        }
+      });
+      wrap.insertBefore(b, wrap.firstChild);
+    }
+    if (doc.count) {
+      // A model is asked for prose only when the result is too large for the
+      // generated line to characterise. Below that it would repeat what is
+      // already on screen, which is what made answers look doubled.
+      const willSummarise = HAS_MODEL && doc.can_summarise
+                            && doc.count > MODEL_ABOVE && !replay;
+      // One presentation of the answer, not two. With a handful of rows the
+      // written answer already contains the values, so the table becomes the
+      // evidence behind it rather than a second copy of it. With many rows
+      // the table IS the answer and the sentence above only characterises it.
+      const short = doc.count <= SHOW_AS_PROSE;
+      if (short && doc.headline) {
+        const box2 = el('details', 'askEvidence');
+        const sum = el('summary', null,
+          doc.count === 1 ? 'show the matching row'
+                          : 'show the ' + doc.count + ' matching rows');
+        box2.appendChild(sum);
+        box2.appendChild(table(doc));
+        wrap.appendChild(box2);
+      } else {
+        wrap.appendChild(table(doc));
+        if (doc.truncated) {
+          wrap.appendChild(el('div', 'askmeta',
+            'first ' + doc.rows.length + ' of ' + doc.count));
+        }
+      }
+      if (replay && turn && turn.prose) {
+        // the written summary is not asked for again on a reload: it is the
+        // one the person already read
+        wrap.insertBefore(el('div', 'askbub ai', turn.prose), wrap.firstChild);
+      } else if (willSummarise) {
+        summarise(wrap, doc.effective || question, doc.query, doc.focus,
+                  text => { if (turn) { turn.prose = text; saveHistory(); } });
+      }
+    } else {
+      wrap.appendChild(el('div', 'askbub ai',
+        'The query ran and found nothing.'));
+    }
+  }
+
+  function bubbles(question) {
+    if (empty) empty.hidden = true;
+    const q = el('div', 'askmsg me');
+    q.appendChild(el('div', 'askbub me', question));
+    log.appendChild(q);
+    const wrap = el('div', 'askmsg ai');
+    const status = el('div', 'askmeta', 'querying live state…');
+    wrap.appendChild(status);
+    log.appendChild(wrap);
+    return {wrap: wrap, status: status};
+  }
+
+  // when the assistant is genuinely in use, a background refresh must wait
+  let inFlight = 0, lastTyped = 0;
+
+  // Whether this person's model can answer step by step. Asked once, because
+  // the answer depends on their connected account and does not change mid-tab.
+  let AGENT = null;
+  fetch('/assistant/agent.json').then(r => r.json())
+    .then(d => { AGENT = d; }).catch(() => { AGENT = {available: false}; });
+
+  async function askAgent(question, wrap, status) {
+    // One connection, narrated. Every step is a real read through the same
+    // permission checks the pages use, so what it says it is doing is what it
+    // did — see app/agent.py.
+    const steps = el('div', 'askmeta');
+    wrap.appendChild(steps);
+    return new Promise(resolve => {
+      const es = new EventSource('/assistant/agent?q='
+                                 + encodeURIComponent(question));
+      let n = 0;
+      es.addEventListener('step', e => {
+        n++;
+        status.textContent = JSON.parse(e.data);
+        steps.textContent = n + (n === 1 ? ' look' : ' looks') + ' so far';
+        log.scrollTop = log.scrollHeight;
+      });
+      es.addEventListener('answer', e => {
+        es.close();
+        const d = JSON.parse(e.data);
+        status.textContent = d.steps
+          ? d.steps + (d.steps === 1 ? ' look' : ' looks') : 'answered';
+        steps.remove();
+        wrap.appendChild(el('div', 'askbub ai', d.text));
+        // The model already told the server which action it wants, so the card
+        // is built from those ids rather than parsed back out of the prose.
+        for (const p of d.proposals || []) {
+          offerAction(wrap, {action: p.action, project: p.project,
+                             cluster: p.cluster, args: p.args});
+        }
+        log.scrollTop = log.scrollHeight;
+        resolve(true);
+      });
+      es.addEventListener('error', e => {
+        es.close();
+        // Falls through to the single-query path rather than failing: an
+        // assistant that answers less well beats one that answers not at all.
+        steps.remove();
+        resolve(false);
+      });
+    });
+  }
+
+  async function ask(question) {
+    if (!question.trim()) return;
+    const {wrap, status} = bubbles(question);
+    box.value = ''; box.style.height = 'auto';
+    sessionStorage.removeItem(DRAFT_KEY);
+    // Taken once and held for the WHOLE exchange, including the fall-through
+    // from the agent path to the direct one. It used to be released and retaken
+    // between the two, and that gap is a moment in which portalSafeToReload()
+    // answers yes — so a page timer could reload over a question being
+    // answered, which is the bug the flag exists to prevent.
+    send.disabled = true;
+    inFlight++;
+    const t0 = Date.now();
+    try {
+      if (AGENT && AGENT.available && await askAgent(question, wrap, status))
+        return;
+      // the agent could not answer — fall through and answer the old way
+      log.scrollTop = log.scrollHeight;
+      try {
+        const r = await fetch('/assistant/query', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({question: question, previous: previous})
+        });
+        const doc = await r.json();
+        if (!r.ok) throw new Error(doc.error || ('HTTP ' + r.status));
+        const turn = {question: question, doc: trim(doc), prose: ''};
+        remember(turn);
+        paint(wrap, status, question, doc, turn, false);
+        if (!doc.matched)
+          status.textContent = ((Date.now() - t0) / 1000).toFixed(1) + 's';
+      } catch (e) {
+        wrap.appendChild(el('div', 'askbub ai err', '⚠ ' + e.message));
+        status.textContent = ((Date.now() - t0) / 1000).toFixed(1) + 's';
+        remember({question: question, error: e.message,
+                  seconds: ((Date.now() - t0) / 1000).toFixed(1)});
+      }
+    } finally {
+      inFlight--;
+      send.disabled = false;
+      log.scrollTop = log.scrollHeight;
+      box.focus();
+    }
+  }
+
+  function replayHistory() {
+    let saved = [];
+    try { saved = JSON.parse(sessionStorage.getItem(HIST_KEY) || '[]'); } catch (e) {}
+    if (!Array.isArray(saved) || !saved.length) return;
+    history = saved;
+    saved.forEach(turn => {
+      const {wrap, status} = bubbles(turn.question);
+      if (turn.error) {
+        wrap.appendChild(el('div', 'askbub ai err', '⚠ ' + turn.error));
+        status.textContent = (turn.seconds || '') + (turn.seconds ? 's' : '');
+      } else {
+        paint(wrap, status, turn.question, turn.doc, turn, true);
+      }
+    });
+    // the last answer is still the subject a follow-up would chain from
+    log.scrollTop = log.scrollHeight;
+  }
+
+  form.addEventListener('submit', e => { e.preventDefault(); ask(box.value); });
+  box.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ask(box.value); }
+  });
+  box.addEventListener('input', () => {
+    box.style.height = 'auto';
+    box.style.height = Math.min(box.scrollHeight, 140) + 'px';
+    lastTyped = Date.now();
+    try { sessionStorage.setItem(DRAFT_KEY, box.value); } catch (e) {}
+  });
+  panel.querySelectorAll('.chip').forEach(c =>
+    c.addEventListener('click', () => ask(c.dataset.ask)));
+
+  // whatever was said in this tab, and whatever was half-typed
+  replayHistory();
+  const draft = sessionStorage.getItem(DRAFT_KEY);
+  if (draft) {
+    box.value = draft;
+    box.style.height = 'auto';
+    box.style.height = Math.min(box.scrollHeight, 140) + 'px';
+  }
+
+  // A page that reloads itself on a timer asks here first. Answering a question
+  // or typing one is work in progress; an idle open panel is not, and the
+  // conversation is restored either way.
+  window.portalAssistantBusy = function () {
+    if (inFlight > 0) return true;
+    if (panel.hidden) return false;
+    if (document.activeElement === box) return true;
+    if (box.value.trim()) return true;
+    return (Date.now() - lastTyped) < 90000;
+  };
+
+  // closed unless this tab had it open, or a link asked for it
+  const wanted = new URLSearchParams(location.search).get('assistant') === '1';
+  setOpen(wanted || sessionStorage.getItem(OPEN_KEY) === '1');
+})();
+</script>

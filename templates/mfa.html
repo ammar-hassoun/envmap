@@ -1,0 +1,24 @@
+{% extends "_auth_shell.html" %}
+{% block body %}
+<h1>Two-factor code</h1>
+<p class="sub">Open Google Authenticator and enter the 6-digit code for
+   <b>{{ me.email }}</b>.</p>
+{% if err %}<div class="err">⚠ {{ err }}</div>{% endif %}
+<form method="post" action="/mfa">
+  <label class="f" for="code">Authenticator code</label>
+  <input class="code" type="text" id="code" name="code" required autofocus
+         inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code"
+         placeholder="000000">
+  <button type="submit">Verify</button>
+</form>
+{% endblock %}
+{% block after %}
+<div class="note"><a href="/logout" style="color:var(--muted);">Sign in as someone else</a></div>
+<script nonce="{{ csp_nonce() }}">
+const c = document.getElementById('code');
+c.addEventListener('input', () => {
+  c.value = c.value.replace(/\D/g, '').slice(0, 6);
+  if (c.value.length === 6) c.form.submit();
+});
+</script>
+{% endblock %}

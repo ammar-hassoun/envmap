@@ -1,0 +1,195 @@
+{% extends "base.html" %}
+{% import "_bits.html" as bits %}
+{% block crumbs %}<a href="/ansible">Ansible</a> <span class="sep">/</span>
+  <a href="/ansible?sec=schedules">Schedules</a> <span class="sep">/</span>
+  <b>{{ s.name if s else 'New schedule' }}</b>{% endblock %}
+{% block content %}
+{#- A schedule is a stored intention to run: which playbook, against which
+    group, how, and when. One page, three questions, in that order — and the
+    production confirmation happens here, at creation, because the ticker has
+    nobody to type a name at 03:30. -#}
+
+<div class="page-head">
+  <div>
+    <h1>{{ s.name if s else 'New schedule' }}</h1>
+    <p class="sub">{% if s %}{{ s.last_at and ('last fired ' ~ s.last_at[:16]|replace('T', ' ')) or 'has not fired yet' }}
+      {%- else %}Runs a playbook on a clock instead of a button. Everything a
+      manual run is refused, a scheduled one is refused too.{% endif %}</p>
+  </div>
+  <a class="btn btn-ghost" href="/ansible?sec=schedules">← All schedules</a>
+</div>
+
+{% if msg %}<div class="flash ok">✓ {{ msg }}</div>{% endif %}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+{% if s and s.last_error %}
+<div class="flash err">⚠ The last attempt did not start: {{ s.last_error }}</div>
+{% endif %}
+{% if not cfg.allow_real %}
+<div class="flash">Real runs are switched off for this installation, so a real
+  schedule will be refused each time it fires — it starts working the moment
+  they are allowed in Settings → Ansible. Check schedules fire fine.</div>
+{% endif %}
+
+<form method="post" action="/ansible/schedule/save">
+  <input type="hidden" name="sid" value="{{ s.id if s else '' }}">
+
+  <div class="card" style="margin-bottom:14px;">
+    <div class="card-h" style="flex-wrap:wrap;">What runs
+      <span style="flex:1"></span>
+      <button type="submit" class="btn" style="padding:4px 15px;font-size:11.5px;"
+              {% if not may_run %}disabled title="{{ why_no_run }}"{% endif %}>
+        {{ 'Save changes' if s else 'Create schedule' }}</button>
+    </div>
+    <div class="card-b">
+      <div class="field-row"><label>name</label>
+        <div><input type="text" name="name" required placeholder="nightly-host-report"
+                    value="{{ s.name if s else '' }}" spellcheck="false"
+                    autocomplete="off" autofocus>
+          <div class="sec-note">Runs it starts are recorded as
+            <code>schedule:{{ s.name if s else 'name' }}</code>, so the history
+            says a clock did it and which one.</div>
+        </div></div>
+      <div class="field-row"><label>playbook</label>
+        <select name="pb_id" required style="min-width:0;">
+          <option value="">— choose —</option>
+          {% for p in playbooks %}
+          <option value="{{ p.id }}" {% if s and s.pb_id == p.id %}selected{% endif %}>
+            {{ p.name }}</option>
+          {% endfor %}
+        </select></div>
+      <div class="field-row"><label>against</label>
+        <div><select name="group_id" id="schGroup" required style="min-width:0;">
+            <option value="">— choose a group —</option>
+            {% for g in groups %}
+            <option value="{{ g.id }}" data-prod="{{ 1 if g.is_prod else 0 }}"
+                    {% if s and s.group_id == g.id %}selected{% endif %}>
+              {{ g.name }} ({{ g.hosts|length }} host{{ 's' if g.hosts|length != 1 }})
+              {%- if g.is_prod %} · production{% endif %}</option>
+            {% endfor %}
+          </select></div></div>
+      <div class="field-row"><label>mode</label>
+        <div><select name="check_mode" id="schMode" style="min-width:0;">
+            {# check first and preselected: a schedule that only reports is the
+               safe default, and a REAL one is chosen with the word in view #}
+            <option value="1" {% if not s or s.check_mode %}selected{% endif %}>
+              check — a dry run, reports what would change</option>
+            <option value="" {% if s and not s.check_mode %}selected{% endif %}>
+              REAL — applies the playbook</option>
+          </select></div></div>
+      <div class="field-row" id="schConfirmRow" hidden><label>confirm</label>
+        <div><input type="text" name="confirm" id="schConfirm"
+                    placeholder="type the group's name" spellcheck="false"
+                    autocomplete="off">
+          <div class="sec-note">That group is marked production and this is a
+            real run on a clock. The name is typed once, here, by somebody who
+            is looking — the ticker cannot ask at 03:30.</div>
+        </div></div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:14px;">
+    <div class="card-h">When
+      <span class="hint">times are {{ tzname }}, the portal's own clock</span></div>
+    <div class="card-b">
+      <div class="field-row"><label>how often</label>
+        <div><select name="kind" id="schKind" style="min-width:0;">
+            <option value="minutes" {% if s and s.kind == 'minutes' %}selected{% endif %}>every N minutes</option>
+            <option value="hours" {% if s and s.kind == 'hours' %}selected{% endif %}>every N hours</option>
+            <option value="daily" {% if not s or s.kind == 'daily' %}selected{% endif %}>every day, at a time</option>
+            <option value="weekly" {% if s and s.kind == 'weekly' %}selected{% endif %}>once a week</option>
+          </select></div></div>
+      <div class="field-row" id="schEveryRow"><label>every</label>
+        <div><input type="number" name="every" id="schEvery" min="1" max="1440"
+                    style="width:130px;display:inline-block;"
+                    value="{{ s.every if s and s.every else 30 }}">
+          <span class="hint" id="schEveryUnit">minutes</span>
+          <div class="sec-note">Five minutes is the floor — below that a typo is
+            a load test.</div>
+        </div></div>
+      <div class="field-row" id="schDayRow"><label>on</label>
+        <div><select name="weekday" style="min-width:0;">
+            {% for d in days %}
+            <option value="{{ loop.index0 }}"
+              {% if s and s.weekday == loop.index0 %}selected{% endif %}>{{ d }}</option>
+            {% endfor %}
+          </select></div></div>
+      <div class="field-row" id="schAtRow"><label>at</label>
+        <input type="time" name="at" value="{{ s.at if s and s.at else '03:30' }}"
+               style="width:150px;"></div>
+      <div class="sec-note" style="margin-top:2px;">
+        An installation that was off when a schedule was due runs it once when it
+        comes back, then falls back into rhythm — never a pile of catch-up runs.
+        A fire that finds the same playbook already running is skipped, and the
+        next one goes ahead.</div>
+    </div>
+  </div>
+
+  <details class="adv" style="margin:0 0 14px;">
+    <summary>Narrowing — limit, tags, variables</summary>
+    <div class="card" style="margin-top:10px;">
+      <div class="card-b">
+        <div class="field-row"><label>limit</label>
+          <input type="text" name="limit_to" value="{{ s.limit_to if s else '' }}"
+                 placeholder="web-1 — or blank for the whole group"
+                 spellcheck="false" autocomplete="off"></div>
+        <div class="field-row"><label>tags</label>
+          <input type="text" name="tags" value="{{ s.tags if s else '' }}"
+                 placeholder="verify — or blank for every task"
+                 spellcheck="false" autocomplete="off"></div>
+        <div class="field-row"><label>extra variables</label>
+          <div><textarea name="extra_vars" rows="3" spellcheck="false"
+                placeholder='{"disk_warn_pct": 60}'>{{ s.extra_vars if s else '' }}</textarea>
+            <div class="sec-note">A JSON object, exactly as the run window
+              sends.</div>
+          </div></div>
+      </div>
+    </div>
+  </details>
+
+  <div class="actions" style="margin:0 0 16px;">
+    <button type="submit" style="padding:6px 16px;font-size:12.5px;"
+            {% if not may_run %}disabled title="{{ why_no_run }}"{% endif %}>
+      {{ 'Save changes' if s else 'Create schedule' }}</button>
+    <a class="btn btn-ghost" href="/ansible?sec=schedules"
+       style="padding:6px 16px;font-size:12.5px;">Cancel</a>
+    {% if s %}
+    <span style="flex:1"></span>
+    <button type="submit" class="btn-danger" form="delsched"
+            style="padding:6px 16px;font-size:12.5px;"
+            data-del="{{ s.name }} (runs it already made are kept)"
+            >Delete this schedule</button>
+    {% endif %}
+  </div>
+</form>
+
+{% if s %}
+<form method="post" action="/ansible/schedule/delete" id="delsched">
+  <input type="hidden" name="sid" value="{{ s.id }}">
+</form>
+{% endif %}
+
+<script nonce="{{ csp_nonce() }}">
+// The form asks only the questions the chosen cadence needs, and the production
+// confirmation appears only when it will be enforced — a confirm box for a check
+// run would teach people the box means nothing.
+function schSync() {
+  const kind = document.getElementById('schKind').value;
+  document.getElementById('schEveryRow').hidden = !(kind === 'minutes' || kind === 'hours');
+  document.getElementById('schEveryUnit').textContent = kind === 'hours' ? 'hours' : 'minutes';
+  document.getElementById('schEvery').max = kind === 'hours' ? 168 : 1440;
+  document.getElementById('schEvery').min = kind === 'hours' ? 1 : 5;
+  document.getElementById('schAtRow').hidden = !(kind === 'daily' || kind === 'weekly');
+  document.getElementById('schDayRow').hidden = kind !== 'weekly';
+  const grp = document.getElementById('schGroup');
+  const prod = grp.selectedOptions[0] && grp.selectedOptions[0].dataset.prod === '1';
+  const real = document.getElementById('schMode').value === '';
+  const row = document.getElementById('schConfirmRow');
+  row.hidden = !(prod && real);
+  document.getElementById('schConfirm').required = prod && real;
+}
+for (const id of ['schKind', 'schGroup', 'schMode']) {
+  document.getElementById(id).addEventListener('change', schSync);
+}
+schSync();
+</script>
+{% endblock %}

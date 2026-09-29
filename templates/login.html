@@ -1,0 +1,224 @@
+{% extends "_auth_shell.html" %}
+{#- The one page every person who ever uses this product sees first, and on a
+    white-labelled install it is the customer's front door, not ours. So the
+    words beside the form describe what the thing DOES rather than who made it,
+    and the mark is the brand's own — the same rule the signed-in pages follow. -#}
+
+{% block stage %}
+<h2>Every environment,<br><em>in one place.</em></h2>
+<p>Clusters, repositories, pipelines, certificates and what they all cost —
+  read live, from the systems themselves.</p>
+<ul class="points">
+  <li>
+    <span class="ic" aria-hidden="true">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+           stroke-linejoin="round"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z"/>
+        <path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/></svg></span>
+    <span><b>Read, never guessed</b>
+      Nothing here is typed twice: the clusters, the repositories and the bills
+      are asked what they are.</span>
+  </li>
+  <li>
+    <span class="ic" aria-hidden="true">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+           stroke-linejoin="round"><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z"/>
+        <path d="M9 12l2 2 4-4"/></svg></span>
+    <span><b>Read-only by default</b>
+      A cluster changes nothing until somebody allows it, and every action that
+      does is written down.</span>
+  </li>
+  <li>
+    <span class="ic" aria-hidden="true">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+           stroke-linejoin="round"><circle cx="12" cy="12" r="9"/>
+        <path d="M12 7v5l3.5 2"/></svg></span>
+    <span><b>Answers, not dashboards</b>
+      What expires, what changed, what it costs — each one a question with a
+      page rather than a chart to interpret.</span>
+  </li>
+</ul>
+{% endblock %}
+
+{% block body %}
+<h1>Sign in</h1>
+<p class="sub">Use your work email address.</p>
+{% if err %}<div class="err">⚠ {{ err }}</div>{% endif %}
+<form method="post" action="/login">
+  <input type="hidden" name="next" value="{{ next }}">
+  <label class="f" for="email">Email</label>
+  {#- `webauthn` in the autocomplete is what lets a passkey appear in this
+      field's own autofill dropdown — conditional mediation, below. Without the
+      token the browser never offers one and the whole automatic path is dead
+      with nothing to show for it. -#}
+  <input type="email" id="email" name="email" required autofocus
+         autocomplete="username webauthn" placeholder="you@example.com">
+  <label class="f" for="password">Password</label>
+  <input type="password" id="password" name="password" required
+         autocomplete="current-password">
+  <button type="submit">Continue</button>
+</form>
+<div class="note">A Google Authenticator code is required after this step. ·
+  <a href="/forgot">Forgotten your password?</a></div>
+
+{#- SIGN IN WITH A PASSKEY — Touch ID, Face ID, Windows Hello, a security key.
+    Hidden until the browser says it can, because a button that throws
+    NotSupportedError is worse than no button: `pk-wrap` is unhidden by the
+    script below only when the API is present, which is also false on an
+    insecure origin — exactly the case where it cannot work. -#}
+<div id="pk-wrap" hidden>
+  <div class="or"><span>or</span></div>
+  <button type="button" class="sso" id="pk-go">
+    {{ glyph('key-round', 17) }}
+    Sign in with a passkey
+  </button>
+  <div class="note" id="pk-note">Touch ID, Windows Hello or a security key —
+    no password and no code.</div>
+</div>
+{% if microsoft %}
+<div class="or"><span>or</span></div>
+<a class="sso" href="/login/microsoft?next={{ next|urlencode }}">
+  <svg width="17" height="17" viewBox="0 0 21 21" aria-hidden="true">
+    <rect x="0"  y="0"  width="10" height="10" fill="#f25022"/>
+    <rect x="11" y="0"  width="10" height="10" fill="#7fba00"/>
+    <rect x="0"  y="11" width="10" height="10" fill="#00a4ef"/>
+    <rect x="11" y="11" width="10" height="10" fill="#ffb900"/>
+  </svg>
+  Sign in with Microsoft
+</a>
+<div class="note">Uses your organisation's Microsoft account, including its
+  own MFA policy.</div>
+{% endif %}
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  const wrap = document.getElementById('pk-wrap');
+  const btn = document.getElementById('pk-go');
+  const note = document.getElementById('pk-note');
+  // Feature-detect rather than sniff. `PublicKeyCredential` is absent on an
+  // insecure origin as well as in an old browser, which is exactly the set of
+  // cases where the button must not appear.
+  if (!window.PublicKeyCredential || !navigator.credentials) return;
+  wrap.hidden = false;
+
+  const b64 = s => {
+    const t = (s || '').replace(/-/g, '+').replace(/_/g, '/');
+    const raw = atob(t + '='.repeat((4 - t.length % 4) % 4));
+    return Uint8Array.from(raw, c => c.charCodeAt(0));
+  };
+  const ub64 = buf => btoa(String.fromCharCode(...new Uint8Array(buf)))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+  function say(msg, bad) {
+    note.textContent = msg;
+    note.style.color = bad ? 'var(--danger-ink)' : '';
+  }
+
+  // ONE PATH, TWO WAYS IN.
+  //
+  // `conditional` runs the moment the page loads and waits, silently, for the
+  // browser to offer a passkey in the email field's own autofill. That is the
+  // "just use my finger" case: no button, no typing, Touch ID appears because
+  // the browser already knows it has a key for this site. It resolves only if
+  // somebody picks one, so it costs nothing when they do not — and it must NOT
+  // send allowCredentials, or the browser has nothing to discover.
+  //
+  // The button is the same request with `mediation` left alone, for the
+  // browser that has no conditional support and for the person who would
+  // rather click something.
+  // ONE OUTSTANDING REQUEST AT A TIME, or the browser refuses the second.
+  //
+  // The conditional call below starts on page load and then WAITS — it is still
+  // outstanding while somebody reads the page. Pressing the button started a
+  // second navigator.credentials.get() and the browser answered "A request is
+  // already pending", which is exactly what it should do and exactly the wrong
+  // thing for somebody who just wanted to click the button. So the conditional
+  // one is held on an AbortController and cancelled before the button's runs.
+  let pending = null;
+
+  function stopPending() {
+    if (pending) { pending.abort(); pending = null; }
+  }
+
+  async function go(mediation, signal) {
+    // The email is sent only when the button path has one typed. With none the
+    // browser offers whichever passkeys it holds for this site, which is the
+    // one-gesture sign-in; an authenticator too old to store a discoverable
+    // credential still works if the address is typed first.
+    const email = mediation ? '' :
+      ((document.getElementById('email') || {}).value || '');
+    const r = await fetch('/login/passkey/options',
+      {method: 'POST', body: new URLSearchParams({email})});
+    const opts = await r.json();
+    if (opts.error) throw new Error(opts.error);
+    opts.challenge = b64(opts.challenge);
+    (opts.allowCredentials || []).forEach(c => { c.id = b64(c.id); });
+    const req = {publicKey: opts};
+    if (mediation) req.mediation = mediation;
+    if (signal) req.signal = signal;
+    return navigator.credentials.get(req);
+  }
+
+  async function finish(cred) {
+    const body = {
+        id: cred.id, rawId: ub64(cred.rawId), type: cred.type,
+        response: {
+          clientDataJSON: ub64(cred.response.clientDataJSON),
+          authenticatorData: ub64(cred.response.authenticatorData),
+          signature: ub64(cred.response.signature),
+          userHandle: cred.response.userHandle
+            ? ub64(cred.response.userHandle) : null,
+        },
+      };
+    const v = await fetch('/login/passkey/verify', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)});
+    const out = await v.json();
+    if (!out.ok) throw new Error(out.error || 'that did not work');
+    window.location.href = out.next || '/';
+  }
+
+  btn.addEventListener('click', async () => {
+    stopPending();                 // the autofill one is holding the only slot
+    btn.disabled = true;
+    say('waiting for your device…');
+    try {
+      await finish(await go(null));
+    } catch (e) {
+      // A cancelled Touch ID prompt is a NotAllowedError and is not a failure
+      // worth shouting about — the person changed their mind.
+      say(e && e.name === 'NotAllowedError'
+          ? 'no passkey was used — you can still sign in with your password.'
+          : 'passkey sign-in failed: ' + (e && e.message ? e.message : e), true);
+      btn.disabled = false;
+      // Put the silent one back, so the autofill route still works for
+      // somebody who cancelled the prompt and would rather use the field.
+      watch();
+    }
+  });
+
+  // Start the silent one. Everything here is best-effort on purpose: a browser
+  // without conditional mediation, or one that rejects the call, must leave a
+  // perfectly good password form behind it rather than an error nobody can act
+  // on. An abandoned conditional request is normal — it is what happens every
+  // time somebody types their password instead.
+  async function watch() {
+    try {
+      if (!PublicKeyCredential.isConditionalMediationAvailable) return;
+      if (!await PublicKeyCredential.isConditionalMediationAvailable()) return;
+      const ac = new AbortController();
+      pending = ac;
+      const cred = await go('conditional', ac.signal);
+      pending = null;
+      await finish(cred);
+    } catch (e) {
+      // AbortError is us cancelling it for the button; everything else is
+      // somebody typing their password instead. Neither is worth a word.
+      pending = null;
+    }
+  }
+  watch();
+})();
+</script>
+{% endblock %}

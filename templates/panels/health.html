@@ -1,0 +1,47 @@
+{% set healthy = (t.pods_running / t.pods * 100) if t.pods else 100 %}
+<div class="card">
+  <div class="card-h">Fleet health
+    <span class="hint">pooled across {{ t.reachable }} reachable
+      cluster{{ 's' if t.reachable != 1 }}</span>
+    <span style="flex:1"></span>
+    {% if trend.n > 1 %}<span class="hint">trend over the last {{ trend.span }}</span>
+    {% else %}<span class="hint">trend builds as the page refreshes</span>{% endif %}
+  </div>
+  <div class="card-b">
+    <div class="healthgrid">
+
+      <div style="text-align:center;">
+        {{ donut(healthy,
+                 label="%.0f%%"|format(healthy),
+                 sub="pods healthy",
+                 color=("var(--ok)" if t.pods_bad == 0 else
+                        ("var(--warn)" if healthy >= 90 else "var(--danger)"))) }}
+        <div class="chart-cap">{{ t.pods_running }} / {{ t.pods }} pods</div>
+      </div>
+
+      <div class="gaugerow" style="justify-content:center;">
+        <div>
+          {{ gauge(agg.cpu.pct, caption="cpu",
+                   detail="%dm / %dm"|format(agg.cpu.used, agg.cpu.cap)) }}
+        </div>
+        <div>
+          {{ gauge(agg.mem.pct, caption="memory",
+                   detail="%.0fGi / %.0fGi"|format(agg.mem.used / 1024, agg.mem.cap / 1024)) }}
+        </div>
+      </div>
+
+      <div>
+        <div class="charthead"><span class="t">unhealthy pods</span>
+          <span class="v" style="color:{{ 'var(--danger-ink)' if t.pods_bad else 'var(--ok-ink)' }};">
+            {{ t.pods_bad }}</span></div>
+        {{ sparkline(trend.bad, height=38,
+                     color=("var(--danger)" if t.pods_bad else "var(--ok)"),
+                     ceiling=4) }}
+        <div class="charthead" style="margin-top:12px;"><span class="t">pods running</span>
+          <span class="v">{{ t.pods }}</span></div>
+        {{ sparkline(trend.pods, height=38, color="var(--accent2)") }}
+      </div>
+
+    </div>
+  </div>
+</div>

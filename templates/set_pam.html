@@ -1,0 +1,451 @@
+{% extends "base.html" %}
+{% from "_set_head.html" import head %}
+{% block crumbs %}<a href="/settings">Settings</a> <span class="sep">/</span>
+  <b>Privileged Access</b>{% endblock %}
+{% block content %}
+{#- Settings for the PAM. Grouped into three cards — what may run, how sessions
+    are governed, and where the RDP/VNC gateway is. One form posts them all.
+    NOTE the width: no max-width on the form or the cards. The page content is
+    already capped at --measure and .field-row caps the value column at 620px;
+    wrapping the form in a narrow max-width double-caps it and looks cramped.
+    See CLAUDE.md → "Settings and form width". -#}
+{{ head("Privileged Access",
+        "Whether live sessions may be opened, how each session is governed, and
+         where the RDP/VNC gateway lives. Targets and recordings are on the
+         Privileged Access page itself — this is the policy behind them.",
+        msg, "") }}
+
+<form method="post" action="/settings/pam">
+
+  {#- The MASTER switch, first and on its own. It was PORTAL_PAM, an environment
+      variable, and moving it here is the point of this card: an installation
+      switch that needs a redeploy to flip is not one the person running the
+      portal owns. Everything below it is policy WITHIN the feature and reads as
+      unavailable until it is on. -#}
+  <div class="card" {% if not cfg.enabled %}style="border-color:var(--accent);"{% endif %}>
+    <div class="card-h">Privileged Access</div>
+    <div class="card-b">
+      <div class="field-row"><label>this feature</label>
+        <div>
+          <label style="font-weight:400;font-size:13px;cursor:pointer;">
+            <input type="checkbox" name="enabled" value="1" id="pamOn"
+                   style="width:auto;vertical-align:-2px;margin-right:7px;"
+                   {% if cfg.enabled %}checked{% endif %}>
+            switch Privileged Access on for this installation</label>
+          <div class="sec-note">Off on a new installation. While it is off there
+            is no Privileged Access page, no sidebar link and no shell button on
+            an Ansible host — the feature does not exist in the running product,
+            and this page is the only part of it that stays reachable so it can
+            be switched back on. Turning it on adds the target catalogue and
+            session recording; it does not let anyone connect to anything on its
+            own — that is the separate switch below, plus the <b>Privileged
+            Access</b> and <b>Privileged Access: connect</b> areas on a person's
+            roles.
+            {% if not cfg.enabled %}<br><b>Everything below takes effect once
+            this is on.</b>{% endif %}</div>
+        </div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-h">Live sessions</div>
+    <div class="card-b">
+      <div class="field-row"><label>live connections</label>
+        <div>
+          <label style="font-weight:400;font-size:13px;cursor:pointer;">
+            <input type="checkbox" name="allow_connect" value="1"
+                   style="width:auto;vertical-align:-2px;margin-right:7px;"
+                   {% if cfg.allow_connect %}checked{% endif %}>
+            permit opening a live session on a target</label>
+          <div class="sec-note">Off on a new installation: a catalogue can be built
+            and reviewed before anything can be dialled. Turning it on grants
+            nobody anything on its own — a person still needs the <b>Privileged
+            Access: connect</b> area, and a production target still has its name
+            typed. Every session is recorded and audited either way.</div>
+        </div></div>
+
+      <div class="field-row"><label>record sessions</label>
+        <div>
+          <label style="font-weight:400;font-size:13px;cursor:pointer;">
+            <input type="checkbox" name="record_sessions" value="1"
+                   style="width:auto;vertical-align:-2px;margin-right:7px;"
+                   {% if cfg.record_sessions %}checked{% endif %}>
+            keep a replayable recording of every session</label>
+          <div class="sec-note">SSH sessions are recorded as a replayable cast plus
+            a command transcript; RDP/VNC as a Guacamole recording. Each recording
+            is checksummed when it is filed, so a later change to it is provable.
+            The recording is output only — a value a host asks for without echoing
+            (a password) is never in it.</div>
+        </div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-h">Session governance
+      <span class="hint">a PAM constrains as well as records</span></div>
+    <div class="card-b">
+      <div class="field-row"><label>reason for access</label>
+        <div>
+          <select name="require_reason">
+            <option value="off"    {% if cfg.require_reason == 'off' %}selected{% endif %}>not required</option>
+            <option value="prod"   {% if cfg.require_reason == 'prod' %}selected{% endif %}>required on production targets</option>
+            <option value="always" {% if cfg.require_reason == 'always' %}selected{% endif %}>required on every target</option>
+          </select>
+          <div class="sec-note">When required, the operator must give a
+            <b>ticket URL</b>, the <b>session time</b>, and a <b>summary</b> of the
+            work before the session opens. All three are stored on the recording
+            and written to the audit trail beside the connect.</div>
+        </div></div>
+
+      <div class="field-row"><label>idle timeout</label>
+        <div><input type="number" name="idle_timeout" value="{{ cfg.idle_timeout }}"
+               min="0" max="86400" style="max-width:140px;">
+          <span class="hint">seconds</span>
+          <div class="sec-note">A session with no input for this long is closed. 0
+            disables it.</div>
+        </div></div>
+
+      <div class="field-row"><label>maximum duration</label>
+        <div><input type="number" name="max_duration" value="{{ cfg.max_duration }}"
+               min="0" max="86400" style="max-width:140px;">
+          <span class="hint">seconds</span>
+          <div class="sec-note">A hard cap on a single session, however active. 0
+            disables it.</div>
+        </div></div>
+
+      <div class="field-row"><label>concurrent sessions</label>
+        <div><input type="number" name="max_concurrent" value="{{ cfg.max_concurrent }}"
+               min="0" max="100" style="max-width:140px;">
+          <span class="hint">per person</span>
+          <div class="sec-note">The most live sessions one person may hold at once.
+            0 is unlimited.</div>
+        </div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-h">RDP / VNC gateway</div>
+    <div class="card-b">
+      <div class="field-row"><label>guacd address</label>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <input type="text" name="guacd_host" value="{{ cfg.guacd_host }}"
+                 style="flex:1;min-width:150px;" placeholder="127.0.0.1">
+          <input type="number" name="guacd_port" value="{{ cfg.guacd_port }}"
+                 style="width:96px;" min="1" max="65535">
+          {% if guac_ok %}<span class="sv sv-clean">reachable</span>
+          {% else %}<span class="sv sv-high">not reachable</span>
+          <div class="sec-note" style="flex-basis:100%;color:var(--danger-ink);">{{ guacd_why }}</div>
+          {#- A BUTTON, NOT AN INSTRUCTION. A customer sent a screenshot of
+              this card telling them to set a Helm value and upgrade — for a
+              value that is already the default. The portal runs in the very
+              Deployment that needs the container and already holds `patch` on
+              exactly that object wherever self-update was granted, so where
+              it can act it should, and where it cannot it should say which
+              thing is missing rather than repeating one guess. -#}
+          {% if gw.how == 'absent' and gw_grant %}
+          <div style="flex-basis:100%;margin-top:8px;">
+            {#- `formaction` ON THE BUTTON, never a nested <form>. This whole
+                card sits inside the settings form, and HTML does not nest
+                forms: the browser DROPS the inner one and the button becomes
+                an ordinary submit for the outer. It looked like it worked —
+                the page came back saying "saved" — while the gateway route
+                was never called at all. Reported exactly that way.
+                `formaction` is how this codebase already does a second
+                destination from one form. -#}
+            <button type="submit" class="abtn go" id="gwStart"
+                    formaction="/settings/pam/gateway/start" formmethod="post"
+                    data-confirm="Add the gateway container to this deployment?\n\nThe portal RESTARTS, and if this cluster cannot pull {{ cfg.guacd_image }} the whole pod stops — not just the gateway. Mirrored or air-gapped installs should point `gateway image` at their own registry first.\n\nHelm does not know about this: set guacd.enabled=true in your values too, or the next upgrade removes it again."
+                    >start the gateway</button>
+            <span class="hint" style="margin-left:8px;">adds the
+              <code>guacd</code> sidecar to this deployment and restarts the
+              portal</span>
+            <div class="sec-note" style="margin-top:6px;">Helm still holds the
+              release it rendered, so this reverts on the next
+              <code>helm upgrade</code> unless you also set
+              <code>guacd.enabled: true</code> in your values. Same trade as the
+              one-click update.</div>
+          </div>
+          {% elif gw.how == 'absent' %}
+          <div class="sec-note" style="flex-basis:100%;margin-top:6px;">This
+            portal could add the container itself, but it was not granted
+            permission to change its own deployment — install with
+            <code>rbac.selfUpdate=true</code> and it becomes a button here, or
+            set <code>guacd.enabled: true</code> in the Helm values and
+            upgrade.</div>
+          {% elif gw.how == 'unknown' and gw.why %}
+          <div class="sec-note" style="flex-basis:100%;margin-top:6px;">This
+            portal cannot check its own deployment from here: {{ gw.why }}
+            {% if gw.check %}<br><br>This answers it — if <code>guacd</code> is
+            not in the list, the chart did not deploy it:<br>
+            <code style="display:inline-block;margin-top:4px;user-select:all;"
+              >{{ gw.check }}</code><br><br>Installing with
+            <code>rbac.selfUpdate=true</code> lets this page check, and fix
+            it, itself.{% endif %}</div>
+          {% endif %}{% endif %}
+          <div class="sec-note" style="flex-basis:100%;">Apache Guacamole's
+            <code>guacd</code> renders RDP and VNC to the browser. It ships as a
+            sidecar; until it is reachable, RDP/VNC targets say so and cannot be
+            connected. SSH does not use it.</div>
+        </div></div>
+
+      {#- SIZE THE BROWSER TO THE CLUSTER IT RUNS IN. These were fixed in
+          code, so an install whose nodes cannot spare 768Mi and a pod slot
+          had no way to make a seat fit — and the failure it got was the
+          scheduler's, after the click, rather than a number it could change.
+          Seen on a cluster running at 99% of memory requests on one node and
+          at its pod cap on the other. -#}
+      <div class="field-row"><label>browser size</label>
+        <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;">
+          <label style="display:flex;gap:6px;align-items:center;">
+            <span class="hint">CPU request</span>
+            <input type="text" name="web_cpu_req" value="{{ cfg.web_cpu_req }}"
+                   style="width:84px;" placeholder="200m"></label>
+          <label style="display:flex;gap:6px;align-items:center;">
+            <span class="hint">memory request</span>
+            <input type="text" name="web_mem_req" value="{{ cfg.web_mem_req }}"
+                   style="width:96px;" placeholder="768Mi"></label>
+          <label style="display:flex;gap:6px;align-items:center;">
+            <span class="hint">CPU limit</span>
+            <input type="text" name="web_cpu_lim" value="{{ cfg.web_cpu_lim }}"
+                   style="width:84px;" placeholder="2"></label>
+          <label style="display:flex;gap:6px;align-items:center;">
+            <span class="hint">memory limit</span>
+            <input type="text" name="web_mem_lim" value="{{ cfg.web_mem_lim }}"
+                   style="width:96px;" placeholder="2Gi"></label>
+          <div class="sec-note" style="flex-basis:100%;">What each browser pod
+            asks the scheduler for. The REQUEST is what has to be free on a
+            node before a seat can start at all; the LIMIT is what the browser
+            may grow to while rendering. On a small or busy cluster a seat that
+            cannot be placed fails with the scheduler's own words — lower the
+            request to fit, knowing a browser given too little memory renders
+            slowly or not at all.</div>
+        </div></div>
+
+      <div class="field-row"><label>gateway image</label>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <input type="text" name="guacd_image" value="{{ cfg.guacd_image }}"
+                 style="flex:1;min-width:220px;" placeholder="guacamole/guacd:1.5.5">
+          <div class="sec-note" style="flex-basis:100%;">Only used by the
+            button above, when this portal adds the gateway to its own
+            deployment. It matters for a mirrored or air-gapped install: the
+            gateway is a <em>sidecar</em>, so an image the cluster cannot pull
+            stops the whole pod rather than just the gateway. Point it at your
+            own registry before pressing it.</div>
+        </div></div>
+
+      <div class="field-row"><label>default desktop size</label>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <input type="number" name="rdp_width" value="{{ cfg.rdp_width }}"
+                 style="width:96px;" min="640" max="3840">
+          <span class="muted">×</span>
+          <input type="number" name="rdp_height" value="{{ cfg.rdp_height }}"
+                 style="width:96px;" min="480" max="2160">
+          <span class="hint">pixels, for RDP/VNC and for a web seat</span>
+        </div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-h">Recording retention
+      <span class="hint">how long a session's screen is kept</span></div>
+    <div class="card-b">
+      <div class="field-row"><label>keep recordings for</label>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <input type="number" name="keep_days" value="{{ cfg.keep_days }}"
+                 style="width:110px;" min="0" max="3650">
+          <span class="hint">days &middot; 0 keeps them for ever</span>
+        </div></div>
+      <div class="field-row"><label>cap the store at</label>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <input type="number" name="keep_mb" value="{{ cfg.keep_mb }}"
+                 style="width:110px;" min="0" max="1048576">
+          <span class="hint">MB &middot; 0 for no cap</span>
+          <span class="sv {{ 'sv-clean' if not rec_mb else '' }}">{{ rec_mb }} MB in use</span>
+          <div class="sec-note" style="flex-basis:100%;">Oldest first, because
+            the newest recording is the one somebody wants. <b>Only the screen
+            is removed — the session row stays</b>: who reached what, when and
+            under which ticket is the audit record and costs a few hundred
+            bytes, while the screen is what grows. A trimmed session says
+            <em>its recording expired on a date</em> rather than reading as
+            missing evidence.
+            <br>Worth setting: an SSH cast is about 6 bytes a second, an
+            RDP/VNC/web recording about 9,000 — so the volume that also holds
+            your git checkouts and Terraform state is what fills up.</div>
+        </div></div>
+    </div>
+  </div>
+
+  {#- A RECORDED WEB SESSION. Its own card because it is a different decision
+      from the gateway: turning it on makes the portal create pods in
+      somebody's cluster and pull a browser image, which is not something that
+      should start happening because an upgrade landed. -#}
+  <div class="card">
+    <div class="card-h">Recorded web sessions
+      <span class="hint">a browser in the cluster, rendered and recorded by
+        the same guacd</span></div>
+    <div class="card-b">
+      <div class="field-row"><label>web sessions</label>
+        <div>
+          <label style="font-weight:400;font-size:13px;color:var(--text2);">
+            <input type="checkbox" name="web_browser" value="1"
+                   style="width:auto;vertical-align:-2px;margin-right:6px;"
+                   {% if cfg.web_browser %}checked{% endif %}>
+            open web targets in a browser inside the cluster, watchable and
+            recorded</label>
+          {% if cfg.web_browser and web_why %}
+          <div class="sec-note" style="color:var(--danger-ink);">{{ web_why }}</div>
+          {% elif cfg.web_browser %}
+          <div class="sec-note"><span class="sv sv-clean">ready</span></div>
+          {% endif %}
+          <div class="sec-note">A web application cannot be recorded on its
+            own — guacd speaks RDP and VNC, not HTTP. So the portal starts a
+            browser for the session, points it at the target and lets guacd
+            render <em>that</em>. <b>One pod per session</b>, deleted when the
+            session ends: two people sharing one browser would share its
+            cookies. Off here, a web target is still catalogued and its
+            <code>open</code> is still audited — it simply is not recorded.</div>
+        </div></div>
+
+      <div class="field-row"><label>run browsers in</label>
+        <div>
+          <select name="web_cluster">
+            <option value="">— choose a cluster —</option>
+            {% for c in web_clusters %}
+            <option value="{{ c.id }}" {% if cfg.web_cluster == c.id %}selected{% endif %}
+              {% if c.why %}disabled{% endif %}>{{ c.name }}{% if c.why %} — {{ c.why }}{% endif %}</option>
+            {% endfor %}
+          </select>
+          <input type="text" name="web_namespace" value="{{ cfg.web_namespace }}"
+                 placeholder="default" spellcheck="false" autocomplete="off"
+                 style="max-width:200px;margin-left:8px;">
+          <div class="sec-note">The cluster and namespace the browser pod is
+            created in. Management must be enabled for that cluster — a seat is
+            a pod, and a pod is a write. The stream reaches guacd over a
+            port-forward, so the browser does not have to run in the portal's
+            own cluster; the honest cost is that it goes through that cluster's
+            API server.</div>
+        </div></div>
+
+      <div class="field-row"><label>browser image</label>
+        <div>
+          <input type="text" name="web_image" value="{{ cfg.web_image }}"
+                 spellcheck="false" autocomplete="off" style="min-width:280px;">
+          <div class="sec-note">It must serve VNC and accept a URL over
+            WebDriver — a Selenium standalone image does both. This product
+            deliberately does not ship its own browser: that would be a second
+            artefact to build, sign and re-patch for every browser CVE.</div>
+        </div></div>
+
+      {#- LABEL BEFORE ITS INPUT, and each pair kept together. The labels used
+          to TRAIL their boxes — "[1] VNC [1] WebDriver" — so the eye cannot
+          tell whether a box is the thing named after it or before it. Asked
+          directly: "where is the option to set it to 4444?", by somebody
+          standing on this page with both boxes in front of them. A control
+          nobody can find is a control that is not there. -#}
+      <div class="field-row"><label>ports &amp; password</label>
+        <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;">
+          <label style="display:flex;gap:6px;align-items:center;">
+            <span class="hint">VNC</span>
+            <input type="number" name="web_vnc_port" value="{{ cfg.web_vnc_port }}"
+                   style="width:96px;" min="1" max="65535" placeholder="5900"></label>
+          <label style="display:flex;gap:6px;align-items:center;">
+            <span class="hint">WebDriver</span>
+            <input type="number" name="web_driver_port" value="{{ cfg.web_driver_port }}"
+                   style="width:96px;" min="1" max="65535" placeholder="4444"></label>
+          <label style="display:flex;gap:6px;align-items:center;">
+            <span class="hint">VNC password</span>
+            <input type="text" name="web_vnc_password" value="{{ cfg.web_vnc_password }}"
+                   style="width:150px;" spellcheck="false" autocomplete="off"></label>
+          <div class="sec-note" style="flex-basis:100%;">The image's own
+            defaults — <b>VNC 5900</b> and <b>WebDriver 4444</b> for the
+            Selenium image above. The VNC password is only ever used over the
+            loopback inside this pod, never exposed.</div>
+        </div></div>
+
+      <div class="field-row"><label>how guacd reaches this portal</label>
+        <div>
+          <input type="text" name="web_seat_host" value="{{ cfg.web_seat_host }}"
+                 placeholder="leave blank when guacd is the sidecar"
+                 spellcheck="false" autocomplete="off" style="max-width:280px;">
+          <div class="sec-note">Leave this <b>blank</b> for the shipped
+            arrangement: guacd runs as a sidecar in this pod, so the browser is
+            on its loopback and 127.0.0.1 is right. Fill it in only when guacd
+            runs somewhere else — it would otherwise dial its own loopback and
+            find nothing. Put an address that reaches <em>this portal</em>
+            from guacd.</div>
+        </div></div>
+
+      <div class="field-row"><label>warm browsers</label>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <input type="number" name="web_spares" value="{{ cfg.web_spares }}"
+                 style="width:96px;" min="0" max="8">
+          <span class="hint">kept running &middot; 0 creates one per click</span>
+          <div class="sec-note" style="flex-basis:100%;">A browser created on
+            demand costs its image pull with somebody watching — measured at
+            <b>36.9s cold against 4.3s warm</b> on a real cluster. One warm
+            browser makes the usual click about two seconds. It is claimed by
+            exactly one session and deleted afterwards, never reused, so
+            nothing is shared between people. The cost is one idle pod
+            whenever recorded web sessions are on.</div>
+        </div></div>
+
+      <div class="field-row"><label>allow a browser this long to start</label>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <input type="number" name="web_ready_timeout"
+                 value="{{ cfg.web_ready_timeout }}"
+                 style="width:110px;" min="60" max="3600">
+          <span class="hint">seconds</span>
+          <div class="sec-note" style="flex-basis:100%;">Only the FIRST run on
+            a given node pays this — the image is cached afterwards. It was
+            fixed at 120s, which turned a slow pull into a failure rather than
+            a wait: a 1.5&nbsp;GB image on a slow link was seen still pulling
+            at 268 seconds.</div>
+        </div></div>
+
+      <div class="field-row"><label>allow a page this long to settle</label>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <input type="number" name="web_page_timeout"
+                 value="{{ cfg.web_page_timeout }}"
+                 style="width:110px;" min="5" max="300">
+          <span class="hint">seconds</span>
+          <div class="sec-note" style="flex-basis:100%;">Not a failure
+            deadline. A single-page application with a live connection never
+            reports that it finished loading, so the session is handed over on
+            where the browser actually IS &mdash; asked directly, answered
+            instantly &mdash; rather than on the page admitting it settled.
+            Raise it only if an application needs longer before it is worth
+            looking at.</div>
+        </div></div>
+
+      <div class="field-row"><label>seat lifetime</label>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <input type="number" name="web_ttl" value="{{ cfg.web_ttl }}"
+                 style="width:110px;" min="300" max="86400">
+          <span class="hint">seconds</span>
+          <div class="sec-note" style="flex-basis:100%;">The pod's own
+            deadline, and the reason a lost session is not a browser left
+            logged in for ever: it stops by itself even if the portal never
+            gets to delete it. <b>There is deliberately no unlimited
+            option.</b></div>
+        </div></div>
+
+      <div class="field-row"><label>leftover browsers</label>
+        <div>
+          <button type="submit" class="abtn"
+                  formaction="/settings/pam/web/sweep" formmethod="post">
+            remove leftover browser pods</button>
+          <div class="sec-note">A seat whose session died with the portal has
+            already stopped by its own deadline, but it still occupies a name
+            in <code>kubectl get pods</code>. This clears those. It only ever
+            removes pods this portal named.</div>
+        </div></div>
+    </div>
+  </div>
+
+  <div class="actions" style="margin-bottom:24px;">
+    <button type="submit" style="padding:6px 16px;font-size:12.5px;">Save</button>
+    <a class="btn btn-ghost" href="/pam"
+       style="padding:6px 16px;font-size:12.5px;">Back to Privileged Access</a>
+  </div>
+</form>
+{% endblock %}

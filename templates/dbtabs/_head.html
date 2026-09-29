@@ -1,0 +1,50 @@
+{# The counters and the database picker. Its own fragment so Refresh can
+   replace it without touching the tab underneath. #}
+{% if overview %}
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+                         margin-bottom:12px;">
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat">{{ overview.databases if overview.databases is not none else '—' }}</div>
+    <div class="statsub">{{ 'databases' if server.type == 'postgres' else 'schemas' }}</div></div></div>
+  <a class="card tile-link" style="margin:0;" data-tab="tables" href="#tables"><div class="card-b">
+    <div class="stat">{{ overview.tables if overview.tables is not none else '—' }}</div>
+    <div class="statsub">tables</div></div></a>
+  <a class="card tile-link" style="margin:0;" data-tab="roles" href="#roles"><div class="card-b">
+    <div class="stat">{{ overview.roles if overview.roles is not none else '—' }}</div>
+    <div class="statsub">{{ 'roles' if server.type == 'postgres' else 'accounts' }}</div></div></a>
+  <a class="card tile-link" style="margin:0;" data-tab="activity" href="#activity"><div class="card-b">
+    <div class="stat">{{ overview.connections if overview.connections is not none else '—' }}{%
+      if overview.max_connections %}<span style="font-size:56%;font-weight:600;
+        color:var(--muted);"> / {{ overview.max_connections }}</span>{% endif %}</div>
+    <div class="statsub">connections</div></div></a>
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat" style="font-size:19px;">{{ overview.size or '—' }}</div>
+    <div class="statsub">size on disk</div></div></div>
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat" style="font-size:19px;">{{ overview.uptime or '—' }}</div>
+    <div class="statsub">uptime</div></div></div>
+</div>
+<div class="sec-note" style="margin:-4px 0 14px;">
+  {{ overview.version }}{% if overview.replica %} · <b style="color:var(--warn-ink);">read
+  replica / read-only server</b>{% endif %}{% if overview.longest %} · longest
+  running statement {{ overview.longest }}{% endif %}
+</div>
+{% endif %}
+
+{% if databases %}
+<div class="card" style="margin-bottom:12px;">
+  <div class="card-b" style="padding-top:13px;">
+    <div class="kv" style="gap:10px;">
+      <label class="sec-note" style="margin:0;">database</label>
+      <select id="dbpick" style="max-width:340px;">
+        {% for d in databases %}
+        <option value="{{ d.name }}" {% if d.name == database %}selected{% endif %}>
+          {{ d.name }}{% if d.size and d.size != '—' %} · {{ d.size }}{% endif %}</option>
+        {% endfor %}
+      </select>
+      <span class="sec-note" style="margin:0;">{{ databases|length }} visible to
+        {{ held.user }}</span>
+    </div>
+  </div>
+</div>
+{% endif %}

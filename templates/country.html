@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block crumbs %}
+  <a href="/">Projects</a> <span class="sep">/</span>
+  <a href="/p/{{ pid }}">{{ pname }}</a>
+  {% if country != FLAT %}<span class="sep">/</span> <b>{{ country.upper() }}</b>{% endif %}
+{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>{{ countries.get(country, {}).get('flag', '') }}
+      {{ pname }}{{ ' · ' + country.upper() if country != FLAT else '' }}</h1>
+    <p class="sub">Select an environment.</p>
+  </div>
+  <a class="btn btn-ghost" href="/settings#{{ pid }}">⚙︎ Project settings</a>
+</div>
+
+{% if not envs %}
+<div class="empty">
+  <div class="big">{{ glyph("package", 40) }}</div>
+  <h2>No environments found</h2>
+  <p>Check the repository's environments path and layout in project settings.</p>
+  <a class="btn" href="/settings#{{ pid }}">Open project settings</a>
+</div>
+{% endif %}
+
+<div class="hub-grid">
+  {% for e, refs in envs.items() %}
+  <a class="hub-card" href="/p/{{ pid }}/{{ country }}/{{ e }}">
+    <div class="flag">{{ env_glyph(e, 26) }}</div>
+    <div>
+      <div class="htitle">{{ env_label(e) }}</div>
+      <div class="hmeta">{{ refs|length }} service{{ 's' if refs|length != 1 }}
+        · cluster: {{ clusters.get(e) or '— not mapped —' }}</div>
+    </div>
+    <div class="arrow">→</div>
+  </a>
+  {% endfor %}
+</div>
+{% endblock %}

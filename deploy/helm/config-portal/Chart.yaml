@@ -1,0 +1,23 @@
+apiVersion: v2
+name: config-portal
+description: Self-hosted DevOps control plane — GitOps config editing, cluster
+  visibility and management, pipelines, security audit, logs and inventory.
+type: application
+
+# version is the chart's own version; appVersion is the portal release it
+# installs. They move together — scripts/release.sh sets both from ./VERSION —
+# so "which portal is this?" has one answer.
+version: 0.7.40
+appVersion: "0.7.40"
+
+kubeVersion: ">=1.24.0-0"
+home: https://github.com/ammar-hassoun/envmap
+sources:
+  - https://github.com/ammar-hassoun/envmap
+keywords: [devops, gitops, kubernetes, dashboard, argocd, security]
+maintainers:
+  - name: ammar-hassoun
+annotations:
+  # kube-bench and Trivy are deliberately not dependencies: the portal's audit
+  # reads the API and installs nothing in the cluster it looks at.
+  artifacthub.io/license: Apache-2.0

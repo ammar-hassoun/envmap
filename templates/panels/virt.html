@@ -1,0 +1,38 @@
+{# Hypervisors: hosts, and how many guests are actually powered on. #}
+{% set v = d.virt %}
+{% if v and v.conns %}
+<div class="card" style="margin:0;">
+  <div class="card-h">🖧 <a href="/virt" style="color:var(--text);">Hypervisors</a>
+    <span class="hint">{{ v.conns }} connection{{ 's' if v.conns != 1 }}</span>
+    <span style="flex:1"></span>
+    {% if v.vms %}<a class="badge" href="/virt"><b>{{ v.on }}</b> of {{ v.vms }}
+      powered on</a>{% endif %}
+  </div>
+  <div class="card-b">
+    {% for s in v.sites %}
+    <div class="kv" style="gap:8px;flex-wrap:wrap;{{
+         'border-top:1px solid var(--line);padding-top:8px;margin-top:8px;'
+         if not loop.first }}">
+      <b style="font-size:13px;">{{ s.name }}</b>
+      <span class="hint">{{ s.type }}</span>
+      <span style="flex:1"></span>
+      {% if s.error %}
+      {# The error is shown rather than a zero: "0 VMs" and "could not ask" are
+         very different things to read on an overview. #}
+      <span class="hint" style="color:var(--warn-ink);">{{ s.error }}</span>
+      {% else %}
+      {% if s.hosts %}<span class="badge">{{ s.hosts }} host{{ 's' if s.hosts != 1 }}</span>{% endif %}
+      <span class="badge" style="color:var(--ok-ink);">{{ s.on }} on</span>
+      {% if s.off %}<span class="badge">{{ s.off }} off</span>{% endif %}
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% else %}
+<div class="card" style="margin:0;"><div class="card-b">
+  <p class="sub" style="margin:0;">No hypervisor connected.
+    <a href="/settings/conns/virt">Connect Proxmox, vCenter or ESXi</a> to see the
+    virtual machines under your clusters.</p>
+</div></div>
+{% endif %}

@@ -1,0 +1,47 @@
+fastapi==0.141.*
+# Pinned in its own right, not left to FastAPI's range. FastAPI 0.141 accepts
+# starlette back to 0.40, and everything below 1.3.1 carries known advisories —
+# a request-path/Host confusion, a quadratic Range parser reachable without
+# authentication, and two multipart limits that are not enforced. Without this
+# line a fresh install resolves to whatever satisfies FastAPI, which is how a
+# patched lockfile still ships a vulnerable dependency.
+starlette>=1.3.1
+uvicorn[standard]==0.38.*
+jinja2==3.1.*
+python-multipart==0.0.*
+ruamel.yaml==0.18.*
+PyYAML==6.*
+itsdangerous>=2
+segno>=1.6
+# Database console. Both ship as pure wheels — psycopg[binary] carries its own
+# libpq, PyMySQL is pure Python — so the image needs no system packages and no
+# compiler for either.
+# Credentials are encrypted before they reach the database — see secretbox.
+# Ships manylinux and musllinux wheels, so the image still needs no compiler.
+# >=48.0.1: everything below it carries GHSA-537c-gmf6-5ccf.
+cryptography>=48.0.1
+
+psycopg[binary]==3.2.*
+PyMySQL==1.1.*
+
+# Passkeys — WebAuthn registration and assertion verification. Pure-python
+# wheel; brings cbor2, pyOpenSSL and pyasn1, all wheels, and pyOpenSSL rides on
+# the cryptography already declared above. Hand-rolling this would mean writing
+# COSE key parsing and signature verification for the login path, which is not
+# a place to save a dependency.
+webauthn>=3.0
+
+# The Proxmox client in provision.py. It lived in requirements-dev.txt because
+# the only thing that needed an HTTP client was the test suite — and then
+# provision.py imported it at MODULE level, which made it a runtime dependency
+# without anything saying so. Every test passed (the dev requirements are
+# installed locally) and the published image crashed on import. See
+# tests/test_deps.py, which now refuses that shape.
+httpx>=0.27
+
+# The Ansible runner. ansible-core rather than the full `ansible` distribution:
+# core is the engine and the modules the builtin collection ships, ~20MB against
+# ~600MB of collections for clouds and appliances nobody here has asked for. A
+# playbook that needs another collection can have it installed alongside; a
+# playbook that needs none — which is most of them — works out of the box.
+ansible-core>=2.17

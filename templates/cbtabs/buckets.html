@@ -1,0 +1,142 @@
+{% if section_error %}
+<div class="flash err">⚠ {{ section_error }}</div>
+{% endif %}
+
+{# ELEVEN COLUMNS AND A 900px MINIMUM MADE THIS SCROLL SIDEWAYS.
+   Seventeen buckets is a list you read down, and every horizontal scroll costs
+   you the bucket name — the one column you need to keep in view. So the table
+   is six columns wide and the secondary numbers moved to where they belong:
+   under the name if they identify the bucket, in the cell's title if they are
+   only occasionally interesting. Nothing was dropped. #}
+<div class="card" style="margin-bottom:14px;">
+  <div class="card-h">Buckets <span class="hint">{{ buckets|length }}</span>
+    <span style="flex:1"></span>
+    {% if overview and overview.buckets_max %}
+    <span class="hint">{{ overview.buckets_max - buckets|length }} of
+      {{ overview.buckets_max }} slots free</span>
+    {% endif %}</div>
+  <div class="card-b">
+    {% if not buckets %}
+    <p class="sub" style="margin:0;">This cluster has no buckets.</p>
+    {% else %}
+    <table class="jenkins" style="width:100%;">
+      <thead><tr>
+        <th>bucket</th>
+        <th style="width:15%;">memory</th>
+        <th style="width:12%;text-align:right;">items</th>
+        <th style="width:9%;text-align:right;">ops/s</th>
+        <th style="width:13%;text-align:right;">disk</th>
+        <th style="width:8%;text-align:right;">repl</th>
+      </tr></thead>
+      <tbody>
+        {% for b in buckets %}
+        <tr>
+          <td>
+            {# clickable, because the scopes and collections live behind it #}
+            <a href="#" class="cbbucket" data-name="{{ b.name }}"
+               style="font-weight:600;">{{ b.name }}</a>
+            <div class="hint" style="font-size:11px;">{{ b.type }}{%
+              if b.nodes %} · {{ b.nodes }} node{{ '' if b.nodes == 1 else 's' }}{% endif %}{%
+              if b.eviction %} · {{ b.eviction }}{% endif %}{%
+              if b.auth == 'sasl' and not b.sasl_set %} ·
+              <span style="color:var(--warn-ink);"
+                    title="this bucket has no SASL password, so the data port has no bucket-level authentication">no password</span>{%
+              endif %}</div>
+          </td>
+          <td title="{{ human(b.mem) }} of {{ human(b.quota) }} quota">
+            <span style="font-variant-numeric:tabular-nums;{{
+              'color:var(--danger-ink);' if b.quota_pct > 90
+              else ('color:var(--warn-ink);' if b.quota_pct > 75 else '') }}">{{
+              b.quota_pct }}%</span>
+            <div style="height:4px;border-radius:2px;background:var(--well);
+                        margin-top:4px;overflow:hidden;">
+              <div style="height:100%;width:{{ [b.quota_pct, 100]|min }}%;
+                background:{{ 'var(--danger-ink)' if b.quota_pct > 90
+                         else ('var(--warn-ink)' if b.quota_pct > 75
+                         else 'var(--ok-ink)') }};"></div>
+            </div>
+            <div class="hint" style="font-size:10.5px;">of {{ human(b.quota) }}</div>
+          </td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums;">{{ '{:,}'.format(b.docs) }}</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums;">{{ b.ops }}</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums;">
+            {{ human(b.disk) }}
+            {# a rising fetch count is the signal that the working set no longer
+               fits in memory. Zero is the normal case, so it only appears when
+               it is not zero. #}
+            {% if b.fetches %}
+            <div class="hint" style="font-size:10.5px;color:var(--warn-ink);"
+                 title="reads served from disk — the working set no longer fits in memory">
+              {{ '{:,}'.format(b.fetches) }} fetches</div>
+            {% endif %}
+          </td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums;">{{ b.replicas }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div class="sec-note" style="margin-top:10px;">Click a bucket for its
+      settings, scopes and collections.</div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-h">Create a bucket
+    {% if not held.write %}<span class="hint">needs write mode</span>{% endif %}</div>
+  <div class="card-b">
+    {% if not held.write %}
+    <p class="sub" style="margin:0 0 6px;">This console is read-only. Switch it
+      to write mode in the header first — that is its own audited action, so
+      when a session gained the ability to change this cluster is answerable on
+      its own.</p>
+    {% else %}
+    <form method="post" action="/db/{{ server.id }}/bucket">
+      <div style="display:grid;gap:12px;
+                  grid-template-columns:repeat(auto-fit,minmax(150px,1fr));">
+        <div><div class="cmp-lbl">Name</div>
+          <input type="text" name="bucket" required maxlength="100"
+                 placeholder="orders" style="width:100%;box-sizing:border-box;"></div>
+        <div><div class="cmp-lbl">RAM quota (MB)</div>
+          <input type="number" name="ram" required min="100" value="256"
+                 style="width:100%;box-sizing:border-box;"></div>
+        <div><div class="cmp-lbl">Replicas</div>
+          <select name="replicas" style="width:100%;min-width:0;box-sizing:border-box;">
+            {% for n in [0, 1, 2, 3] %}
+            <option value="{{ n }}"{{ ' selected' if n == 1 }}>{{ n }}</option>
+            {% endfor %}
+          </select></div>
+        <div><div class="cmp-lbl">Type</div>
+          <select name="btype" style="width:100%;min-width:0;box-sizing:border-box;">
+            <option value="membase">Couchbase</option>
+            <option value="ephemeral">Ephemeral</option>
+            <option value="memcached">Memcached</option>
+          </select></div>
+        <div><div class="cmp-lbl">Eviction</div>
+          <select name="eviction" style="width:100%;min-width:0;box-sizing:border-box;">
+            <option value="">server default</option>
+            <option value="valueOnly">value only</option>
+            <option value="fullEviction">full</option>
+          </select></div>
+      </div>
+      <label class="pick" style="margin-top:12px;">
+        <input type="checkbox" name="flush">
+        <span><b>Allow flush</b><small>lets this bucket's contents be emptied
+          from Couchbase's own console later. Off by default.</small></span></label>
+      <div class="sec-note" style="margin-top:12px;">The quota is taken from the
+        cluster's data service quota, not from free memory, and Couchbase
+        refuses the request if there is not enough left. A new bucket warms up
+        in the background, so it may report zero items for a moment.
+        {% if version and not version.has_rbac %}
+        On this version a bucket carries its own SASL authentication; this
+        creates it with no bucket password, matching the others here.{% endif %}</div>
+      <div class="actions" style="margin-top:14px;">
+        <button class="btn">Create bucket</button>
+        <span class="hint" style="margin-left:10px;">Flush and delete are not
+          offered here — they destroy data outright and belong in Couchbase's
+          own console, which asks for the name to be typed.</span>
+      </div>
+    </form>
+    {% endif %}
+  </div>
+</div>

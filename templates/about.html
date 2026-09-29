@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% import "_mark.html" as mk %}
+{% block crumbs %}<b>About</b>{% endblock %}
+{% block content %}
+
+{# The page somebody opens to answer "what am I running, and is it current?".
+   Every other application has one; this had the answer scattered across
+   Settings → Deployment and the pod's own logs. #}
+
+<div class="card">
+  <div class="card-b" style="display:flex; gap:22px; align-items:flex-start;
+       flex-wrap:wrap; padding:26px 24px;">
+    <div class="logo" style="width:56px; height:56px; border-radius:16px;
+         flex:none; font-size:26px;">{{ mk.mark(32) if not brand().branded
+         else (brand().short or brand().name)[:1]|upper }}</div>
+    <div style="flex:1; min-width:230px;">
+      <div style="font-size:21px; font-weight:750; letter-spacing:-.01em;"
+        >{{ brand().name }}</div>
+      {% if brand().org %}<div class="sub" style="margin:2px 0 0;">{{ brand().org }}</div>{% endif %}
+      <div style="display:flex; gap:9px; align-items:center; flex-wrap:wrap;
+           margin-top:12px;">
+        <span class="badge" style="font-family:var(--mono); font-size:12px;"
+          >{{ version }}</span>
+        {% if upd.available %}
+        <span class="badge" style="color:var(--accent-ink);
+              border-color:var(--accent-ink);">{{ upd.latest }} available</span>
+        {% elif upd.configured and upd.latest %}
+        <span class="badge" style="color:var(--ok-ink);">up to date</span>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+{# ── an update, when there is one ─────────────────────────────────────── #}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+{% if msg %}<div class="flash">✓ {{ msg }}</div>{% endif %}
+
+{% include "_update_progress.html" %}
+
+{% if drift %}
+{# The price of the one-click, stated where it will be read rather than left to
+   be discovered by the next helm upgrade. #}
+<div class="card" style="border-color:var(--warn-line);">
+  <div class="card-h">Helm does not know about this version yet</div>
+  <div class="card-b">
+    <p class="sub" style="margin:0 0 8px;">{{ drift.note }}</p>
+    <pre class="ddl" style="margin:0;">helm upgrade {{ release or 'portal' }} &lt;chart&gt; --version {{ version }} --reuse-values</pre>
+  </div>
+</div>
+{% endif %}
+
+{% if upd.available %}
+<div class="card" id="updpanel" style="border-color:var(--accent);">
+  <div class="card-h">A newer release is available
+    <span class="badge" style="color:var(--accent-ink);">{{ upd.latest }}</span>
+  </div>
+  <div class="card-b">
+    {% if upd.notes %}
+    <div class="notes">{{ upd.notes }}</div>
+    {% endif %}
+
+    {% include "_update_button.html" %}
+  </div>
+</div>
+{% endif %}
+
+<style>
+  /* Release notes arrive as text. Blank lines separate
+     paragraphs and a leading dash is a list item — rendered as typed rather than
+     parsed, because it is somebody else's text and this is not a markdown
+     renderer pretending to be safe. */
+  .notes { white-space:pre-wrap; margin:0 0 14px; padding:14px 16px;
+    background:var(--well); border:1px solid var(--line); border-radius:11px;
+    font-size:13.5px; line-height:1.8; color:var(--text);
+    max-height:340px; overflow-y:auto; }
+</style>
+
+
+{# ── the facts ────────────────────────────────────────────────────────── #}
+<div class="card">
+  <div class="card-h">This installation</div>
+  <div class="card-b" style="padding:0;">
+    <table class="jenkins">
+      <tbody>
+        <tr><td style="width:220px;">Version</td>
+          <td style="font-family:var(--mono);">{{ version }}</td></tr>
+        <tr><td>Installation</td>
+          <td style="font-family:var(--mono); font-size:12px;">{{ instance }}
+            <div class="sec-note" style="margin:2px 0 0;">Quote this when asking
+              for this installation.</div></td></tr>
+        <tr><td>Release notice</td>
+          <td>{% if upd.configured %}from a published version list
+            {% else %}<span class="hint">not configured — this installation is
+              not told about new releases</span>{% endif %}</td></tr>
+        <tr><td>Data directory</td>
+          <td style="font-family:var(--mono); font-size:12px;">{{ data_dir }}</td></tr>
+        <tr><td>Runtime</td>
+          <td style="font-family:var(--mono); font-size:12px;">Python {{ python }}
+            · {{ platform }}</td></tr>
+        <tr><td>Tools</td>
+          <td>{% for t in tools %}{% if t.found %}<span class="badge"
+                style="font-family:var(--mono); font-size:11px; margin:0 5px 5px 0;"
+                >{{ t.name }} {{ t.version }}</span>{% else %}<span class="badge"
+                style="color:var(--warn-ink); margin:0 5px 5px 0;"
+                >{{ t.name }} missing</span>{% endif %}{% endfor %}</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-b" style="display:flex; gap:10px; flex-wrap:wrap;">
+    <a class="btn btn-ghost" href="/settings/deployment">Deployment settings</a>
+    <a class="btn btn-ghost" href="/settings">All settings</a>
+  </div>
+</div>
+
+{% endblock %}

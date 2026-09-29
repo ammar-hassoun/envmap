@@ -1,0 +1,373 @@
+{% extends "base.html" %}
+{% from "_back.html" import back %}
+{% import "_bits.html" as bits %}
+{% block crumbs %}
+{% if level_stage == 'hub' %}<b>Logs</b>
+{% else %}<a href="/logs">Logs</a> <span class="sep">/</span>
+  {% if level_stage == 'provider' %}<b>{{ providers[platform].label }}</b>
+  {% else %}<a href="/logs?platform={{ platform }}">{{ providers[platform].label }}</a>
+    <span class="sep">/</span> <b>{{ sel.name }}</b>{% endif %}
+{% endif %}
+{% endblock %}
+{% block content %}
+
+{% if not conns %}
+<div class="empty">
+  <div class="big">{{ glyph("scroll-text", 40) }}</div>
+  <h2>No log platform connected</h2>
+  <p>Connect Elasticsearch, OpenSearch or Grafana Loki and you can search every
+     environment's logs from here — including pods that have already restarted.</p>
+  <a class="btn" href="/settings/logs">Connect a platform</a>
+</div>
+{% else %}
+
+{# a flat table of log connections — the hub's All / Attention tabs. Cache-only
+   (peek), so listing never runs a query. Each row's "search" opens that store. #}
+{% macro conntable(rows, empty) %}
+<div class="card"><div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+  <table class="jenkins">
+    <thead><tr>
+      <th style="width:150px;">Platform</th><th style="min-width:160px;">Connection</th>
+      <th style="min-width:130px;">Scope</th><th style="width:96px;">Streams</th>
+      <th style="width:100px;">Errors / 1h</th><th style="width:120px;">Status</th>
+      <th class="actcol" style="width:92px;"></th></tr></thead>
+    <tbody>
+    {% for r in rows %}
+    <tr>
+      <td><span style="display:inline-flex;align-items:center;gap:7px;">{{ plogo(r.provider, 16) }} {{ r.provider.label or r.type }}</span></td>
+      <td class="jname"><b>{{ r.conn.name }}</b>
+        {% if r.conn.skip_tls %}<div class="sec-note" style="margin:2px 0 0;color:var(--warn-ink);">TLS unverified</div>{% endif %}</td>
+      <td>{{ r.scope }}{% if r.conn.scope %} · {{ r.conn.scope }}{% endif %}</td>
+      <td class="inv-num">{{ r.streams if not r.error else '—' }}</td>
+      <td class="inv-num">{% if r.errors %}<span style="color:var(--danger-ink);">{{ "{:,}".format(r.errors) }}</span>{% elif r.error %}—{% else %}0{% endif %}</td>
+      <td>{% if r.error %}<span class="sv sv-critical">unreachable</span>
+        {%- elif r.waiting %}<span class="na">collecting…</span>
+        {%- elif r.errors %}<span class="sv sv-high">errors</span>
+        {%- else %}<span class="sv sv-clean">ok</span>{% endif %}</td>
+      <td class="mid actcol"><a class="abtn go" href="{{ r.href }}">search</a></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div></div>
+{% if not rows %}<div class="empty"><div class="big">{{ glyph('circle-check', 34) }}</div>
+  <p>{{ empty }}</p></div>{% endif %}
+{% endmacro %}
+
+{# ═══════════ hub — Overview / All connections / Attention ═══════════ #}
+{% if level_stage == 'hub' %}
+{%- set cur = sec if sec in ('overview','all','attention') else 'overview' -%}
+<div class="page-head">
+  <div>
+    <h1>Logs</h1>
+    <p class="sub">{{ present|length }} platform{{ 's' if present|length != 1 }} ·
+      {{ conns|length }} connection{{ 's' if conns|length != 1 }} · read-only, search on demand</p>
+  </div>
+  <a class="btn btn-ghost" href="/logs?sec={{ cur }}&refresh=1">↻ Refresh</a>
+</div>
+{% if msg %}<div class="flash">✓ {{ msg }}</div>{% endif %}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+
+{{ bits.subtabs('/logs?', 'sec', cur, [
+     {'key':'overview','label':'Overview','icon':'chart-line'},
+     {'key':'all','label':'All connections','count':conns|length,'icon':'database'},
+     {'key':'attention','label':'Attention','count':n_attn,'icon':'triangle-alert'}], wide=true) }}
+
+{% if cur == 'overview' %}
+<div class="ex-tiles">
+  <a class="ex-tile {{ 'quiet' if not present }}" href="/logs?sec=overview">
+    <span class="ico">{{ glyph('boxes', 17) }}</span>
+    <span><span class="big">{{ present|length }}</span>
+      <span class="cap">platform{{ 's' if present|length != 1 }}</span>
+      <span class="sub">connected providers</span></span></a>
+  <a class="ex-tile {{ 'quiet' if not conns }}" href="/logs?sec=all">
+    <span class="ico">{{ glyph('database', 17) }}</span>
+    <span><span class="big">{{ conns|length }}</span>
+      <span class="cap">connection{{ 's' if conns|length != 1 }}</span>
+      <span class="sub">log stores</span></span></a>
+  <a class="ex-tile bad {{ 'quiet' if not n_attn }}" href="/logs?sec=attention">
+    <span class="ico">{{ glyph('triangle-alert', 17) }}</span>
+    <span><span class="big">{{ n_attn }}</span>
+      <span class="cap">need attention</span>
+      <span class="sub">unreachable or erroring</span></span></a>
+</div>
+
+{# shared chart overview — connection health + busiest stores #}
+{% set n_unr = clist | selectattr('error') | list | length %}
+{% set n_err = clist | rejectattr('error') | selectattr('errors') | list | length %}
+{% set streamrows = [] %}
+{% for x in clist if not x.error %}{{ streamrows.append({'label': x.conn.name, 'n': x.streams, 'href': x.href, 'note': (x.errors ~ ' err') if x.errors else ''}) or '' }}{% endfor %}
+<div class="apanels">
+  {{ bits.donut_panel('Connection health',
+       [{'label':'ok','value':conns|length - n_unr - n_err,'color':'var(--ok)','href':'/logs?sec=all'},
+        {'label':'errors / 1h','value':n_err,'color':'var(--danger)','href':'/logs?sec=attention'},
+        {'label':'unreachable','value':n_unr,'color':'var(--warn)','href':'/logs?sec=attention'}],
+       centre=(conns|length - n_attn) ~ '/' ~ (conns|length), sub='healthy', icon='activity',
+       hint='cached, no query') }}
+  {{ bits.bars_panel('Busiest stores', streamrows | sort(attribute='n', reverse=true),
+       hint='by stream / index count', icon='database', empty='Nothing collected yet.') }}
+</div>
+
+<div class="hub-grid" style="grid-template-columns:repeat(auto-fit,minmax(340px,1fr));">
+  {% for c in cards %}
+  <a class="hub-card" href="{{ c.href }}" style="align-items:flex-start;">
+    <div class="flag">{{ plogo(c.provider, 26) }}</div>
+    <div style="min-width:0;flex:1;">
+      <div class="htitle">{{ c.provider.label }}</div>
+      <div class="hmeta">{{ c.conns|length }} connection{{ 's' if c.conns|length != 1 }} ·
+        {{ c.conns|map(attribute='name')|join(', ')|truncate(40) }}</div>
+      <div style="margin-top:10px;">
+        <span class="badge"><b>{{ c.streams }}</b> {{ c.unit }}{{ 's' if c.streams != 1 }}</span>
+        {% if c.errors %}
+        <span class="badge" style="color:var(--danger-ink);"><b
+           style="color:var(--danger-ink);">{{ "{:,}".format(c.errors) }}</b> errors / 1h</span>
+        {% else %}
+        <span class="badge" style="color:var(--ok-ink);">no errors in the last hour</span>
+        {% endif %}
+      </div>
+      {% if c.broken %}
+      <div class="hmeta" style="color:var(--warn-ink);margin-top:2px;">
+        ⚠ {{ c.broken }} connection{{ 's' if c.broken != 1 }} unreachable</div>
+      {% endif %}
+    </div>
+    <div class="arrow">→</div>
+  </a>
+  {% endfor %}
+</div>
+
+{% set idle = providers.keys()|reject('in', present)|list %}
+{% if idle %}
+<p class="sub" style="margin-top:22px;">
+  Not connected yet:
+  {% for k in idle %}{{ providers[k].label }}{{ ', ' if not loop.last }}{% endfor %} —
+  add one in <a href="/settings/logs">Settings → Log platforms</a>.</p>
+{% endif %}
+
+{% elif cur == 'all' %}
+{{ conntable(clist, 'No log connections yet.') }}
+{% elif cur == 'attention' %}
+{{ conntable(alist, 'Every connection is reachable and quiet — no errors in the last hour.') }}
+{% endif %}
+
+{# ═══════════ level 2 — one box per connection ═══════════ #}
+{% elif level_stage == 'provider' %}
+<div class="page-head">
+  <div>
+    {{ back('/logs', 'All log platforms') }}
+    <h1 class="withico">{{ logo(platform, providers[platform].label, 26) }} {{ providers[platform].label }}</h1>
+    <p class="sub">{{ cards|length }} connection{{ 's' if cards|length != 1 }} · read-only</p>
+  </div>
+  <a class="btn btn-ghost" href="/logs?platform={{ platform }}&refresh=1">↻ Refresh</a>
+</div>
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+
+<div class="hub-grid" style="grid-template-columns:repeat(auto-fit,minmax(340px,1fr));">
+  {% for c in cards %}
+  <a class="hub-card" href="{{ c.href }}" style="align-items:flex-start;">
+    <div class="flag">{{ plogo(c.provider, 26) }}</div>
+    <div style="min-width:0;flex:1;">
+      <div class="htitle">{{ c.conn.name }}</div>
+      <div class="hmeta">{{ c.scope }}{% if c.conn.scope %} · {{ c.conn.scope }}{% endif %}</div>
+      <div class="hmeta" style="font-family:var(--mono);font-size:11px;">{{ c.conn.base_url }}</div>
+      {% if c.error %}
+      <div class="hmeta" style="color:var(--danger-ink);margin-top:8px;">⚠ {{ c.error }}</div>
+      {% elif not c.over %}
+      <div class="hmeta" style="color:var(--muted);margin-top:8px;">collecting…</div>
+      {% else %}
+      <div style="margin-top:10px;">
+        <span class="badge"><b>{{ c.over.streams }}</b> {{ c.over.unit }}{{ 's' if c.over.streams != 1 }}</span>
+        {% if c.over.docs %}<span class="badge"><b>{{ "{:,}".format(c.over.docs) }}</b> docs</span>{% endif %}
+        {% if c.over.recent_errors %}
+        <span class="badge" style="color:var(--danger-ink);"><b
+           style="color:var(--danger-ink);">{{ "{:,}".format(c.over.recent_errors) }}</b> errors / 1h</span>{% endif %}
+        {% if c.conn.skip_tls %}<span class="badge" style="color:var(--warn-ink);">⚠ TLS unverified</span>{% endif %}
+      </div>
+      {% endif %}
+    </div>
+    <div class="arrow">→</div>
+  </a>
+  {% endfor %}
+</div>
+
+{# ═══════════ level 3 — search ═══════════ #}
+{% else %}
+{% set home = '/logs?platform=' ~ platform ~ '&conn=' ~ sel.id %}
+<div class="page-head">
+  <div>
+    {{ back('/logs?platform=' ~ platform, providers[platform].label) }}
+    <h1 class="withico">{{ logo(platform, sel.name, 26) }} {{ sel.name }}</h1>
+    <p class="sub">
+      {% if block.overview %}{{ block.overview.streams }}
+        {{ block.overview.unit }}{{ 'es' if block.overview.unit == 'index' else 's' }}
+        {%- if block.overview.docs %} · {{ "{:,}".format(block.overview.docs) }} documents{% endif %}
+        {%- if block.overview.recent_errors %} · {{ "{:,}".format(block.overview.recent_errors) }}
+        error-level entries in the last hour{% endif %}
+      {% else %}{{ block.scope }}{% endif %} · read-only</p>
+  </div>
+  <a class="btn btn-ghost"
+     href="{{ home }}&q={{ q|urlencode }}&level={{ level }}&minutes={{ minutes }}&refresh=1">↻ Refresh</a>
+</div>
+
+{% if block.error %}<div class="flash err">⚠ {{ block.error }}</div>{% endif %}
+
+<form method="get" action="/logs" class="pipefilters">
+  <input type="hidden" name="platform" value="{{ platform }}">
+  <input type="hidden" name="conn" value="{{ sel.id }}">
+  <input type="search" name="q" value="{{ q }}" style="width:320px;"
+         placeholder="{{ 'Lucene query, e.g. status:500 AND service:api' if sel.type == 'elasticsearch' else 'text to match in the line' }}">
+  <select name="level">
+    <option value="">any level</option>
+    {% for l in level_opts %}
+    <option value="{{ l }}" {% if level == l %}selected{% endif %}>{{ l }} only</option>
+    {% endfor %}
+  </select>
+  <select name="minutes">
+    {% for w in windows %}
+    <option value="{{ w }}" {% if minutes == w %}selected{% endif %}>
+      last {% if w < 60 %}{{ w }} min{% elif w < 1440 %}{{ w // 60 }}h{% else %}{{ w // 1440 }}d{% endif %}</option>
+    {% endfor %}
+  </select>
+  <button type="submit" style="padding:8px 18px;">Search</button>
+</form>
+
+{% set r = block.result %}
+{% if r %}
+{% set base = home ~ '&minutes=' ~ minutes ~ ('&level=' ~ level if level else '') %}
+
+{# ── volume over the window: the shape of the data before any question ── #}
+<div class="card">
+  <div class="card-h">Volume
+    <span class="hint">{{ "{:,}".format(r.total) }} entries · {{ r.interval }} buckets
+      {%- if r.took_ms %} · {{ r.took_ms }} ms{% endif %}</span>
+    <span style="flex:1"></span>
+    <span class="hint"><span class="sv sv-info" style="padding:1px 7px;">all</span>
+      <span class="sv sv-critical" style="padding:1px 7px;">errors</span></span>
+  </div>
+  <div class="card-b">
+    {{ histogram(r.histogram) }}
+    {% set errpeak = r.histogram | map(attribute='errors') | max %}
+    {% if errpeak %}
+    {# 142 errors against 423,000 entries is invisible on a shared scale, and
+       the shape of the errors is the part worth seeing — so give them their own #}
+    <div class="charthead" style="margin-top:14px;">
+      <span class="t">errors only · own scale</span>
+      <span class="v" style="color:var(--danger-ink);">peak {{ errpeak }}/bucket</span>
+    </div>
+    {{ histogram(r.histogram, height=40, base_key='errors', overlay='_none',
+                 bar_class='hb-err') }}
+    {% endif %}
+  </div>
+</div>
+
+{# ── who is producing it, discovered from the data itself ── #}
+{% if r.facets %}
+<div class="card">
+  <div class="card-h">Breakdown
+    <span class="hint">fields chosen by how their values behave, not by name ·
+      click a value to filter</span></div>
+  <div class="card-b">
+    <div class="facets">
+      {% for f in r.facets %}
+      <div class="facet">
+        <div class="fname">{{ f.label }}</div>
+        {% for v in f.vals %}
+        {# The whole clause is URL-encoded. Writing &quot; here instead produced
+           a literal "&quot;" in the address, which the browser read as the start
+           of a new query parameter — the value vanished and the search became
+           "FIELD:" with nothing after it. Any quote inside the value is escaped
+           so it cannot terminate the Lucene phrase early. #}
+        {% set clause = f.field ~ ':"' ~ (v.v | replace('\\', '\\\\') | replace('"', '\\"')) ~ '"' %}
+        <a class="fval" title="{{ f.field }}: {{ v.v }} — {{ "{:,}".format(v.n) }} entries"
+           href="{{ base }}&q={{ ((q ~ ' ' if q else '') ~ clause) | urlencode }}">
+          <span class="bar" style="width:{{ v.pct }}%"></span>
+          <span class="t"><span class="v">{{ v.v }}</span>
+            <span class="n">{{ "{:,}".format(v.n) }}</span></span>
+        </a>
+        {% endfor %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{# ── the same line repeated is one problem, not many ── #}
+{% if r.signatures %}
+<div class="card">
+  <div class="card-h">Repeating messages
+    <span class="hint">identifiers and numbers removed, so repeats of one event
+      group — from the {{ r.entries|length }} entries below</span></div>
+  <div class="card-b">
+    {% for sg in r.signatures %}
+    <div class="sig">
+      <div class="pat">{{ sg.pattern }}</div>
+      <div class="meta"><b>{{ sg.n }}×</b> ({{ sg.pct }}% of {{ sg.of }}) ·
+        e.g. <span style="font-family:var(--mono);">{{ sg.sample[:120] }}</span></div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+{# ── the entries themselves ── #}
+<div class="card">
+  <div class="card-h" style="flex-wrap:wrap;">
+    {{ plogo(block.provider, 18) }}
+    <b style="font-size:14.5px;">{{ r.entries|length }} entr{{ 'y' if r.entries|length == 1 else 'ies' }}</b>
+    {% if level %}<span class="sv sv-{{ 'critical' if level == 'error' else ('medium' if level == 'warn' else 'info') }}">{{ level }}</span>{% endif %}
+    <span class="badge">{{ "{:,}".format(r.total) }} matched</span>
+    <span style="flex:1"></span>
+    {% if r.fields %}<span class="hint" style="font-family:var(--mono);font-size:11px;">
+      {% for k, v in r.fields.items() %}{{ k }}={{ v or '—' }} {% endfor %}</span>{% endif %}
+  </div>
+  {% if r.entries %}
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr>
+        <th style="width:76px;">Level</th><th style="width:110px;">When</th>
+        <th style="width:160px;">Service</th><th style="min-width:340px;">Message</th>
+        <th style="width:120px;">Source</th></tr></thead>
+      <tbody>
+      {% for e in r.entries %}
+      <tr>
+        <td>{% if e.level %}<span class="sv sv-{{ 'critical' if e.level == 'error' else ('medium' if e.level == 'warn' else 'info') }}">{{ e.level }}</span>
+            {% else %}<span class="na">—</span>{% endif %}</td>
+        <td title="{{ e.ts }}">{{ e.when or '—' }}</td>
+        <td style="font-family:var(--mono);font-size:11.5px;">{{ e.service or '—' }}</td>
+        <td class="jname" style="white-space:pre-wrap;word-break:break-word;
+            font-family:var(--mono);font-size:11.5px;">{{ e.message }}</td>
+        <td style="font-family:var(--mono);font-size:11px;color:var(--muted);">{{ e.source or '—' }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-b" style="color:var(--muted);font-size:13px;">
+    Nothing matched in this window. Widen the time range, or clear the level
+    filter — the level may be recorded under a field name the portal has not
+    detected, which you can set on the connection.</div>
+  {% endif %}
+</div>
+{% endif %}
+
+<p class="sub" style="margin-top:14px;">
+  Platforms are managed in <a href="/settings/logs">Settings → Log platforms</a>.
+  Read-only: the portal only ever searches.</p>
+{% endif %}
+{% endif %}
+{% if waiting %}
+<script nonce="{{ csp_nonce() }}">
+// the warmer is collecting behind this page; pick its result up exactly once
+(function () {
+  const key = 'portal-logs-swr-' + location.search;
+  if (sessionStorage.getItem(key)) return;
+  sessionStorage.setItem(key, '1');
+  setTimeout(function () {
+    location.replace(location.pathname + location.search
+      .replace(/[?&]refresh=1/, '').replace(/^&/, '?') || location.pathname);
+  }, 4000);
+})();
+</script>
+{% endif %}
+{% endblock %}

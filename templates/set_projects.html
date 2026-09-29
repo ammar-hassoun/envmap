@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% from "_set_head.html" import head %}
+{% block crumbs %}<a href="/settings">Settings</a> <span class="sep">/</span> <b>Projects</b>{% endblock %}
+{% block content %}
+{{ head("Projects", "A project groups regions, clusters and pipelines together.", msg, err) }}
+
+<div class="card">
+  <div class="card-h">Existing projects <span class="hint">{{ projects|length }}</span></div>
+  <div class="card-b">
+    {% for pid, p in projects.items() %}
+    <div class="rowcard" id="{{ pid }}">
+      <div class="kv" style="margin-bottom:8px;">
+        {{ project_icon(p.icon, 22) }}
+        <b style="font-size:15px;">{{ p.name }}</b>
+        <span class="badge">{{ p.regions|length }} region{{ 's' if p.regions|length != 1 }}</span>
+        <span class="badge">{{ p.clusters|length }} cluster{{ 's' if p.clusters|length != 1 }}</span>
+        <span style="flex:1"></span>
+        <a class="btn-ghost btn" style="padding:5px 13px;font-size:11.5px;" href="/p/{{ pid }}">Open →</a>
+      </div>
+      {% if p.tagline %}<div class="sec-note" style="margin-bottom:8px;">{{ p.tagline }}</div>{% endif %}
+      <details class="adv"><summary>Edit</summary>
+        <form method="post" action="/settings/project/{{ pid }}/update" style="margin-top:10px;">
+          <div class="field-row"><label>name</label>
+            <input type="text" name="name" value="{{ p.name }}"></div>
+          <div class="field-row"><label>icon (emoji)</label>
+            <input type="text" name="icon" value="{{ p.icon }}" maxlength="4"></div>
+          <div class="field-row"><label>tagline</label>
+            <input type="text" name="tagline" value="{{ p.tagline }}"></div>
+          {# Naming conventions differ per repository, so they are configured
+             here rather than assumed by the portal. All optional. #}
+          <div class="field-row"><label>hide services</label>
+            <input type="text" name="hidden_services"
+                   value="{{ (p.hidden_services or [])|join(', ') }}"
+                   placeholder="glob patterns, e.g. mock*, *-worker, temporal"></div>
+          <div class="field-row"><label>platform config keys</label>
+            <input type="text" name="hidden_key_prefixes"
+                   value="{{ (p.hidden_key_prefixes or [])|join(', ') }}"
+                   placeholder="key prefixes shown separately, e.g. SPRING_, LOG_"></div>
+          <div class="field-row"><label>strip from names</label>
+            <input type="text" name="strip_suffixes"
+                   value="{{ (p.strip_suffixes or [])|join(', ') }}"
+                   placeholder="display-only suffixes, e.g. -worker"></div>
+          <div class="field-row"><label>environment names</label>
+            <input type="text" name="env_aliases"
+                   value="{% for k, v in (p.env_aliases or {}).items() %}{{ k }}={{ v }}{{ ', ' if not loop.last }}{% endfor %}"
+                   placeholder="folder=display, e.g. landing-site=prod"></div>
+          {# Repository LAYOUT — so discovery is not hardcoded to one convention.
+             Defaults reproduce the classic `<path>/<env>/<svc>-values*.yaml`. #}
+          <div class="field-row"><label>values file pattern</label>
+            <input type="text" name="values_globs"
+                   value="{{ (p.values_globs or [])|join(', ') }}"
+                   placeholder="default (env = folder): which files are services — blank = *-values*.yaml · e.g. values.yaml, *.yaml"></div>
+          <div class="field-row"><label>layout pattern</label>
+            <input type="text" name="layout_pattern" value="{{ p.layout_pattern or '' }}"
+                   placeholder="any structure: a path (under values-path) with {env} and {svc} · leave blank for the default"></div>
+          <div class="field-row"><label></label>
+            <div class="sec-note">e.g. <code>{env}/{svc}-values.yaml</code> ·
+              <code>{svc}-{env}-values.yaml</code> (flat) ·
+              <code>{svc}/{env}/values.yaml</code> (service-first) ·
+              <code>*/{env}/{svc}-values.yaml</code> (nested). <code>*</code> = one segment, <code>**</code> = any depth.</div></div>
+          <div class="actions">
+            <button type="submit" style="padding:6px 16px;font-size:12.5px;">Save</button>
+            <button type="submit" class="btn-ghost" style="padding:6px 16px;font-size:12.5px;margin-left:6px;"
+                    formaction="/settings/project/{{ pid }}/detect-layout"
+                    title="scan a cloned region and fill the layout in automatically">Detect from repo</button></div>
+        </form>
+        <form method="post" action="/settings/project/{{ pid }}/delete" style="margin-top:14px;"
+              data-del="{{ p.name }}, its cloned repos and stored credentials">
+          <button class="btn-danger" style="padding:6px 16px;font-size:12.5px;">Delete project</button>
+        </form>
+      </details>
+    </div>
+    {% else %}
+    <div style="color:var(--muted);font-size:13px;padding:4px 0 12px;">No projects yet.</div>
+    {% endfor %}
+
+    <details class="adv" {% if not projects %}open{% endif %}>
+      <summary>＋ Add project</summary>
+      <form method="post" action="/settings/project/new" style="margin-top:12px;">
+        <div class="field-row"><label>project name</label>
+          <input type="text" name="name" required placeholder="e.g. Payments Platform"></div>
+        <div class="field-row"><label>icon (emoji)</label>
+          <input type="text" name="icon" maxlength="4" placeholder="💸"></div>
+        <div class="field-row"><label>tagline</label>
+          <input type="text" name="tagline" placeholder="Payment providers"></div>
+        <div class="actions"><button type="submit">Create project</button></div>
+      </form>
+    </details>
+  </div>
+</div>
+{% endblock %}

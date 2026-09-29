@@ -1,0 +1,455 @@
+{% extends "base.html" %}
+{% import "_bits.html" as bits %}
+{% from "_back.html" import back %}
+{% block crumbs %}
+{% if stage == 'hub' %}<b>Monitoring</b>
+{% else %}<a href="/monitoring">Monitoring</a> <span class="sep">/</span>
+  {% if stage == 'provider' %}<b>{{ providers[platform].label }}</b>
+  {% else %}<a href="/monitoring?platform={{ platform }}">{{ providers[platform].label }}</a>
+    <span class="sep">/</span> <b>{{ sel.name }}</b>{% endif %}
+{% endif %}
+{% endblock %}
+{% block content %}
+
+{% if not conns %}
+<div class="empty">
+  <div class="big">{{ glyph("chart-line", 40) }}</div>
+  <h2>No monitoring system connected</h2>
+  <p>Connect Prometheus, Alertmanager, Grafana or Zabbix. A stack is usually
+     deployed per cluster, so no single one can tell you what is firing
+     everywhere — that is what this page is for.</p>
+  <a class="btn" href="/settings/monitoring">Connect a system</a>
+</div>
+{% else %}
+
+{#- Scope travels in the query string, so every tile, bar and tab keeps the
+    system you drilled into. Built from a list rather than by concatenating
+    '?a=' with '&b=' — the old version produced '/monitoring&conn=…' whenever a
+    connection was chosen without a platform. -#}
+{% set _p = [] %}
+{% if platform %}{{ _p.append('platform=' ~ platform) or '' }}{% endif %}
+{% if sel %}{{ _p.append('conn=' ~ sel.id) or '' }}{% endif %}
+{#- `tabbase` carries the scope and nothing else, so `subtabs` picks its own
+    separator the way every other page lets it. `link` is the same thing with
+    the separator already decided, for the tiles, bars and donut below. -#}
+{% set tabbase = '/monitoring' ~ ('?' ~ _p|join('&') if _p else '') %}
+{% set link = tabbase ~ ('&' if '?' in tabbase else '?') %}
+{% set filterq = (('&sev=' ~ sev) if sev else '') ~ (('&q=' ~ q) if q else '') %}
+
+{#- WHY info IS NOT `sv-info` HERE. The severity scale is shared with the
+    Security page, where `info` is genuinely noise and is drawn muted -- grey on
+    grey. On this page an alert that is FIRING is something a system chose to
+    tell somebody about, and an install whose alerts are all `info` got a page
+    with no colour on it at all, which is what was reported. `sv-low` is the
+    same scale's blue and is already defined. -#}
+{% macro sevclass(s) %}{{ 'critical' if s == 'critical' else ('medium' if s == 'warning' else 'low') }}{% endmacro %}
+
+{% macro sevchips(t) %}
+{% for s in severities_mon %}{% if t.get(s) %}
+<span class="sv sv-{{ sevclass(s) }}">{{ t[s] }}<i>{{ s[:4] }}</i></span>
+{% endif %}{% endfor %}
+{% endmacro %}
+
+<div class="page-head">
+  <div>
+    {% if stage == 'provider' %}{{ back('/monitoring', 'All systems') }}
+    {% elif stage == 'detail' %}{{ back('/monitoring?platform=' ~ platform, providers[platform].label) }}{% endif %}
+    {% if stage == 'hub' %}<h1>Monitoring</h1>
+    {% elif stage == 'provider' %}<h1 class="withico">{{ logo(platform, providers[platform].label, 26) }} {{ providers[platform].label }}</h1>
+    {% else %}<h1 class="withico">{{ logo(platform, sel.name, 26) }} {{ sel.name }}</h1>{% endif %}
+    <p class="sub">{{ firing|length }} alert{{ 's' if firing|length != 1 }} firing ·
+      {{ dashboards|length }} dashboard{{ 's' if dashboards|length != 1 }} ·
+      {{ conns|length }} system{{ 's' if conns|length != 1 }} connected · read-only</p>
+  </div>
+  <div style="display:flex;gap:9px;">
+    {% if block and block.grafana %}
+    <a class="btn btn-ghost" href="{{ block.grafana }}" target="_blank" rel="noopener">
+      Open in Grafana ↗</a>{% endif %}
+    <a class="btn btn-ghost" href="/settings/monitoring">Manage</a>
+    <a class="btn btn-ghost" href="{{ link }}sec={{ sec }}&refresh=1">↻ Refresh</a>
+  </div>
+</div>
+
+{{ bits.subtabs(tabbase, 'sec', sec, sections, wide=true) }}
+
+{% if msg %}<div class="flash">✓ {{ msg }}</div>{% endif %}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+{% for b in broken %}
+<div class="flash err">⚠ {{ b.conn.name }} could not be read: {{ b.error }}</div>
+{% endfor %}
+
+
+{# ══════════════ OVERVIEW ══════════════ #}
+{% if sec == 'overview' %}
+
+<div class="ex-tiles">
+  <a class="ex-tile act {{ 'quiet' if not firing }}" href="{{ link }}sec=firing">
+    <span class="ico">{{ glyph("bell", 17) }}</span>
+    <span><span class="big">{{ firing|length }}</span>
+      <span class="cap">firing</span>
+      <span class="sub">across every system</span></span>
+  </a>
+  <a class="ex-tile bad {{ 'quiet' if not totals.critical }}"
+     href="{{ link }}sec=firing&sev=critical">
+    <span class="ico">{{ glyph("shield", 17) }}</span>
+    <span><span class="big">{{ totals.critical }}</span>
+      <span class="cap">critical</span>
+      <span class="sub">wake somebody</span></span>
+  </a>
+  <a class="ex-tile warn {{ 'quiet' if not totals.warning }}"
+     href="{{ link }}sec=firing&sev=warning">
+    <span class="ico">{{ glyph("triangle-alert", 17) }}</span>
+    <span><span class="big">{{ totals.warning }}</span>
+      <span class="cap">warning</span>
+      <span class="sub">look today</span></span>
+  </a>
+  <a class="ex-tile {{ 'quiet' if not totals.info }}"
+     href="{{ link }}sec=firing&sev=info">
+    <span class="ico">{{ glyph("info", 17) }}</span>
+    <span><span class="big">{{ totals.info }}</span>
+      <span class="cap">info</span>
+      <span class="sub">for the record</span></span>
+  </a>
+  <a class="ex-tile {{ 'quiet' if not dashboards }}" href="{{ link }}sec=dashboards">
+    <span class="ico">{{ glyph("chart-line", 17) }}</span>
+    <span><span class="big">{{ dashboards|length }}</span>
+      <span class="cap">dashboard{{ 's' if dashboards|length != 1 }}</span>
+      <span class="sub">in {{ folders|length }} folder{{ 's' if folders|length != 1 }}</span></span>
+  </a>
+  <a class="ex-tile {{ 'bad' if broken else 'ok' }}" href="{{ link }}sec=systems">
+    <span class="ico">{{ glyph("boxes", 17) }}</span>
+    <span><span class="big">{{ conns|length - broken|length }}/{{ conns|length }}</span>
+      <span class="cap">answering</span>
+      <span class="sub">{{ present|length }} platform{{ 's' if present|length != 1 }}</span></span>
+  </a>
+</div>
+
+<div class="apanels">
+  {{ bits.donut_panel('How bad is it',
+       [{'label':'critical','value':totals.critical,'color':'var(--danger)',
+         'href':link ~ 'sec=firing&sev=critical'},
+        {'label':'warning','value':totals.warning,'color':'var(--warn)',
+         'href':link ~ 'sec=firing&sev=warning'},
+        {'label':'info','value':totals.info,'color':'var(--accent)',
+         'href':link ~ 'sec=firing&sev=info'}],
+       centre=(firing|length)|string, sub='firing now', icon='bell',
+       hint='silenced and inhibited are excluded') }}
+
+  {{ bits.bars_panel('Where the alerts come from',
+       by_source[:8], hint='alert rule folder', icon='folder',
+       empty='Nothing firing, so nothing to attribute.') }}
+
+  {{ bits.bars_panel('Which system reported them',
+       by_system[:8], hint='most first', icon='boxes',
+       empty='Nothing firing on any connected system.') }}
+
+  {{ bits.kv_panel('What is connected', [
+       {'label':'systems', 'value':conns|length,
+        'href':link ~ 'sec=systems'},
+       {'label':'platforms', 'value':present|map('capitalize')|join(', ') or '—'},
+       {'label':'dashboards', 'value':dashboards|length,
+        'href':link ~ 'sec=dashboards'},
+       {'label':'dashboard folders', 'value':folders|length},
+       {'label':'suppressed alerts', 'value':suppressed},
+       {'label':'unreachable', 'value':broken|length},
+     ], icon='settings', hint='read-only') }}
+</div>
+
+{% if firing %}
+<div class="card">
+  <div class="card-h">{{ glyph("bell", 15) }} Needs attention first
+    <span class="hint">worst severity, then longest firing</span>
+    <span style="flex:1"></span>
+    <a class="abtn" href="{{ link }}sec=firing">all {{ firing|length }} →</a>
+  </div>
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr>
+        <th style="width:92px;">Severity</th><th style="min-width:320px;">Alert</th>
+        <th style="width:170px;">Source</th><th style="width:88px;">For</th>
+        <th style="width:52px;" class="actcol no-sort"></th></tr></thead>
+      <tbody>
+      {% for a in firing[:5] %}
+      <tr>
+        <td><span class="sv sv-{{ sevclass(a.severity) }}">{{ a.severity }}</span></td>
+        <td class="jname"><b>{{ a.name }}</b>
+          {% if a.summary %}<div class="sec-note" style="margin:2px 0 0;white-space:normal;">{{ a.summary[:160] }}</div>{% endif %}</td>
+        <td style="font-family:var(--mono);font-size:11.5px;">{{ a.source or '—' }}</td>
+        <td data-sort="{{ a.at }}">{{ a.since or '—' }}</td>
+        <td class="mid actcol">{% if a.url %}<a class="jopen" href="{{ a.url }}"
+           target="_blank" rel="noopener" title="Open in {{ a.platform }}">↗</a>{% endif %}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% else %}
+<div class="card"><div class="card-b" style="color:var(--muted);font-size:13px;">
+  Nothing is firing across {{ conns|length }} connected system{{ 's' if conns|length != 1 }}.
+  Silenced and inhibited alerts are deliberately excluded — somebody already
+  decided those are not actionable.</div></div>
+{% endif %}
+{% endif %}
+
+
+{# ══════════════ FIRING ══════════════ #}
+{% if sec == 'firing' %}
+<form method="get" action="/monitoring" class="pipefilters">
+  {% if platform %}<input type="hidden" name="platform" value="{{ platform }}">{% endif %}
+  {% if sel %}<input type="hidden" name="conn" value="{{ sel.id }}">{% endif %}
+  <input type="hidden" name="sec" value="firing">
+  <select name="sev" class="no-dd" style="width:150px;">
+    <option value="">every severity</option>
+    {% for s in severities_mon %}
+    <option value="{{ s }}" {{ 'selected' if sev == s }}>{{ s }} ({{ totals[s] }})</option>
+    {% endfor %}
+  </select>
+  <input type="search" name="q" value="{{ q }}" style="width:300px;"
+         placeholder="filter by alert name, summary or source…">
+  <button type="submit" class="btn-ghost" style="padding:8px 16px;">Apply</button>
+  {% if sev or q %}<a class="btn btn-ghost" style="padding:8px 16px;"
+     href="{{ link }}sec=firing">Clear</a>{% endif %}
+</form>
+
+<div class="card">
+  <div class="card-h" style="flex-wrap:wrap;">
+    <b style="font-size:14.5px;">Firing now</b>
+    {% if sev %}<span class="sv sv-{{ sevclass(sev) }}">{{ sev }}</span>{% endif %}
+    <span style="flex:1"></span>
+    <span class="hint">{{ firing|length }} shown{% if suppressed %} · {{ suppressed }} suppressed{% endif %}</span>
+  </div>
+  {% if firing %}
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr>
+        <th style="width:92px;">Severity</th><th style="min-width:340px;">Alert</th>
+        <th style="width:160px;">Source</th><th style="width:170px;">Where</th>
+        <th style="width:88px;">For</th>
+        <th style="width:52px;" class="actcol no-sort"></th></tr></thead>
+      <tbody>
+      {% for a in firing %}
+      <tr>
+        <td><span class="sv sv-{{ sevclass(a.severity) }}">{{ a.severity }}</span></td>
+        <td class="jname">
+          <b>{{ a.name }}</b>
+          {% if a.state and a.state not in ('firing','active') %}
+          <span class="jbranch">{{ a.state }}</span>{% endif %}
+          {% if a.summary %}
+          <div class="sec-note" style="margin:2px 0 0;white-space:normal;">{{ a.summary[:240] }}</div>{% endif %}
+          {#- The labels are what a responder actually pivots on -- which
+              namespace, which instance, which job. They were collected all
+              along and never rendered. -#}
+          {% if a.labels %}
+          <div style="margin-top:5px;display:flex;flex-wrap:wrap;gap:4px;">
+            {%- set _lbl = a.labels | dictsort -%}
+            {% for k, v in _lbl[:6] %}
+            {% if k not in ('alertname','severity','grafana_folder') and v %}
+            <span class="badge" style="font-family:var(--mono);font-size:10px;">{{ k }}={{ v|string|truncate(28, true) }}</span>
+            {% endif %}{% endfor %}
+          </div>
+          {% endif %}
+        </td>
+        <td style="font-family:var(--mono);font-size:11.5px;">{{ a.source or '—' }}</td>
+        <td>{{ a.cluster or a.conn }}
+          {% if a.cluster %}<div class="sec-note" style="margin:0;">{{ a.conn }}</div>{% endif %}
+          <div class="sec-note" style="margin:0;">{{ a.scope }}</div></td>
+        <td data-sort="{{ a.at }}">{{ a.since or '—' }}</td>
+        <td class="mid actcol">{% if a.url %}<a class="jopen" href="{{ a.url }}"
+           target="_blank" rel="noopener" title="Open in {{ a.platform }}">↗</a>{% endif %}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-b" style="color:var(--muted);font-size:13px;">
+    {% if sev or q %}No alerts match the current filter.
+    {% else %}Nothing is firing across the connected systems.{% endif %}</div>
+  {% endif %}
+</div>
+{% endif %}
+
+
+{# ══════════════ DASHBOARDS ══════════════ #}
+{% if sec == 'dashboards' %}
+{#- ROTATION. A NOC wall screen cycles through dashboards by itself; a playlist
+    here is a filter over this list -- all of them, a folder or a tag -- so it
+    needs no saving and picks up a dashboard added tomorrow. The counts are of
+    what the rotation will actually show: dashboards the portal can draw. -#}
+{% set gd = dashboards | selectattr('platform', 'equalto', 'grafana') | selectattr('uid') | list %}
+{% if gd %}
+{#- The house dropdown (`.dd`) is width:100% so it fills a settings row; on
+    this one-line starter that stacked every control on its own line. -#}
+<style>
+  .gstart { align-items:center; }
+  .gstart .dd { width:auto; flex:0 0 auto; }
+  .gstart .dd:first-of-type { min-width:190px; max-width:320px; }
+  .gstart .dd + .dd { min-width:150px; }
+  .gstart label + .dd { min-width:80px; }
+  .gstart .dd:nth-of-type(4) { min-width:130px; }
+</style>
+<form method="get" action="/monitoring/play" class="pipefilters gstart">
+  <b style="font-size:13px;">▶ Rotate through dashboards</b>
+  <select name="plist" aria-label="Which dashboards" style="min-width:0;max-width:340px;">
+    <option value="all">All dashboards ({{ gd|length }})</option>
+    {% for f in folders %}{% set n = gd | selectattr('folder', 'equalto', f.label) | list | length %}
+    {% if n %}<option value="folder:{{ f.label }}">Folder · {{ f.label }} ({{ n }})</option>{% endif %}{% endfor %}
+    {% for t in dash_tags %}
+    <option value="tag:{{ t.label }}">Tag · {{ t.label }} ({{ t.value }})</option>{% endfor %}
+  </select>
+  <select name="every" aria-label="Time on each dashboard">
+    {% for sec_, lbl in [(30, '30 seconds on each'), (60, '1 minute on each'), (120, '2 minutes on each'), (300, '5 minutes on each'), (600, '10 minutes on each')] %}
+    <option value="{{ sec_ }}" {{ 'selected' if sec_ == 60 }}>{{ lbl }}</option>{% endfor %}
+  </select>
+  {#- A long dashboard's lower half is never seen on a wall screen unless it
+      scrolls. An unchecked box sends nothing, and scrolling is the default, so
+      the hidden 0 goes first and a ticked box's 1 overrides it. -#}
+  <label class="gstart-tv" style="display:inline-flex;align-items:center;gap:6px;font-size:13px;white-space:nowrap;"
+         title="Scroll each dashboard to the bottom, wait there, then move on. A dashboard that fits the screen does not scroll.">
+    <input type="hidden" name="scroll" value="0">
+    <input type="checkbox" name="scroll" value="1" checked style="width:auto;margin:0;"> scroll to the end, then wait</label>
+  <select name="hold" aria-label="Seconds to wait at the end">
+    {% for h in [3, 5, 10, 15, 30] %}<option value="{{ h }}" {{ 'selected' if h == 5 }}>{{ h }} s</option>{% endfor %}
+  </select>
+  <select name="speed" aria-label="Scroll speed"
+          title="How fast each dashboard scrolls. Auto paces it to fit the time on each dashboard. It can also be changed live on the screen with − and +.">
+    {% for val, lbl in play_speeds %}<option value="{{ val }}">speed: {{ lbl }}{{ '' if val == 'auto' else ' · ' ~ val ~ ' px/s' }}</option>{% endfor %}
+  </select>
+  <label class="gstart-tv" style="display:inline-flex;align-items:center;gap:6px;font-size:13px;white-space:nowrap;"
+         title="Full-width, no sidebar or top bar — for a wall screen. Esc leaves it.">
+    {#- `.pipefilters input` is 230px wide for the search boxes it was made for -#}
+    <input type="checkbox" name="kiosk" value="1" style="width:auto;margin:0;"> TV mode</label>
+  <button type="submit" class="btn" style="padding:7px 16px;">▶ Start</button>
+</form>
+{% endif %}
+{% if dashboards %}
+<div class="apanels" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr);">
+  {{ bits.bars_panel('Dashboards by folder', folders[:10],
+       hint='most first', icon='folder', empty='none') }}
+  {{ bits.kv_panel('Tags in use',
+       dash_tags[:12] or [{'label': 'no tags', 'value': '—'}],
+       icon='tag', hint='as the system reports them') }}
+</div>
+
+<div class="card">
+  <div class="card-h" style="flex-wrap:wrap;">
+    <b style="font-size:14.5px;">Dashboards</b>
+    <span class="hint">opened here, with their panels and live values</span>
+    <span style="flex:1"></span>
+    <input type="search" id="dashfind" placeholder="find a dashboard…"
+           style="width:260px;padding:6px 11px;font-size:12px;">
+    <span class="hint" id="dashcount"></span>
+  </div>
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins" id="dashtable">
+      <thead><tr>
+        <th style="width:210px;">Folder</th><th style="min-width:300px;">Dashboard</th>
+        <th style="width:220px;">Tags</th><th style="width:150px;">System</th>
+        <th style="width:52px;" class="actcol no-sort"></th></tr></thead>
+      <tbody>
+      {% for d in dashboards %}
+      <tr data-find="{{ (d.title ~ ' ' ~ d.folder ~ ' ' ~ (d.tags|join(' ')) ~ ' ' ~ d.conn)|lower }}">
+        <td>{{ d.folder }}</td>
+        <td class="jname">
+          {#- Opened HERE when the portal can read it, which is Grafana today.
+              The external link stays beside it rather than replacing it: what
+              Grafana renders is still the reference, and some people simply
+              want the real thing. -#}
+          {% if d.uid and d.platform == 'grafana' %}
+          <a href="/monitoring/dashboard?conn={{ d.cid }}&uid={{ d.uid|urlencode }}">{{ d.title }}</a>
+          {% else %}
+          <a href="{{ d.url }}" target="_blank" rel="noopener">{{ d.title }}</a>
+          {% endif %}</td>
+        <td>{% for t in d.tags[:4] %}<span class="badge">{{ t }}</span>{% endfor %}
+          {% if d.tags|length > 4 %}<span class="hint">+{{ d.tags|length - 4 }}</span>{% endif %}</td>
+        <td class="sec-note" style="margin:0;">{{ d.conn }}</td>
+        <td class="mid actcol"><a class="jopen" href="{{ d.url }}"
+           target="_blank" rel="noopener" title="Open in Grafana">↗</a></td>
+      </tr>
+      {% endfor %}
+      <tr id="dashnone" style="display:none;"><td colspan="5" style="color:var(--muted);">
+        No dashboard matches that.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+{% else %}
+<div class="card"><div class="card-b" style="color:var(--muted);font-size:13px;">
+  No dashboards were reported. Prometheus and Alertmanager have none to list;
+  Grafana and Zabbix do, so if one is connected here its token may not carry
+  read access to them.</div></div>
+{% endif %}
+{% endif %}
+
+
+{# ══════════════ SYSTEMS ══════════════ #}
+{% if sec == 'systems' %}
+<div class="hub-grid" style="grid-template-columns:repeat(auto-fit,minmax(340px,1fr));">
+  {% for c in conns %}
+  {% set over = (block.over if sel and sel.id == c.id else none) %}
+  <a class="hub-card" href="/monitoring?platform={{ c.type }}&conn={{ c.id }}&sec=overview"
+     style="align-items:flex-start;">
+    <div class="flag">{{ plogo(providers[c.type], 26) }}</div>
+    <div style="min-width:0;flex:1;">
+      <div class="htitle">{{ c.name }}</div>
+      <div class="hmeta">{{ providers[c.type].label }}{% if c.cluster %} · cluster {{ c.cluster }}{% endif %}</div>
+      <div class="hmeta" style="font-family:var(--mono);font-size:11px;">{{ c.base_url }}</div>
+      {% set myerr = (broken | selectattr('conn.id', 'equalto', c.id) | list | first) %}
+      {% if myerr %}
+      <div class="hmeta" style="color:var(--danger-ink);margin-top:8px;">⚠ {{ myerr.error }}</div>
+      {% else %}
+      <div style="margin-top:10px;">
+        {% set mine = firing | selectattr('cid', 'equalto', c.id) | list %}
+        {% if mine %}<span class="sv sv-{{ sevclass(mine[0].severity) }}">{{ mine|length }} firing</span>
+        {% else %}<span class="sv sv-clean">nothing firing</span>{% endif %}
+        {% set mydash = dashboards | selectattr('cid', 'equalto', c.id) | list %}
+        {% if mydash %}<span class="badge"><b>{{ mydash|length }}</b> dashboard{{ 's' if mydash|length != 1 }}</span>{% endif %}
+        {% if c.skip_tls %}<span class="badge" style="color:var(--warn-ink);">⚠ TLS unverified</span>{% endif %}
+      </div>
+      {% endif %}
+    </div>
+    <div class="arrow">→</div>
+  </a>
+  {% endfor %}
+</div>
+{% endif %}
+
+
+<p class="sub" style="margin-top:14px;">
+  Systems are managed in <a href="/settings/monitoring">Settings → Monitoring</a>.
+  Read-only: alerts are never acknowledged or silenced from here.</p>
+
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  // Client-side, because finding a dashboard is typing three letters and a
+  // round trip per letter is the wrong shape. The haystack is built server-side
+  // into data-find from the row AS RENDERED, so searching for what you can see
+  // works -- including the folder and the tags.
+  var box = document.getElementById('dashfind');
+  if (!box) return;
+  var rows = [].slice.call(document.querySelectorAll('#dashtable tbody tr[data-find]'));
+  var none = document.getElementById('dashnone');
+  var count = document.getElementById('dashcount');
+  function apply() {
+    var needle = box.value.trim().toLowerCase(), shown = 0;
+    rows.forEach(function (r) {
+      var hit = !needle || r.getAttribute('data-find').indexOf(needle) !== -1;
+      // `hidden` on a <tr> loses to the table's own display rule in some
+      // engines, so display is set too.
+      r.hidden = !hit;
+      r.style.display = hit ? '' : 'none';
+      if (hit) shown++;
+    });
+    if (none) { none.style.display = shown ? 'none' : ''; }
+    if (count) { count.textContent = needle ? shown + ' of ' + rows.length : ''; }
+  }
+  box.addEventListener('input', apply);
+  box.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { box.value = ''; apply(); }
+  });
+})();
+</script>
+
+{% endif %}
+{% endblock %}

@@ -1,0 +1,24 @@
+{# Error volume per log store, honouring the same cooldown as the Logs page. #}
+{% set l = d.logs %}
+<div class="card" style="margin:0;">
+  <div class="card-h">📚 <a href="/logs" style="color:var(--text);">Log stores</a>
+    <span class="hint">{{ l.conns }} connected</span></div>
+  <div class="card-b">
+    {% if not l.conns %}
+    <div class="sec-note">No log store connected — add Elasticsearch,
+      OpenSearch or Loki in <a href="/settings/logs">Settings → Logs</a>.</div>
+    {% endif %}
+    {% for s in l.stores %}
+    <div class="mrow" style="margin-bottom:6px;">
+      <span style="min-width:0;">{{ s.name }}</span>
+      <span>
+        {% if s.error %}<span class="sv sv-critical" title="{{ s.error }}">unreachable</span>
+        {% elif s.errors %}<span class="sv sv-high">{{ "{:,}".format(s.errors) }}<i>errors / 1h</i></span>
+        {% elif s.errors == 0 %}<span class="sv sv-clean">no errors in the last hour</span>
+        {% else %}<span class="sv sv-info">counted nothing</span>{% endif %}
+        {% if s.streams %}<span class="badge">{{ s.streams }} {{ s.unit }}s</span>{% endif %}
+      </span>
+    </div>
+    {% endfor %}
+  </div>
+</div>
