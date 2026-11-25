@@ -1,0 +1,23 @@
+{# Clone state per region: all local git reads, so this panel is cheap. #}
+{% set rs = d.repos %}
+<div class="card" style="margin:0;">
+  <div class="card-h">⑂ <a href="/repos" style="color:var(--text);">Repositories</a>
+    <span class="hint">{{ rs|length }} region{{ 's' if rs|length != 1 }}</span></div>
+  <div class="card-b">
+    {% if not rs %}
+    <div class="sec-note">No repository connected yet —
+      <a href="/repos">connect one</a>.</div>
+    {% endif %}
+    {% for r in rs %}
+    <div class="mrow" style="margin-bottom:6px;">
+      <span style="min-width:0;">{{ project_icon(r.icon, 14) }} {{ r.project }} · <b>{{ r.region }}</b>
+        <span class="hint">{{ r.branch }}</span></span>
+      <span>
+        {% if r.dirty %}<a class="sv sv-medium" href="{{ r.url }}">{{ r.dirty }}<i>uncommitted</i></a>
+        {% else %}<span class="sv sv-clean">clean</span>{% endif %}
+        {% if r.stale %}<span class="sv sv-info">behind</span>{% endif %}
+      </span>
+    </div>
+    {% endfor %}
+  </div>
+</div>

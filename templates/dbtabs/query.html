@@ -1,0 +1,205 @@
+<div class="card">
+  <div class="card-h">Query
+    <span class="hint">{{ database or 'no database selected' }} · as {{ held.user }}
+      · {{ 'write mode' if held.write else 'read-only' }}</span></div>
+  <div class="card-b">
+    <form method="post" action="/db/{{ server.id }}/query" id="qform">
+      <input type="hidden" name="database" value="{{ database }}">
+      {# A textarea for the typing and the form value; a <pre> behind it holds
+         the colours. One element cannot do both without becoming a rich-text
+         editor, which is a much larger thing to get right. #}
+      <div class="sqlwrap">
+        <pre class="sqlhi" id="sqlhi" aria-hidden="true"></pre>
+        <textarea name="sql" id="sql" rows="8" spellcheck="false"
+                  autocomplete="off" autocapitalize="off" autocorrect="off"
+                  placeholder="SELECT …&#10;&#10;Ctrl+Space for suggestions · ⌘/Ctrl+Enter to run"
+                  >{{ sql }}</textarea>
+        <div class="acbox" id="acbox" hidden></div>
+      </div>
+      <div class="kv" style="margin-top:10px;flex-wrap:wrap;gap:8px;">
+        <button type="submit">Run</button>
+        <button type="button" class="btn-ghost" id="explain"
+                style="padding:6px 14px;font-size:12px;">Explain</button>
+        <button type="button" class="btn-ghost" id="fmt"
+                style="padding:6px 14px;font-size:12px;">Tidy</button>
+        <span class="sec-note" style="margin:0;">⌘/Ctrl+Enter runs ·
+          Ctrl+Space suggests · one statement · first {{ max_rows }} rows ·
+          {{ timeout }}s limit</span>
+      </div>
+    </form>
+
+    {# its own form: the mode switch is not part of running a statement, and a
+       form inside a form is not valid HTML #}
+    <div class="kv" style="margin-top:12px;border-top:1px solid var(--line);
+                           padding-top:12px;">
+      {% if held.write %}
+      <span class="sec-note" style="margin:0;color:var(--danger-ink);">
+        This console can change data.</span>
+      <span style="flex:1"></span>
+      <form method="post" action="/db/{{ server.id }}/write">
+        <input type="hidden" name="on" value="0">
+        <button class="btn-ghost"
+                style="padding:6px 14px;font-size:12px;">Back to read-only</button>
+      </form>
+      {% else %}
+      <span class="sec-note" style="margin:0;">The server is refusing writes on
+        this connection.</span>
+      <span style="flex:1"></span>
+      <button type="button" class="btn-ghost" style="padding:6px 14px;font-size:12px;"
+              onclick="document.getElementById('wmode').showModal()">
+        Enable write mode</button>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+{% if section_error %}
+<div class="flash err">⚠ {{ section_error }}</div>
+{% endif %}
+
+{% if result and result.plan %}
+<div class="card">
+  <div class="card-h">How the database would run this
+    <span class="hint">{{ result.ms }} ms to plan{% if not held.write %} and
+      measure{% endif %}</span></div>
+  <div class="card-b">
+    <p class="sub" style="margin:0 0 12px;">
+      {%- if held.write -%}
+      The estimated plan. Write mode is on, so the statement was not executed to
+      time it — turn write mode off and Explain a SELECT to get real timings
+      next to the estimates.
+      {%- else -%}
+      The statement was executed inside the read-only transaction and measured,
+      so each step shows what the planner <b>expected</b> next to what actually
+      happened. Where those two disagree by a lot is usually where the time
+      went — a row estimate off by orders of magnitude means the planner chose
+      its join and index strategy on bad information.
+      {%- endif -%}
+    </p>
+    <pre class="ddl">{{ result.plan }}</pre>
+  </div>
+</div>
+{% endif %}
+
+{% if result and not result.plan %}
+<div class="card">
+  <div class="card-h">
+    {% if result.columns %}{{ result.rows|length }} row{{ '' if result.rows|length == 1 else 's' }}
+    {% else %}{{ result.affected }} row{{ '' if result.affected == 1 else 's' }} affected{% endif %}
+    <span class="hint">{{ result.ms }} ms{% if result.wrote %} · committed{% endif %}</span>
+    <span style="flex:1"></span>
+    {% if result.columns %}
+    <form method="post" action="/db/{{ server.id }}/export" style="display:inline;">
+      <input type="hidden" name="database" value="{{ database }}">
+      <input type="hidden" name="sql" value="{{ sql }}">
+      <button class="btn-ghost" style="padding:4px 12px;font-size:11px;">
+        Download CSV</button>
+    </form>
+    {% endif %}
+  </div>
+  <div class="card-b">
+    {% if result.truncated %}
+    <div class="dnote" style="margin-bottom:12px;">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="2" stroke-linecap="round"
+           aria-hidden="true"><circle cx="12" cy="12" r="9"/>
+        <path d="M12 11v5M12 7.6v.1"/></svg>
+      <span>More rows matched than are shown. The first {{ max_rows }} are here —
+        add a LIMIT or narrow the WHERE to see the ones you mean. Download CSV
+        runs it again and takes up to 100,000.</span>
+    </div>
+    {% endif %}
+    {% if result.columns %}
+    <div class="rowsbox">
+      <table class="jenkins grid-tbl">
+        <thead><tr><th class="rn"></th>
+          {% for c in result.columns %}<th>{{ c }}</th>{% endfor %}</tr></thead>
+        <tbody>
+          {% for row in result.rows %}
+          <tr><td class="rn">{{ loop.index }}</td>
+            {% for cell in row %}
+            <td class="cell" title="{{ cell }}">
+              {%- if cell is none -%}
+              <span class="nullv">null</span>
+              {%- else -%}{{ cell }}{%- endif -%}
+            </td>
+            {% endfor %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="sub" style="margin:0;">The statement returned no rows.</p>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+{% if history %}
+<div class="card">
+  <div class="card-h">Recent statements
+    <span class="hint">this console only — gone when you sign out</span></div>
+  <div class="card-b">
+    {% for h in history[:12] %}
+    <div class="kv" style="border-top:1px solid var(--line);padding-top:8px;
+                           margin-top:8px;gap:10px;">
+      <span class="badge" style="{% if h.error %}color:var(--danger-ink);
+        {% else %}color:var(--muted);{% endif %}">
+        {%- if h.error %}failed{% else %}{{ h.ms }} ms{% endif -%}</span>
+      <code class="histsql sqlfill" data-sql="{{ h.sql }}"
+            title="click to put it back in the editor">{{ h.sql }}</code>
+      {% if h.error %}<span class="sec-note"
+        style="margin:0;color:var(--danger-ink);flex:1;min-width:0;
+               overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+        >{{ h.error }}</span>{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<dialog id="wmode" class="pdialog">
+  <form method="post" action="/db/{{ server.id }}/write">
+    <input type="hidden" name="on" value="1">
+    <div class="dhead">
+      <span>
+        <span class="dtitle">Allow statements that change data</span>
+        <span class="dwhere">{{ server.name }} · {{ where }}</span>
+      </span>
+      <span style="flex:1"></span>
+      <button type="button" class="dx" onclick="document.getElementById('wmode').close()"
+              aria-label="Close">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2.2" stroke-linecap="round"
+             aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div class="dbody">
+      <div class="dnote" style="margin-bottom:16px;">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2" stroke-linecap="round"
+             aria-hidden="true"><circle cx="12" cy="12" r="9"/>
+          <path d="M12 11v5M12 7.6v.1"/></svg>
+        <span>Until now the server has been refusing every write, whatever was
+          typed. After this it will accept them, and a successful statement is
+          committed. This switch and every statement after it are written to the
+          audit log with your name.</span>
+      </div>
+      <p class="sub" style="margin:0 0 14px;">It applies to this console only,
+        and ends when you sign out. Your database account still decides what is
+        actually permitted.</p>
+      <div class="dfield">
+        <label for="wword">type <b>write</b> to confirm</label>
+        <input id="wword" type="text" name="confirm" autocomplete="off"
+               required placeholder="write">
+      </div>
+    </div>
+    <div class="dfoot">
+      <button type="button" class="btn-ghost"
+              onclick="document.getElementById('wmode').close()">Cancel</button>
+      <span class="spacer"></span>
+      <button type="submit" class="btn-danger">Enable write mode</button>
+    </div>
+  </form>
+</dialog>

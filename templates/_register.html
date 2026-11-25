@@ -1,0 +1,112 @@
+{# The register, split into a table per billing cycle.
+
+   Each tab is its own table with its own total, because the totals are not
+   the same kind of number: a monthly subscription has a run rate, a thing
+   bought once has an amount that was charged and will not be charged again.
+   Adding those together is the easiest way to produce a confident wrong
+   figure, so the tabs keep them apart and the Everything tab shows both.
+
+   Rows edit in place. Every input carries form="rf-<id>", and the forms
+   themselves sit outside the table — a <form> cannot wrap a <tr>, but the
+   HTML5 form attribute lets an input belong to one anywhere on the page. #}
+
+{% macro money(cur, amount, dp=2) -%}
+{{ cur }} {{ ('{:,.%df}' % dp).format(amount) }}
+{%- endmacro %}
+
+{# ── the total strip above each table ──────────────────────────────────── #}
+{% macro grouptotal(g) %}
+<div class="gtot">
+  {% if g.n_recurring %}
+  <div class="gt">
+    <div class="gtv">{{ money(g.currency, g.monthly, 0) }}</div>
+    <div class="gtl">a month{% if g.key == 'all' %} · committed{% endif %}</div>
+  </div>
+  <div class="gt">
+    <div class="gtv">{{ money(g.currency, g.yearly, 0) }}</div>
+    <div class="gtl">a year</div>
+  </div>
+  {% endif %}
+  {% if g.n_charged %}
+  <div class="gt">
+    <div class="gtv">{{ money(g.currency, g.charged) }}</div>
+    <div class="gtl">{{ g.n_charged }} bought once · charged in total</div>
+  </div>
+  {% endif %}
+  {% if not g.n_recurring and not g.n_charged %}
+  <div class="gt"><div class="gtv">—</div>
+    <div class="gtl">nothing counted in this table yet</div></div>
+  {% endif %}
+  {% if g.unconverted %}
+  <div class="gt gtwarn">
+    <div class="gtv">{{ g.unconverted|join(', ') }}</div>
+    <div class="gtl">no rate set, so not in the totals —
+      <a href="#rates">add one</a></div>
+  </div>
+  {% endif %}
+</div>
+{% endmacro %}
+
+{# ── one row, editable in place ────────────────────────────────────────── #}
+{% macro row(r, t, g) %}
+{#- A card, not a table row. This was a grid of inputs, then a grid of text,
+    and both were a table — which is the shape that squeezed the name people
+    read down to nothing while "Mic" sat in a comfortable box. The calendar's
+    month boxes are the same component: one thing per box, its total large,
+    the rest underneath. -#}
+<a class="xcard" href="#" title="Edit {{ r.name }}"
+   data-call="editSubRow" data-arg-self data-noop data-row='{{ r|tojson }}'>
+  <div class="xc-top">
+    <b class="xc-name">{{ r.name }}</b>
+    {% if r.source %}<span class="xc-tag" title="Read from the provider's own
+      bill — the cost here is not typed">auto</span>{% endif %}
+  </div>
+  <div class="xc-cost">{{ money(r.currency, r.cost) }}
+    <span class="xc-cyc">{{ r.cycle_label|lower }}</span></div>
+  <div class="xc-meta">
+    {%- if r.vendor %}<span>{{ r.vendor }}</span>{% endif -%}
+    <span>{{ r.category_label }}</span>
+    {%- if r.seats %}<span>{{ r.seats }} seat{{ 's' if r.seats != 1 }}</span>{% endif -%}
+    {%- if r.owner %}<span>{{ r.owner }}</span>{% endif -%}
+  </div>
+  <div class="xc-foot">
+    <span class="xc-when">{{ r.renewal.label }}{% if r.auto_renew %} · auto{% endif %}</span>
+    {% if r.cycle not in ('one-off', 'metered') %}
+    <span class="xc-year">{% if r.converted %}{{ money(t.base, r.base_yearly, 0) }}
+      {%- else %}<span title="no rate set for {{ r.currency }}"
+        style="color:var(--warn-ink);">{{ money(r.currency, r.yearly, 0) }}</span>
+      {%- endif %} a year</span>
+    {% endif %}
+    <button type="button" class="iconb danger" aria-label="Delete {{ r.name }}"
+            data-call="dropSubRow" data-arg-self data-noop data-stop
+             data-sub="{{ r.id }}" data-name='{{ r.name|tojson }}'>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="1.9" stroke-linecap="round"
+           stroke-linejoin="round" aria-hidden="true">
+        <path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13"/></svg>
+    </button>
+  </div>
+</a>
+{% endmacro %}
+
+{# ── the add-a-line row that lives at the foot of every table ──────────── #}
+
+
+{# ── a whole tab ───────────────────────────────────────────────────────── #}
+{% macro panel(g, t, cycles, categories, tab, filtered) %}
+<section class="regpanel" id="pan-{{ g.key }}" role="tabpanel"
+         aria-labelledby="tabb-{{ g.key }}" {{ 'hidden' if g.key != tab }}>
+  {{ grouptotal(g) }}
+  {% if g.rows %}
+  <div class="xgrid">
+    {% for r in g.rows %}{{ row(r, t, g) }}{% endfor %}
+  </div>
+  {% else %}
+  <div class="sec-note" style="padding:18px 2px;">
+    {% if filtered %}Nothing here matches the filter.
+      <a href="/spend/manage?tab={{ g.key }}#register">Clear it</a>.
+    {% else %}Nothing here yet.
+      <a href="/spend/manage?add=1">Add an expense</a>.{% endif %}</div>
+  {% endif %}
+</section>
+{% endmacro %}

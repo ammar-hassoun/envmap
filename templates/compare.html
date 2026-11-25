@@ -1,0 +1,445 @@
+{% extends "base.html" %}
+{% block crumbs %}<a href="/">Projects</a> <span class="sep">/</span> <b>Compare</b>{% endblock %}
+{% block content %}
+<h1>Compare configuration</h1>
+<p class="sub" style="max-width:70ch;">Put two deployments side by side and see
+  where they differ — every config key, every secret name, every image tag. The
+  usual question is "it works in one environment and not the other, what is
+  actually different?", and the usual answer is one key nobody remembered
+  changing.</p>
+
+<form method="get" action="/compare" id="pairForm">
+  {# There was a second mode here — one service against one service, each side
+     submitted as its own token. It is gone because this form does that too: tick
+     the one service. The fields stay so a bookmark from then still opens, and
+     the route turns its tokens back into the fields below. #}
+  <input type="hidden" name="mode" id="p_mode" value="sweep">
+  <input type="hidden" name="a" id="p_a" value="{{ sel.a }}">
+  <input type="hidden" name="b" id="p_b" value="{{ sel.b }}">
+  {# The project is its own field. The old tokens carried it inside them, so a
+     sweep — which has no tokens — submitted no project at all and the route
+     could not run: the page came back with the form and no explanation. #}
+  <input type="hidden" name="pid" id="p_pid" value="{{ sel.pid }}">
+  <input type="hidden" name="rga" id="p_rga" value="{{ sel.rga }}">
+  <input type="hidden" name="ea"  id="p_ea"  value="{{ sel.ea }}">
+  <input type="hidden" name="rgb" id="p_rgb" value="{{ sel.rgb }}">
+  <input type="hidden" name="eb"  id="p_eb"  value="{{ sel.eb }}">
+
+
+  <div class="card">
+    <div class="card-h">Project
+      <span class="hint">both sides come from the same project</span></div>
+    <div class="card-b">
+      <div style="max-width:520px;"><div id="k_project"></div></div>
+    </div>
+  </div>
+
+  {# The two sides are parallel, not sequential, so they are not numbered: the
+     same 2-3-4 down each column read as six steps when there are three. #}
+  <div class="sides">
+    <div class="card sidecard">
+      <div class="card-h">Side A</div>
+      <div class="card-b">
+        <div class="steps-v">
+          <div><div class="cmp-lbl">Region</div><div id="ak_rgid"></div></div>
+          <div><div class="cmp-lbl">Environment</div><div id="ak_env"></div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="swapwrap">
+      {# An SVG, not "⇄". The glyph is drawn by whatever font the system
+         happens to pick, so it came out hairline-thin against the icons
+         beside it and sat off-centre in its own circle. This one is drawn
+         with the same stroke weight as every other icon here. #}
+      <button type="button" class="swapbtn" data-call="swapPair"
+              aria-label="Swap side A and side B" title="Swap the two sides">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"
+             aria-hidden="true">
+          <path d="M4.5 9h13"/><path d="M14.5 6l3 3-3 3"/>
+          <path d="M19.5 15h-13"/><path d="M9.5 12l-3 3 3 3"/>
+        </svg>
+      </button>
+    </div>
+
+    <div class="card sidecard">
+      <div class="card-h">Side B
+        <span style="flex:1"></span>
+        <button type="button" class="btn-ghost" style="padding:4px 12px;font-size:11.5px;"
+                data-call="mirrorFromA" title="Copy A, then change just the environment">
+          copy from A</button>
+      </div>
+      <div class="card-b">
+        <div class="steps-v">
+          <div><div class="cmp-lbl">Region</div><div id="bk_rgid"></div></div>
+          <div><div class="cmp-lbl">Environment</div><div id="bk_env"></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="svccard">
+    <div class="card-h" style="flex-wrap:wrap;gap:10px;">
+      <span>Services</span>
+      <span class="hint" id="svccount"></span>
+      <span class="hint" id="svcticked"></span>
+      <span style="flex:1"></span>
+      {# Empty means all. Said plainly, because a picker that looks unset usually
+         means nothing will happen — here it means everything will. #}
+      <span class="hint">tick none to compare them all</span>
+      {# "all" and "none" mean the same thing to the sweep, so the button is here
+         for what comes after it: tick everything, then untick the two you do not
+         care about. Starting from nine ticks is fewer clicks than nine ticks. #}
+      <button type="button" class="btn-ghost" id="svcall"
+              style="padding:4px 11px;font-size:11.5px;">select all</button>
+      <button type="button" class="btn-ghost" id="svcnone"
+              style="padding:4px 11px;font-size:11.5px;">clear</button>
+    </div>
+    <div class="card-b">
+      <input type="search" id="svcfilter" placeholder="filter services…"
+             style="width:100%;max-width:280px;margin-bottom:9px;">
+      <div id="svcpick" class="svcgrid"></div>
+      <label class="chk" style="margin-top:10px;">
+        <input type="checkbox" name="only" value="1"
+               {{ 'checked' if sel.only }}> hide services that are identical
+      </label>
+    </div>
+  </div>
+
+  <div class="cmpactions">
+    <button type="submit" class="btn" id="p_go" disabled>Compare</button>
+    <span class="hint" id="p_hint">Choose a project, then a region, environment
+      and service on each side.</span>
+  </div>
+</form>
+
+{% if why %}
+{# Given an id and cleared by the first change to the form below: this message is
+   rendered from the request that produced it, so once the missing thing is
+   supplied it is describing a state that no longer exists. Leaving it on screen
+   made a form that had just been fixed look like it was still refusing. #}
+<div class="flash err" id="whybanner">⚠ {{ why }}</div>
+{% endif %}
+
+{% if result and result.mode == 'sweep' %}
+{% set T = result.totals %}
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+     margin-bottom:18px;">
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat">{{ T.services }}</div>
+    <div class="statsub">services compared</div></div></div>
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat" style="color:{{ 'var(--warn-ink)' if T.differing else 'var(--ok-ink)' }};">{{ T.differing }}</div>
+    <div class="statsub">differ</div></div></div>
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat" style="color:var(--ok-ink);">{{ T.identical }}</div>
+    <div class="statsub">identical</div></div></div>
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat" style="color:{{ 'var(--danger-ink)' if T.only_a + T.only_b else 'var(--ok-ink)' }};">{{ T.only_a + T.only_b }}</div>
+    <div class="statsub">on one side only</div></div></div>
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat" style="color:{{ 'var(--warn-ink)' if T.key_diffs else 'var(--ok-ink)' }};">{{ T.key_diffs }}</div>
+    <div class="statsub">key differences</div></div></div>
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat" style="color:{{ 'var(--warn-ink)' if T.secret_diffs else 'var(--ok-ink)' }};">{{ T.secret_diffs }}</div>
+    <div class="statsub">secret differences</div></div></div>
+</div>
+
+<div class="card" id="sweepres">
+  <div class="card-h" style="flex-wrap:wrap;gap:12px;">
+    <span>{{ result.headers.A }} <span class="hint">vs</span> {{ result.headers.B }}</span>
+    <span style="flex:1"></span>
+    {# Every key is in the page; this decides whether the ones that match are
+       shown. Off by default because the differences are the answer and burying
+       them under a hundred identical keys per service is what the sweep exists
+       to avoid — but "is this key really the same on both sides?" is a fair
+       question and there was no way to ask it. #}
+    <label class="chk"><input type="checkbox" id="showSame"> identical keys</label>
+    <input type="search" id="svcFilter" placeholder="filter services…"
+           style="width:180px;padding:5px 12px;font-size:12px;">
+  </div>
+  <div class="card-b" style="padding:0;">
+    {% if not result.services %}
+    <p class="sub" style="margin:0;padding:16px;">Nothing to compare — these two
+      environments have no services in common.</p>
+    {% else %}
+    {# Ordered by how different each service is, not by name: the ordering is the
+       answer, and the service at the top is where to look. #}
+    {% for r in result.services %}
+    {# `allsame` is what lets the stylesheet drop the table shell for a service
+       with nothing to show: otherwise expanding an identical service produced a
+       table of three headers and no rows. #}
+    {% set diff_n = (r.rows|rejectattr('state', 'equalto', 'same')|list|length)
+                    + (r.secrets|rejectattr('state', 'equalto', 'same')|list|length) %}
+    <details class="svcrow{{ ' allsame' if r.rows and not diff_n }}"
+             data-name="{{ r.service|lower }}"
+             {{ 'open' if loop.first and (r.only or r.error or (r.counts and r.counts.diff)) }}>
+      <summary>
+        <b>{{ r.service }}</b>
+        {% if r.only %}
+        <span class="badge" style="color:var(--danger-ink);border-color:var(--danger-line);">
+          only in side {{ r.only }}</span>
+        <span class="hint">not deployed on the other side at all</span>
+        {% elif r.error %}
+        <span class="badge" style="color:var(--warn-ink);">{{ r.error }}</span>
+        {% else %}
+        {% set c = r.counts %}
+        {% if c.diff %}<span class="badge" style="color:var(--warn-ink);">{{ c.diff }} key{{ '' if c.diff == 1 else 's' }}</span>{% endif %}
+        {% if c.meta_diff %}<span class="badge">{{ c.meta_diff }} image/meta</span>{% endif %}
+        {% if c.secret_diff %}<span class="badge" style="color:var(--warn-ink);">{{ c.secret_diff }} secret{{ '' if c.secret_diff == 1 else 's' }}</span>{% endif %}
+        {% if c.only_a %}<span class="badge">{{ c.only_a }} only in A</span>{% endif %}
+        {% if c.only_b %}<span class="badge">{{ c.only_b }} only in B</span>{% endif %}
+        {% if not (c.diff or c.meta_diff or c.secret_diff) %}
+        <span class="badge" style="color:var(--ok-ink);">identical</span>{% endif %}
+        {% endif %}
+        <span style="flex:1"></span>
+        {% if r.links.A %}<a class="hint" href="{{ r.links.A }}">A ↗</a>{% endif %}
+        {% if r.links.B %}<a class="hint" href="{{ r.links.B }}">B ↗</a>{% endif %}
+      </summary>
+      {% if r.rows %}
+      {# Every row is rendered, matching or not, and the stylesheet decides which
+         are visible. Filtering here instead meant the identical ones were not in
+         the page at all, so there was nothing a control could reveal. #}
+      {% set same_keys = r.rows|selectattr('state', 'equalto', 'same')|list %}
+      {% set same_secrets = r.secrets|selectattr('state', 'equalto', 'same')|list %}
+      {% set same_n = same_keys|length + same_secrets|length %}
+      <div style="overflow-x:auto;">
+        <table class="cmp matrix">
+          <thead><tr><th class="stickycol">Key</th>
+            <th>{{ result.headers.A }}</th><th>{{ result.headers.B }}</th></tr></thead>
+          <tbody>
+            {% for row in r.rows %}
+            <tr class="row {{ row.state }}">
+              <td class="stickycol">{{ row.key }}</td>
+              <td>{% if row.vals.A is none %}<span class="hint">—</span>
+                  {% else %}{{ row.vals.A }}{% endif %}</td>
+              <td>{% if row.vals.B is none %}<span class="hint">—</span>
+                  {% else %}{{ row.vals.B }}{% endif %}</td>
+            </tr>
+            {% endfor %}
+            {% for row in r.secrets %}
+            <tr class="row {{ row.state }}">
+              <td class="stickycol">🔑 {{ row.key }}</td>
+              <td>{{ row.vals.A or '—' }}</td><td>{{ row.vals.B or '—' }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% if same_n %}
+      {# Said out loud, because a control nobody notices is a control nobody has.
+         This is also the only thing an all-identical service used to show when it
+         was expanded: an empty table with headers. #}
+      <div class="samenote">{{ same_n }} identical
+        key{{ '' if same_n == 1 else 's' }} hidden — tick
+        <b>identical keys</b> above to show {{ 'it' if same_n == 1 else 'them' }}</div>
+      {% endif %}
+      {% elif r.only %}
+      <div class="sec-note" style="margin:10px 14px 14px;">This service exists in
+        side {{ r.only }} and not in the other, so there is nothing to line up
+        key by key. That absence is usually the difference being looked for.</div>
+      {% endif %}
+    </details>
+    {% endfor %}
+    {% endif %}
+  </div>
+</div>
+
+{% elif result %}
+{% set c = result.counts %}
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr));margin-bottom:20px;">
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat" style="color:var(--warn-ink);">{{ c.diff }}</div>
+    <div class="statsub">keys that differ</div></div></div>
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat" style="color:var(--ok-ink);">{{ c.same }}</div>
+    <div class="statsub">identical</div></div></div>
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat" style="color:{{ 'var(--warn-ink)' if c.secret_diff else 'var(--ok-ink)' }};">{{ c.secret_diff }}</div>
+    <div class="statsub">secret keys differ</div></div></div>
+</div>
+
+<div class="card">
+  <div class="card-h" style="flex-wrap:wrap;gap:12px;">
+    <span>Configuration</span>
+    <span style="flex:1"></span>
+    <input type="search" id="rowFilter" placeholder="filter keys…"
+           style="width:190px;padding:5px 12px;font-size:12px;">
+    <label class="chk"><input type="checkbox" id="onlyDiff" checked> differences only</label>
+    <label class="chk"><input type="checkbox" id="showPlat"> platform keys</label>
+  </div>
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="cmp matrix">
+      <thead><tr>
+        <th class="stickycol">Key</th>
+        {% for col in result.cols %}<th>{{ result.headers[col] }}</th>{% endfor %}
+      </tr></thead>
+      <tbody>
+        {% for r in result.rows %}
+        <tr class="row {{ r.state }}" data-plat="{{ 1 if r.platform else 0 }}"
+            data-key="{{ r.key|lower }}">
+          <td class="k stickycol">{{ r.key }}{% if r.platform %}<span class="tag">plat</span>{% endif %}</td>
+          {% for col in result.cols %}
+            {% set v = r.vals[col] %}
+            <td class="{% if r.state == 'diff' %}cellDiff{% endif %}">
+              {% if v is none %}<span class="absent">not set</span>{% else %}{{ v }}{% endif %}</td>
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div id="noRows" style="display:none;padding:26px;text-align:center;color:var(--muted);">
+      Nothing matches the current filters.</div>
+  </div>
+</div>
+
+{% if result.secrets %}
+<div class="card">
+  <div class="card-h">Secret keys <span class="hint">presence only — sealed values can't be compared</span></div>
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="cmp matrix">
+      <thead><tr><th class="stickycol">Key</th>
+        {% for col in result.cols %}<th>{{ col }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        {% for r in result.secrets %}
+        <tr class="{{ r.state }}">
+          <td class="k stickycol">🔒 {{ r.key }}</td>
+          {% for col in result.cols %}
+          <td class="{% if r.state == 'diff' %}cellDiff{% endif %}">
+            {% if r.vals[col] %}<span style="color:var(--ok-ink);">present</span>
+            {% else %}<span class="absent">not set</span>{% endif %}</td>
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{# One link per column, from the result. These used to be a hard-coded "open A"
+   and "open B" — which only ever matched the pair view, so with that view gone
+   they were two buttons pointing nowhere. #}
+<div style="display:flex;gap:10px;flex-wrap:wrap;">
+  {% for col in result.cols %}
+  <a class="btn btn-ghost" href="{{ result.links[col] }}">open {{ result.headers[col] }} →</a>
+  {% endfor %}
+</div>
+{% endif %}
+
+<style>
+  .svcgrid { display:flex; flex-wrap:wrap; gap:6px; max-height:220px;
+    overflow:auto; }
+  .svcchip { display:inline-flex; align-items:center; gap:6px; font-size:12px;
+    border:1px solid var(--line2); border-radius:8px; padding:4px 10px;
+    cursor:pointer; }
+  .svcchip:hover { border-color:var(--accent-ink); }
+  .svcchip small { color:var(--muted); font-size:10.5px; }
+  /* a service only one side has is the finding, so it is marked in the picker
+     too and not only in the result */
+  .svcchip.lone { border-color:var(--warn-line); }
+  .svcrow { border-bottom:1px solid var(--line); }
+  .svcrow:last-child { border-bottom:0; }
+  .svcrow > summary { display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+    padding:11px 14px; cursor:pointer; font-size:13px; }
+  .svcrow > summary:hover { background:var(--panel2); }
+  .svcrow[open] > summary { background:var(--panel2); }
+  /* Which key rows are visible. The rows exist either way, so this is a toggle
+     and not a second sweep — the comparison is expensive and rerunning it to
+     reveal a row it already computed would be the wrong trade. */
+  #sweepres:not(.withsame) tr.row.same { display:none; }
+  #sweepres:not(.withsame) .svcrow.allsame table.cmp { display:none; }
+  #sweepres.withsame .samenote { display:none; }
+  .samenote { margin:0 14px 14px; padding:8px 12px; font-size:11.5px;
+    color:var(--muted); background:var(--well); border:1px solid var(--line);
+    border-radius:9px; }
+</style>
+
+<script nonce="{{ csp_nonce() }}">
+const TREE = {{ tree|tojson }};
+// How many are ticked, stated: empty means ALL, so "0 of 9" has to read as a
+// deliberate state and not as an unset control. Declared out here because
+// fillServiceList — in the included file, at this same level — calls it after it
+// rebuilds the chips; inside the IIFE below it would be invisible to it.
+function countTicked() {
+  const label = document.getElementById('svcticked');
+  if (!label) return;
+  const boxes = document.querySelectorAll('#svcpick input');
+  const on = document.querySelectorAll('#svcpick input:checked').length;
+  label.textContent = !boxes.length ? ''
+    : (on ? `${on} of ${boxes.length} ticked`
+          : 'none ticked — all will be compared');
+}
+
+{% include "_combobox.html" %}
+
+(function () {
+  // Any change to the selection makes the server's complaint stale — it was
+  // rendered from the request that produced it.
+  const banner = document.getElementById('whybanner');
+  if (banner) {
+    const form = document.getElementById('pairForm');
+    const drop = () => { banner.remove(); };
+    form.addEventListener('change', drop);
+    form.addEventListener('input', drop);
+    // the pickers are custom widgets, so a click on one is not a form 'change'
+    form.addEventListener('click', e => {
+      if (e.target.closest('.combo')) drop();
+    });
+  }
+
+  // Both buttons act on what is VISIBLE, so they compose with the filter rather
+  // than fighting it: filter to "mock", select all, and you have the mocks.
+  function ticks(on) {
+    document.querySelectorAll('#svcpick .svcchip').forEach(chip => {
+      if (chip.hidden) return;
+      const box = chip.querySelector('input');
+      if (box) box.checked = on;
+    });
+    countTicked();
+  }
+  const all = document.getElementById('svcall');
+  if (all) all.addEventListener('click', () => ticks(true));
+  const clear = document.getElementById('svcnone');
+  if (clear) clear.addEventListener('click', () => ticks(false));
+  const pick = document.getElementById('svcpick');
+  if (pick) pick.addEventListener('change', countTicked);
+  const sfilter = document.getElementById('svcfilter');
+  if (sfilter) sfilter.addEventListener('input', () => {
+    const q = sfilter.value.trim().toLowerCase();
+    document.querySelectorAll('#svcpick .svcchip').forEach(chip => {
+      chip.hidden = q && !(chip.dataset.name || '').includes(q);
+    });
+  });
+  // the list is built after this runs, so the count starts empty and is filled
+  // by fillServiceList once a pair of environments is chosen
+  countTicked();
+
+  // filtering the result list, which is already on the page
+  const f = document.getElementById('svcFilter');
+  if (f) f.addEventListener('input', () => {
+    const q = f.value.trim().toLowerCase();
+    document.querySelectorAll('.svcrow').forEach(el => {
+      el.hidden = q && !el.dataset.name.includes(q);
+    });
+  });
+
+  // Show the keys that match, or not. Remembered, because a sweep is submitted
+  // as a fresh page: without this the choice would be reset by the very act of
+  // comparing again, which is when it is wanted.
+  const res = document.getElementById('sweepres');
+  const same = document.getElementById('showSame');
+  if (res && same) {
+    const KEY = 'compare.showSame';
+    same.checked = localStorage.getItem(KEY) === '1';
+    const apply = () => {
+      res.classList.toggle('withsame', same.checked);
+      try { localStorage.setItem(KEY, same.checked ? '1' : '0'); } catch (e) {}
+    };
+    same.addEventListener('change', apply);
+    apply();
+  }
+})();
+</script>
+{% endblock %}

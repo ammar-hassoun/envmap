@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+{% from "_back.html" import back %}
+{#- The cluster in three dimensions. This template is the frame only: the
+    picture is drawn by static/cluster3d.js and static/cluster3d-gl.js, from
+    /clusters/3d.json, fetched after paint so the page opens at once on a
+    cluster that takes seconds to list its pods.
+
+    It takes the WHOLE window (the route passes `bare`, so there is no sidebar
+    and no top bar): a world wants to be looked into, not framed. The way back
+    is the first thing in the panel at the top left.
+
+    Every control is a plain element the script finds by id. Nothing here
+    carries an inline handler (the CSP refuses one), and nothing a cluster
+    names is written into markup: the script builds the panels from text nodes,
+    because a pod is called whatever somebody typed.
+
+    The CITY (`in_city`, /clusters/city) is the same frame over a different
+    world: every cluster as a building, drawn by static/cluster3d-city.js with
+    this page's engine and figure. It keeps every element the script finds by
+    id, and the stylesheet puts away the ones a street has no use for. -#}
+{% set qbase = '/clusters?project=' ~ (pid|urlencode) ~ '&cluster=' ~ (cid|urlencode) %}
+
+{% block crumbs %}
+<a href="/clusters">Clusters</a> <span class="sep">/</span>
+{% if in_city %}<b>City</b>
+{% elif sel %}<a href="/clusters?project={{ pid|urlencode }}">{{ proj_name }}</a>
+<span class="sep">/</span> <a href="{{ qbase }}">{{ sel.name }}</a>
+<span class="sep">/</span> <b>3D view</b>
+{% else %}<b>3D view</b>{% endif %}
+{% endblock %}
+
+{% block content %}
+<link rel="stylesheet" href="/static/cluster3d.css?v={{ portal_version() }}">
+
+{% set city_on = in_city and not err %}
+{% set stage_name = (brand().name ~ ' City') if city_on else (sel.name if sel else '') %}
+{% if not sel and not city_on %}
+<div class="page-head">
+  <div>
+    {{ back('/clusters', 'Clusters') }}
+    <h1>☸ {{ 'Clusters' if in_city else 'Cluster' }} <span class="c3d-kicker">{{ 'the city' if in_city else '3D view' }}</span></h1>
+  </div>
+</div>
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+{% else %}
+<div class="c3d{{ ' city walk' if city_on }}" id="c3d"
+     {% if city_on %}data-city="{{ city_at }}" data-json="/clusters/city.json" data-base="/clusters"
+     {% else %}data-json="/clusters/3d.json?project={{ pid|urlencode }}&cluster={{ cid|urlencode }}" data-base="{{ qbase }}"
+     {% endif %}data-name="{{ stage_name }}"{% if city_on %} data-love="{{ brand().name if brand().branded else 'EnvMap' }}"{% endif %}>
+  <h1 class="c3d-vh">{{ stage_name }}{{ '' if city_on else ': 3D view' }}</h1>
+  <canvas id="c3dCanvas" tabindex="0"
+          aria-label="{{ 'A city to walk through: every cluster is a building, and its door leads into it. The same clusters are listed on the Clusters page.' if city_on
+                         else "A three-dimensional picture of the cluster. The same pods are listed on the cluster's Pods tab." }}"></canvas>
+  {# names are drawn here, over the picture; it takes no clicks #}
+  <canvas id="c3dOver" aria-hidden="true"></canvas>
+
+  {# top right: the controls. Segments are radio groups: one choice, always shown. #}
+  <div class="c3d-tools">
+    <div class="c3d-seg c3d-walkseg" role="group" aria-label="Walk">
+      <button type="button" class="c3d-btn c3d-go" id="c3dWalk" aria-pressed="false" title="Walk through the cluster yourself: W A S D and the mouse">Walk</button>
+    </div>
+    <label class="c3d-search"><span class="c3d-vh">Find a pod, service or machine</span>
+      <input id="c3dSearch" type="search" placeholder="Find a pod…  ( / )" autocomplete="off" spellcheck="false">
+      <span class="c3d-count" id="c3dFound"></span></label>
+    <div class="c3d-seg" role="group" aria-label="Group pods by">
+      <button type="button" class="c3d-btn on" data-group="node" title="One island per machine">Machines</button>
+      <button type="button" class="c3d-btn" data-group="ns" title="One island per namespace">Namespaces</button>
+    </div>
+    <div class="c3d-seg" role="group" aria-label="Connections">
+      <button type="button" class="c3d-btn on" data-lines="all" title="Draw every connection">All lines</button>
+      <button type="button" class="c3d-btn" data-lines="focus" title="Draw only the connections of what you point at or select">Focus</button>
+      <button type="button" class="c3d-btn" data-lines="off" title="Draw no connections">Off</button>
+    </div>
+    <div class="c3d-seg" role="group" aria-label="View">
+      <button type="button" class="c3d-btn on" id="c3dLabels" aria-pressed="true" title="Names under the pods (L)">Names</button>
+      <button type="button" class="c3d-btn on" id="c3dSpin" aria-pressed="true" title="Turn slowly while nobody is touching it">Spin</button>
+      <button type="button" class="c3d-btn" id="c3dKey" aria-pressed="false" title="The namespaces and what the faces, marks and lines mean">Key</button>
+      <button type="button" class="c3d-btn" id="c3dTour" aria-pressed="false" title="Fly to each pod that needs somebody, one after another (T)">Tour</button>
+      <button type="button" class="c3d-btn" id="c3dReset" title="Back to the whole cluster (R)">Reset</button>
+      <button type="button" class="c3d-btn" id="c3dFull" title="Fill the screen (F)">Full screen</button>
+    </div>
+  </div>
+
+  {# left: one column, so the headline never lands on the key beneath it #}
+  <div class="c3d-left">
+  {# the way back, what this is, how fresh, and the headline counts #}
+  <div class="c3d-top">
+    <a class="c3d-back" id="c3dBack" href="{{ '/clusters' if city_on else qbase }}">← {{ 'Clusters' if city_on else sel.name }}</a>
+    {% set other = 'old' if new_look else 'new' %}<a class="c3d-back c3d-look" href="{{ '/clusters/city?look=' ~ other if city_on else '/clusters/3d?project=' ~ (pid|urlencode) ~ '&cluster=' ~ (cid|urlencode) ~ '&look=' ~ other }}" title="{{ 'Draw this the way EnvMap drew it before 0.7.57. This browser keeps the choice.' if new_look else 'Draw this in the new look, as everybody else sees it.' }}">{{ 'Classic look' if new_look else 'New look' }}</a>
+    <div class="c3d-title"><span id="c3dName">{{ stage_name }}</span>
+      {% if is_prod %}<span class="c3d-prod">production</span>{% endif %}
+      <span class="c3d-live" id="c3dLive">reading…</span></div>
+    <div class="c3d-totals" id="c3dTotals"></div>
+  </div>
+
+  {# namespaces to single out, and what the faces and marks mean #}
+  <div class="c3d-side" id="c3dSide" hidden>
+    <div class="c3d-sec">Namespaces</div>
+    <div class="c3d-chips" id="c3dSpaces"></div>
+    <div class="c3d-sec">Faces</div>
+    <div class="c3d-legend" id="c3dFaces"></div>
+    <div class="c3d-sec" id="c3dTechHead" hidden>Recognised</div>
+    <div class="c3d-legend" id="c3dTechs"></div>
+    <div class="c3d-sec">Lines</div>
+    <div class="c3d-legend" id="c3dLines"></div>
+  </div>
+  </div>
+
+  {# right: whatever was clicked #}
+  <aside class="c3d-card" id="c3dCard" hidden aria-live="polite"></aside>
+
+  <div class="c3d-hint" id="c3dHint">Drag to turn · Shift-drag or right-drag to move · Scroll to zoom · Click a pod · Double-click to fly in</div>
+  <div class="c3d-caption" id="c3dCaption" aria-live="polite"></div>
+  {# a conversation with whatever you walked up to: what it says, what it shows, what you can ask or do #}
+  <div class="c3d-talk" id="c3dTalk" hidden>
+    <div class="c3d-talk-who" id="c3dTalkWho"></div>
+    <div class="c3d-talk-say" id="c3dTalkSay" aria-live="polite"></div>
+    <pre class="c3d-talk-out" id="c3dTalkOut" hidden></pre>
+    <div class="c3d-talk-opts" id="c3dTalkOpts"></div>
+  </div>
+  {# a line to whoever is being the doctor. No action and no method: the script sends it #}
+  <form class="c3d-say" id="c3dSay" hidden>
+    {# when the doctor has asked you something: its question, and any answers it offered #}
+    <div class="c3d-say-ask" id="c3dSayAsk" hidden></div>
+    <div class="c3d-say-opts" id="c3dSayOpts" hidden></div>
+    <div class="c3d-say-row">
+      <label class="c3d-vh" for="c3dSayText">Say something to the doctor</label>
+      <input id="c3dSayText" type="text" maxlength="240" autocomplete="off" spellcheck="true"
+             placeholder="Say something to the doctor…   Enter sends · Esc closes">
+      <button type="submit" class="c3d-btn on">Send</button>
+    </div>
+  </form>
+  {# the way into the walk: who you are and what you ride. The script fills it #}
+  <div class="c3d-pick" id="c3dPick" hidden></div>
+  {# what has been said with the doctor, kept on screen like a game's chat. It takes no clicks #}
+  <div class="c3d-chat" id="c3dChat" hidden aria-live="polite"></div>
+  <div class="c3d-tip" id="c3dTip" hidden></div>
+  <div class="c3d-veil" id="c3dVeil"><div class="c3d-veil-face" aria-hidden="true"></div>
+    <div id="c3dVeilText">{{ 'Reading the city…' if city_on else 'Reading the cluster…' }}</div></div>
+</div>
+{#- What draws the picture. The new engine is the default; ?look=old asks for the classic one (the route keeps the choice). It is an
+    ES module that names its parts by a bare word, so the page says where that word lives in an import map, and an
+    import map is an inline script to the Content-Security-Policy, so it carries the nonce. A module runs in its
+    place among the deferred scripts, so the engine is there before cluster3d.js looks for it. -#}
+{% if new_look %}<script type="importmap" nonce="{{ csp_nonce() }}">{"imports": {"three": "/static/proto3d/three/build/three.module.min.js", "three/addons/": "/static/proto3d/three/examples/jsm/"}}</script>
+<script type="module" nonce="{{ csp_nonce() }}" src="/static/proto3d/app/engine.js?v={{ portal_version() }}.{{ proto_stamp }}"></script>
+{% else %}<script nonce="{{ csp_nonce() }}" src="/static/cluster3d-gl.js?v={{ portal_version() }}" defer></script>
+{% endif %}{% if city_on %}<script nonce="{{ csp_nonce() }}" src="/static/cluster3d-quiz.js?v={{ portal_version() }}" defer></script>
+<script nonce="{{ csp_nonce() }}" src="/static/cluster3d-city.js?v={{ portal_version() }}" defer></script>{% endif %}
+<script nonce="{{ csp_nonce() }}" src="/static/cluster3d.js?v={{ portal_version() }}" defer></script>
+{% endif %}
+{% endblock %}

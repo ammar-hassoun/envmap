@@ -1,0 +1,217 @@
+{% extends "base.html" %}
+{% import "_bits.html" as bits %}
+{% import "_virt_bits.html" as vb %}
+{% block crumbs %}<b>Hypervisors</b>{% endblock %}
+{% block content %}
+{{ bits.collecting(pending, "The hypervisors below are the ones that have answered so far.") }}
+
+{% if not conns %}
+<div class="empty">
+  <div class="big">{{ glyph("layers", 40) }}</div>
+  <h2>No hypervisor connected</h2>
+  <p>Connect Proxmox VE, vCenter or a standalone ESXi host and this page shows the
+     hosts and virtual machines underneath your clusters — the layer where “the
+     node went away” is usually explained.</p>
+  <a class="btn" href="/settings/conns/virt">＋ Connect a hypervisor</a>
+</div>
+
+{% else %}
+<div class="page-head">
+  <div><h1>Hypervisors</h1>
+    <p class="sub">{{ conns|length }} connection{{ 's' if conns|length != 1 }} ·
+      {{ hosts }} host{{ 's' if hosts != 1 }} · {{ guests }} guest{{ 's' if guests != 1 }} ·
+      {{ running }} running{% if stopped %} ·
+      <span style="color:var(--warn-ink);">{{ stopped }} not running</span>{% endif %}</p></div>
+  <div style="display:flex;gap:10px;flex-wrap:wrap;">
+    <button type="button" class="btn btn-ghost" data-vcards="open">Expand all</button>
+    <button type="button" class="btn btn-ghost" data-vcards="close">Collapse all</button>
+    <a class="btn btn-ghost" href="/virt?refresh=1{{ '&q=' ~ q|urlencode if q }}">↻ Refresh</a>
+    <a class="btn btn-ghost" href="/settings/conns/virt">⚙ Manage</a>
+  </div>
+</div>
+
+{%- set ov = overview or {} %}
+{%- set kinds = ov.kinds or {} %}
+{%- set kcol = {'ESXi': 'var(--accent)', 'vCenter': 'var(--info-ink)', 'Proxmox VE': 'var(--accent2)'} %}
+{%- set ksegs = [] %}
+{%- for k, n in kinds|dictsort %}{{ ksegs.append({'label': k, 'value': n, 'color': kcol.get(k, 'var(--muted)')}) or '' }}{% endfor %}
+<div class="apanels">
+  {{ bits.donut_panel('Virtual machines',
+       [{'label': 'running', 'value': ov.running or 0, 'color': 'var(--ok)'},
+        {'label': 'not running', 'value': ov.stopped or 0, 'color': 'var(--warn)', 'href': '/virt?stopped_only=1'}],
+       centre=((ov.running or 0) ~ '/' ~ ((ov.running or 0) + (ov.stopped or 0))), sub='running', icon='layers',
+       hint='across every hypervisor') }}
+  {{ bits.donut_panel('Hosts', ksegs + ([{'label': 'connections not answering', 'value': ov.failing, 'color': 'var(--danger)'}] if ov.failing else []),
+       centre=(kinds.values()|sum), sub='hosts', icon='server',
+       hint=((ov.answering ~ ' of ' ~ conns|length ~ ' connections answering') if ov.failing else 'every connection answering')) }}
+</div>
+<div class="apanels">
+  {{ bits.bars_panel('Host CPU', ov.cpu or [], hint='busiest first', icon='cpu',
+       empty='No CPU readings yet.', unit='%') }}
+  {{ bits.bars_panel('Host memory', ov.mem or [], icon='database', empty='No memory readings yet.', unit='%',
+       hint=((ov.mem_used ~ ' of ' ~ ov.mem_total ~ ' GiB in use') if ov.mem_total else 'fullest first')) }}
+</div>
+
+<form method="get" action="/virt" class="card" style="margin-bottom:14px;">
+  <div class="card-b" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+    <input type="search" name="q" value="{{ q }}" style="flex:1;min-width:200px;"
+           placeholder="filter guests by name, host or id…">
+    <label class="chk"><input type="checkbox" name="stopped_only" value="1"
+      {% if stopped_only %}checked{% endif %} data-submit> not running only</label>
+    <button class="btn-ghost tbtn" type="submit">Apply</button>
+  </div>
+</form>
+
+{% for e in engines %}
+{% if e.error %}
+<div class="flash err">⚠ {{ e.conn.name }}: {{ e.error }}
+  — <a href="/settings/conns/virt#{{ e.conn.id }}">check the connection</a></div>
+{% else %}
+
+{# Closed by default: with a card per ESXi host the page was a long scroll
+   through every guest of every host to reach the one wanted (asked for on
+   24 November 2026). The header says enough to choose: hosts, guests, how
+   many run, and a single host's CPU and memory. A filter opens the cards it
+   matched, and the open ones stay open across this page's own reloads. #}
+{% set one = e.data.hosts[0] if e.data.hosts|length == 1 else none %}
+<details class="card vcard" data-vcard="{{ e.conn.id }}"
+         {% if (q or stopped_only) and e.guests %}open{% endif %}>
+  <summary class="card-h">
+    <span class="vchev" aria-hidden="true"></span>
+    {{ plogo(e.provider, 18) if e.provider else glyph('layers', 18) }}
+    <b>{{ e.conn.name }}</b>
+    <span class="badge">{{ e.provider.label if e.provider else e.conn.type }}</span>
+    <span class="hint">{{ e.data.hosts|length }} host{{ 's' if e.data.hosts|length != 1 }} ·
+      {{ e.data.guests|length }} guest{{ 's' if e.data.guests|length != 1 }} ·
+      <span style="color:var(--ok-ink);">{{ e.data.running }} running</span>{% if e.data.stopped %} ·
+      <span style="color:var(--warn-ink);">{{ e.data.stopped }} not running</span>{% endif %}
+      {%- if one and one.cpu_pct is not none %} · CPU {{ one.cpu_pct }}%{% endif %}
+      {%- if one and one.mem_pct is not none %} · memory {{ one.mem_pct }}%{% endif %}
+      {%- if (q or stopped_only) %} · {{ e.guests|length }} match{{ 'es' if e.guests|length != 1 }}{% endif %}</span>
+    <span style="flex:1"></span>
+    {%- if e.flavor in ('esxi', 'proxmox') %}
+    {%- if e.flavor == 'esxi' %}
+    <a class="abtn go" href="/virt/host?c={{ e.conn.id|urlencode }}">Manage host</a>{% endif %}
+    <a class="abtn" href="/virt/new?c={{ e.conn.id|urlencode }}&node={{ (e.data.hosts[0].name if e.flavor == 'proxmox' and e.data.hosts else '')|urlencode }}"
+       {% if e.caps.admin %}aria-disabled="true" title="{{ e.caps.admin }}" tabindex="-1" style="opacity:.45;pointer-events:none;"{% endif %}>＋ New VM</a>
+    {%- endif %}
+    <a class="btn btn-ghost tbtn" href="{{ e.conn.base_url|httpurl }}" target="_blank" rel="noopener"
+       title="the hypervisor's own web interface">Open →</a>
+  </summary>
+  <div class="card-b">
+    {% if e.data.hosts %}
+    <div style="overflow-x:auto;margin-bottom:12px;">
+      <table class="jenkins">
+        <thead><tr>
+          <th style="min-width:170px;">Host</th><th style="width:100px;">State</th>
+          <th style="width:150px;">CPU</th><th style="width:170px;">Memory</th>
+          <th style="width:110px;">Uptime</th>
+        </tr></thead>
+        <tbody>
+        {% for h in e.data.hosts %}
+        <tr>
+          <td class="jname">{% if e.flavor in ('esxi', 'proxmox') %}<a href="/virt/host?c={{ e.conn.id|urlencode }}{{ ('&node=' ~ h.name|urlencode) if e.flavor == 'proxmox' }}"><b>{{ h.name if e.flavor == 'proxmox' or h.name != 'localhost.localdomain' else e.conn.name }}</b></a>{% else %}<b>{{ h.name }}</b>{% endif %}</td>
+          <td><span class="sv {{ 'sv-ok' if h.state|lower in ('online','connected') else 'sv-medium' }}"
+                style="{{ 'color:var(--ok-ink);' if h.state|lower in ('online','connected') }}">{{ h.state }}</span></td>
+          <td>{% if h.cpu_pct is not none %}{{ h.cpu_pct }}%{% if h.cores %} of {{ h.cores }} cores{% endif %}
+              {% elif h.cores %}{{ h.cores }} cores{% else %}—{% endif %}</td>
+          <td>{% if h.mem_pct is not none %}{{ h.mem_pct }}% of {{ h.mem_gib }} GiB
+              {% elif h.mem_gib %}{{ h.mem_gib }} GiB{% else %}—{% endif %}</td>
+          <td class="hint">{{ h.uptime or '—' }}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
+    {% set shown = e.guests %}
+    {% if shown %}
+    <div style="overflow-x:auto;">
+      <table class="jenkins">
+        <thead><tr>
+          <th style="min-width:190px;">Guest</th><th style="width:95px;">Kind</th>
+          <th style="width:100px;">State</th><th style="min-width:130px;">Host</th>
+          <th style="width:130px;">CPU</th><th style="width:150px;">Memory</th>
+          <th style="width:100px;">Disk</th><th style="width:100px;">Uptime</th>
+          <th style="min-width:150px;"></th>
+        </tr></thead>
+        <tbody>
+        {% for g in shown %}
+        <tr>
+          {%- set gkind = 'lxc' if g.kind == 'container' else 'qemu' %}
+          <td class="jname">{% if e.flavor in ('esxi', 'proxmox') %}<a href="/virt/vm?c={{ e.conn.id|urlencode }}&vm={{ g.id|urlencode }}&node={{ g.host|urlencode if e.flavor == 'proxmox' else '' }}&kind={{ gkind }}"><b>{{ g.name }}</b></a>{% else %}<b>{{ g.name }}</b>{% endif %}
+            {% if g.id %}<span class="hint" style="font-family:var(--mono);font-size:11px;"> {{ g.id }}</span>{% endif %}</td>
+          <td class="hint">{{ g.kind }}</td>
+          <td><span class="sv {{ 'sv-ok' if g.state|lower in ('running','on','poweredon') else 'sv-medium' }}"
+                style="{{ 'color:var(--ok-ink);' if g.state|lower in ('running','on','poweredon') }}">{{ g.state }}</span></td>
+          <td class="hint">{{ g.host or '—' }}</td>
+          <td>{% if g.cpu_pct is not none and g.cores %}{{ g.cpu_pct }}% of {{ g.cores }}
+              {% elif g.cores %}{{ g.cores }} vCPU{% else %}—{% endif %}</td>
+          <td>{% if g.mem_pct is not none %}{{ g.mem_pct }}% of {{ g.mem_gib }} GiB
+              {% elif g.mem_gib %}{{ g.mem_gib }} GiB{% else %}—{% endif %}</td>
+          <td>{% if g.disk_gib %}{{ g.disk_gib }} GiB{% else %}—{% endif %}</td>
+          <td class="hint">{{ g.uptime or '—' }}</td>
+          <td class="actcol">{% if e.flavor in ('esxi', 'proxmox') %}{{ vb.console_link(e.conn, {'id': g.id, 'name': g.name, 'power': 'running' if (g.state|lower) in ('running', 'on', 'poweredon') else 'stopped'}, g.host if e.flavor == 'proxmox' else '', gkind, e.caps) }}{% endif %}
+            {% if g.url %}<a class="abtn" href="{{ g.url }}" target="_blank" rel="noopener" title="in the hypervisor's own web interface">Open →</a>{% endif %}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="sec-note">{% if q or stopped_only %}No guest here matches the
+      filter.{% else %}This connection reported no guests.{% endif %}</div>
+    {% endif %}
+  </div>
+</details>
+{% endif %}
+{% endfor %}
+
+<script nonce="{{ csp_nonce() }}">
+// Which cards are open survives this page's reloads (the "still collecting"
+// ones, and Refresh), per tab. A filter's own openings win over memory.
+(function () {
+  var KEY = 'virt.open';
+  var cards = Array.prototype.slice.call(document.querySelectorAll('details.vcard'));
+  var filtered = {{ 'true' if (q or stopped_only) else 'false' }};
+  function load() {
+    try { return JSON.parse(sessionStorage.getItem(KEY) || '[]'); } catch (e) { return []; }
+  }
+  function save() {
+    try {
+      sessionStorage.setItem(KEY, JSON.stringify(cards.filter(function (d) {
+        return d.open; }).map(function (d) { return d.getAttribute('data-vcard'); })));
+    } catch (e) { /* private mode: the page still works, it just forgets */ }
+  }
+  if (!filtered) {
+    var open = load();
+    cards.forEach(function (d) {
+      if (open.indexOf(d.getAttribute('data-vcard')) !== -1) d.open = true;
+    });
+  }
+  cards.forEach(function (d) {
+    d.addEventListener('toggle', function () { if (!filtered) save(); });
+  });
+  document.querySelectorAll('[data-vcards]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var want = b.getAttribute('data-vcards') === 'open';
+      cards.forEach(function (d) { d.open = want; });
+      if (!filtered) save();
+    });
+  });
+})();
+</script>
+
+<div class="card"><div class="card-b">
+  <div class="sec-note" style="margin:0;">A standalone ESXi host or a Proxmox
+    connection can be managed from here once “Allow management from EnvMap”
+    is ticked on it in Settings → Hypervisors: click a host or a VM for its
+    page, or Console for its screen. Who may do what comes from the
+    Hypervisors areas in their roles, and every change is in the audit log.
+    A vCenter stays read-only.</div>
+</div></div>
+{% endif %}
+<div data-virt data-c="" hidden></div>
+<script src="/static/virt.js?v={{ portal_version() }}" nonce="{{ csp_nonce() }}"></script>
+{% endblock %}

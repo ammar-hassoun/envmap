@@ -1,0 +1,95 @@
+{#- Everything a page needs to offer an action that changes a cluster.
+
+    WHY IT IS ONE PARTIAL
+        Two pages now carry these buttons — a cluster's own tabs and a workload's
+        related resources — and the machinery is not just the markup: it is the
+        hidden fields, the confirm, and the production lock that has to hold on
+        both. A second copy of that is a second place for the lock to be forgotten,
+        and a page that can restart a production deployment without the confirm the
+        other page demands is not a smaller version of the same feature.
+
+    A page includes this once and then calls the two macros. It renders the
+    banner itself, because the banner is what explains the buttons below it.
+
+    Needs in its context: `pid`, `cid`, `sel` (the cluster record), `writable`,
+    `is_prod`. -#}
+
+{% macro act_fields(back) %}
+{#- The hidden half of every action form. `back` is where the POST returns to, so
+    an action taken on a page comes back to that page rather than to whichever
+    one the route happens to default to. -#}
+<input type="hidden" name="project" value="{{ pid }}">
+<input type="hidden" name="cluster" value="{{ cid }}">
+<input type="hidden" name="back" value="{{ back }}">
+{% if is_prod %}<input type="hidden" name="confirm" value="" class="prodconfirm">{% endif %}
+{% endmacro %}
+
+{% macro act_button(action, label, cls='btn-ghost', extra='', icon='') %}
+{#- `icon` draws a line icon in place of the words, and the words stay the label:
+    they are what the confirm dialog says and what the tooltip reads. Passing the
+    icon AS the label put raw SVG inside onclick="…", which ends that attribute at
+    the SVG's first double quote. -#}
+<button type="submit" name="action" value="{{ action }}" class="{{ cls }}"
+        style="padding:4px 11px;font-size:11.5px;"
+        {% if icon %}title="{{ label }}{{ ' — ' ~ extra if extra }}"{% endif %}
+        {% if not writable %}disabled title="this cluster is read-only in the portal — enable management in Settings → Clusters"{% else %}
+        data-call="confirmAct" data-arg-self data-label="{{ label }}" data-extra="{{ extra }}"{% endif %}>
+  {% if icon %}{{ glyph(icon, 13) }}{% else %}{{ label }}{% endif %}</button>
+{% endmacro %}
+
+{% macro act_banner() %}
+{% if writable %}
+<div class="flash err" style="border-color:var(--warn);">
+  ⚙ Management is enabled on this cluster — the buttons here change it.
+  Every action is audited.
+  {% if is_prod %}
+  <div style="margin-top:8px;">This cluster serves <b>production</b>. Type its
+    name to unlock the buttons for this page:
+    <input type="text" id="prodname" autocomplete="off" placeholder="{{ sel.name }}"
+           data-call-input="unlock"
+           style="width:190px;display:inline-block;padding:4px 8px;font-size:12.5px;
+                  font-family:var(--mono);margin-left:6px;">
+    <span id="prodstate" class="hint">locked</span></div>
+  {% endif %}
+</div>
+{% endif %}
+{% endmacro %}
+
+{% macro act_script() %}
+{#- The confirm and the lock, as a macro rather than as this file's body.
+
+    `{% import %}` brings in the macros and NOT the body, so a <script nonce="{{ csp_nonce() }}"> sitting
+    out here was included by nobody: both pages lost confirmAct() the moment they
+    started importing this, and an exception in an inline onclick does not cancel
+    a submit — so the button still posted, silently, without ever asking. A macro
+    is the only shape that cannot be half-imported. -#}
+<script nonce="{{ csp_nonce() }}">
+// One confirmation for every action button, naming what will happen. The
+// buttons post ordinary forms, so this is the only client-side logic involved.
+function confirmAct(btn) {
+  const label = btn.dataset.label || '', extra = btn.dataset.extra || '';
+  const note = extra ? '\n\n' + extra : '';
+  return confirm(label + ' — run this against {{ sel.name if sel else cid }}?' + note);
+}
+// A production cluster stays locked until its name is typed; the value is
+// copied into each form's hidden confirm field, and the server checks it again.
+function unlock(value) {
+  const want = {{ ((sel.name if sel else '') or '')|tojson }};
+  const ok = value.trim() === want;
+  document.querySelectorAll('.prodconfirm').forEach(i => { i.value = value.trim(); });
+  document.querySelectorAll('form[action="/clusters/action"] button').forEach(b => {
+    b.disabled = !ok;
+  });
+  const state = document.getElementById('prodstate');
+  if (state) {
+    state.textContent = ok ? 'unlocked for this page' : 'locked';
+    state.style.color = ok ? 'var(--ok-ink)' : '';
+  }
+}
+{% if is_prod and writable %}
+// Locked from the start, not from the first keystroke: a page that arrives with
+// its buttons live has already lost the argument.
+document.addEventListener('DOMContentLoaded', () => unlock(''));
+{% endif %}
+</script>
+{% endmacro %}

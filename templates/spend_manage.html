@@ -1,0 +1,755 @@
+{% extends "base.html" %}
+{% import "_register.html" as reg %}
+{% block crumbs %}<a href="/spend">IT spend</a> <span class="sep">/</span> <b>Everything we pay for</b>{% endblock %}
+{% block content %}
+
+<div class="page-head">
+  <div>
+    <h1>IT spend</h1>
+    <p class="sub">Everything with a price — software, cloud, hosting,
+      domains, plugins, and the invoices for things bought once. A recurring
+      row is reduced to a run rate from its own billing cycle; a one-off sits
+      in the month it was charged and adds nothing to the run rate. Either
+      way the totals are derived rather than maintained by hand.</p>
+  </div>
+  <div style="display:flex;gap:10px;align-items:center;">
+    {# show everything in any currency: the totals, the per-year column and the
+       breakdown all follow it #}
+    <form method="get" action="/spend/manage" class="curpick">
+      <label for="showin">show in</label>
+      <select id="showin" name="in" data-submit>
+        {% for c in choices %}
+        <option value="{{ c }}" {{ 'selected' if c == t.base }}>{{ c }}</option>
+        {% endfor %}
+      </select>
+    </form>
+    <a class="btn btn-ghost" href="/spend/export.csv{{ ('?' ~ qs) if qs }}">
+      ↓ CSV</a>
+    <button type="button" data-dlg-open="addSub">
+      ＋ Add a subscription</button>
+  </div>
+</div>
+
+{# ?add=1 is how the calendar's Add button arrives: one dialog, defined once
+   here, rather than a second copy of it on a page that only shows totals. #}
+<script nonce="{{ csp_nonce() }}">
+  addEventListener('DOMContentLoaded', function () {
+    if (new URLSearchParams(location.search).get('add') === '1') {
+      document.getElementById('addSub').showModal();
+    }
+  });
+</script>
+
+{% if msg %}<div class="flash">✓ {{ msg }}</div>{% endif %}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+
+{# ── the year, month by month ─────────────────────────────────────────────
+   Thirteen boxes: one per month and one for the year. The old page led with a
+   run rate and two charts, which answered "what do we pay on average" — a
+   question nobody was asking. The question is "what did March cost, and on
+   what", and it is answerable here without clicking anything: every box
+   carries its own total and the split by kind of spending. Clicking one opens
+   the lines behind it. #}
+<div class="yearbar">
+  <form method="get" action="/spend/manage#year" class="yearpick">
+    <label for="yr">year</label>
+    <select id="yr" name="year" data-submit>
+      {% for y in yv.years %}
+      <option value="{{ y }}" {{ 'selected' if y == yv.year }}>{{ y }}</option>
+      {% endfor %}
+    </select>
+    <input type="hidden" name="m" value="{{ pick }}">
+  </form>
+  <div class="yearsum">
+    <div><span class="ys-k">total</span>
+      <span class="ys-v">{{ yv.currency }} {{ '{:,.0f}'.format(yv.total) }}</span></div>
+    {% if yv.counted %}
+    <div><span class="ys-k">typical month</span>
+      <span class="ys-v">{{ yv.currency }} {{ '{:,.0f}'.format(yv.average) }}</span></div>
+    {% endif %}
+    {% if yv.peak %}
+    <div><span class="ys-k">heaviest</span>
+      <span class="ys-v">{{ yv.peak.label }} · {{ yv.currency }}
+        {{ '{:,.0f}'.format(yv.peak.total) }}</span></div>
+    {% endif %}
+  </div>
+</div>
+
+{% if yv.cloud_gap %}
+<div class="sec-note" style="margin:-4px 0 12px;color:var(--warn-ink);">⚠ The
+  connected cloud accounts' bills only go back to {{ yv.cloud_from }}, so no
+  metered spend is shown for {{ yv.year }} — the boxes below cover the
+  subscriptions and invoices only, not the whole year's cost.</div>
+{% endif %}
+
+{% if yv.pending %}
+<div class="sec-note" style="margin:-4px 0 12px;">Still reading
+  {{ yv.pending }} cloud account{{ "'s" if yv.pending == 1 else "s'" }} bills — reload in a
+  moment for the metered figures.</div>
+{% endif %}
+
+<div class="ygrid" id="year">
+  {% for m in yv.months %}
+  <a class="ybox{{ ' on' if pick == m.n|string }}{{ ' empty' if not m.total }}{{ ' future' if m.future }}"
+     href="/spend/manage?year={{ yv.year }}&m={{ m.n }}#detail">
+    <div class="yb-top">
+      <span class="yb-name">{{ m.label }}</span>
+      {% if m.running %}<span class="yb-tag">running</span>{% endif %}
+    </div>
+    <div class="yb-total">{% if m.future %}<span class="absent">—</span>
+      {% else %}{{ yv.currency }} {{ '{:,.0f}'.format(m.total) }}{% endif %}</div>
+    {# a bar per box rather than one chart: the comparison survives being read
+       one box at a time, which a chart does not #}
+    <div class="yb-bar"><i style="width:{{ (m.frac * 100)|round(1) }}%"></i></div>
+    <div class="yb-split">
+      {% for key, lab in yv.buckets %}
+      {% if m.by[key] %}
+      <span class="yb-s yb-{{ key }}">{{ lab|lower }}
+        <b>{{ '{:,.0f}'.format(m.by[key]) }}</b></span>
+      {% endif %}
+      {% endfor %}
+      {% if not m.total %}<span class="yb-s dim">{{ 'not yet' if m.future
+        else 'nothing charged' }}</span>{% endif %}
+    </div>
+  </a>
+  {% endfor %}
+
+  {# the thirteenth: the same shape, so it reads as one of the set rather than
+     as a summary bolted on the end #}
+  <a class="ybox yall{{ ' on' if pick == 'all' }}"
+     href="/spend/manage?year={{ yv.year }}&m=all#detail">
+    <div class="yb-top"><span class="yb-name">Whole year {{ yv.year }}</span></div>
+    <div class="yb-total">{{ yv.currency }} {{ '{:,.0f}'.format(yv.total) }}</div>
+    <div class="yb-bar"><i style="width:100%"></i></div>
+    <div class="yb-split">
+      {% for key, lab in yv.buckets %}
+      {% if yv.by[key] %}
+      <span class="yb-s yb-{{ key }}">{{ lab|lower }}
+        <b>{{ '{:,.0f}'.format(yv.by[key]) }}</b></span>
+      {% endif %}
+      {% endfor %}
+      {% if not yv.total %}<span class="yb-s dim">nothing charged this year</span>{% endif %}
+    </div>
+  </a>
+</div>
+
+{# ── what is inside the box you picked ──────────────────────────────────── #}
+<div class="card" id="detail">
+  <div class="card-h" style="flex-wrap:wrap;gap:9px;">
+    <b style="font-size:15px;">{{ det.label }}</b>
+    <span class="hint">{{ det.lines|length }} line{{ 's' if det.lines|length != 1 }}</span>
+    <span style="flex:1"></span>
+    <span style="font-size:17px;font-weight:750;">{{ det.currency }}
+      {{ '{:,.2f}'.format(det.total) }}</span>
+  </div>
+
+  {% if det.stranded %}
+  <div class="card-b" style="padding-bottom:0;">
+    <div class="flash err" style="margin:0;">⚠ <span>Not in the total:
+      {% for r in det.stranded %}<b>{{ r.what }}</b>
+        ({{ r.currency }} {{ '{:,.2f}'.format(r.amount) }}){{ ', ' if not loop.last }}{% endfor %}.
+      No rate between {{ det.unconverted|join(', ') }} and {{ det.currency }} —
+      <a href="#rates">add one</a>.</span></div>
+  </div>
+  {% endif %}
+
+  {% set counts = namespace(all=0) %}
+  {% set tally = {} %}
+  {% for l in det.lines %}{% set _ = tally.update({l.bucket: tally.get(l.bucket, 0) + 1}) %}{% endfor %}
+  <div class="card-b" style="padding:14px 16px 0;">
+    <div class="dtabs" role="tablist">
+      <button type="button" class="dtab on" data-b="all"
+        >Everything <span class="dn">{{ det.lines|length }}</span></button>
+      {% for key, lab in buckets %}
+      {% if tally.get(key) %}
+      <button type="button" class="dtab" data-b="{{ key }}"
+        >{{ lab }} <span class="dn">{{ tally[key] }}</span></button>
+      {% endif %}
+      {% endfor %}
+    </div>
+  </div>
+
+  {% if det.lines %}
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins" id="dtable">
+      <thead><tr>
+        <th>What</th>
+        {% if det.whole_year %}<th style="width:104px;">Month</th>{% endif %}
+        <th style="width:150px;">From</th>
+        <th style="width:120px;">Kind</th>
+        <th class="num" style="width:140px;text-align:right;">Amount</th>
+        <th class="num" style="width:78px;text-align:right;">Share</th>
+      </tr></thead>
+      <tbody>
+        {% for l in det.lines %}
+        <tr data-b="{{ l.bucket }}" data-amt="{{ l.amount }}">
+          <td class="jname">{{ l.what }}
+            {% if l.note %}<div class="sec-note" style="margin:2px 0 0;">{{ l.note }}</div>{% endif %}</td>
+          {% if det.whole_year %}<td class="hint">{{ l.month }}</td>{% endif %}
+          <td class="hint">{{ l.who or '—' }}</td>
+          <td><span class="badge">{{ l.kind }}</span></td>
+          <td class="num" style="text-align:right;font-family:var(--mono);"
+            >{{ det.currency }} {{ '{:,.2f}'.format(l.amount) }}</td>
+          <td class="num hint" style="text-align:right;">{% if l.credit %}credit
+            {% else %}{{ '{:.0f}'.format(l.share) }}%{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      <tfoot>
+        <tr><th colspan="{{ 4 if det.whole_year else 3 }}"
+              style="text-align:right;">total shown</th>
+          <th class="num" style="text-align:right;font-family:var(--mono);"
+              id="dsum" data-cur="{{ det.currency }}"
+            >{{ det.currency }} {{ '{:,.2f}'.format(det.total) }}</th>
+          <th></th></tr>
+      </tfoot>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-b"><p class="sub" style="margin:0;">{{ det.note or
+    'Nothing was charged.' }}</p></div>
+  {% endif %}
+</div>
+{% if t.unconverted %}
+<div class="flash err" style="margin-bottom:18px;">
+  ⚠ <span>Not counted above:
+    {% for r in t.stranded %}<b>{{ r.name }}</b> ({{ r.currency }}){{
+      ', ' if not loop.last }}{% endfor %}.
+    No rate between {{ t.unconverted|join(', ') }} and {{ t.base }} has been set —
+    <a href="#rates">add one</a> and {{ 'it joins' if t.stranded|length == 1
+      else 'they join' }} the totals.</span>
+</div>
+{% endif %}
+{% if t.stale %}
+<div class="flash err" style="margin-bottom:18px;">
+  ⚠ <span>{% for r in t.stale %}<b>{{ r.code }}</b> was set
+    {{ r.age }} days ago{{ ', ' if not loop.last }}{% endfor %} — older than
+    {{ stale_days }} days, so the converted figures using
+    {{ 'it' if t.stale|length == 1 else 'them' }} may have drifted.
+    <a href="#rates">Update</a>.</span>
+</div>
+{% endif %}
+
+{# ── where the money goes ─────────────────────────────────────────────── #}
+{% if t.by_vendor %}
+<div class="card">
+  <div class="card-h">Yearly spend
+    <span class="hint">by vendor, then by category · {{ t.base }}</span></div>
+  <div class="card-b">
+    <div class="bars">
+      {% set top = t.by_vendor[0][1] or 1 %}
+      {% for who, amount in t.by_vendor[:8] %}
+      <div class="bar-row">
+        <span class="bar-k">{{ who }}</span>
+        <span class="bar-t"><span class="bar-f"
+              style="width:{{ (amount / top * 100)|round(1) }}%;"></span></span>
+        <span class="bar-v num">{{ '{:,.0f}'.format(amount) }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% if t.by_category %}
+    <div class="bars" style="margin-top:16px;padding-top:14px;
+                             border-top:1px solid var(--hairline);">
+      {% set ctop = t.by_category[0][1] or 1 %}
+      {% for who, amount in t.by_category %}
+      <div class="bar-row">
+        <span class="bar-k">{{ who }}</span>
+        <span class="bar-t"><span class="bar-f alt"
+              style="width:{{ (amount / ctop * 100)|round(1) }}%;"></span></span>
+        <span class="bar-v num">{{ '{:,.0f}'.format(amount) }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% if t.metered %}
+    <div class="sec-note" style="margin-top:14px;">{{ t.metered|length }} metered
+      {{ 'row carries' if t.metered|length == 1 else 'rows carry' }} no fixed
+      price and {{ 'is' if t.metered|length == 1 else 'are' }} excluded from
+      these totals — the cloud pages show what those actually billed.</div>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+{# ── cloud accounts feed themselves in ────────────────────────────────────
+   The one line nobody can keep by hand: it changes every month. The portal
+   already reads these bills for the Clouds pages, so the register asks the
+   same reader rather than the person. #}
+{% if clouds %}
+<div class="card">
+  <div class="card-h">Cloud accounts
+    <span class="hint">{{ clouds|length }} connected · read automatically</span>
+    <span style="flex:1"></span>
+    <form method="post" action="/spend/sync">
+      <button type="submit" class="btn-ghost tbtn">Read the bills now</button>
+    </form>
+  </div>
+  <div class="card-b">
+    <div class="linked">
+      {% for c in clouds %}
+      {% set row = rows_by_source.get('cloud:' ~ c.id) %}
+      <div class="lrow">
+        {# no provider id after the name: it is lowercase, and the name almost
+           always says who it is with already #}
+        <span class="lname">{{ c.name or c.id }}</span>
+        {% if row %}
+        <span class="lcost num">{{ row.currency }}
+          {{ '{:,.2f}'.format(row.cost) }}<span class="hint"> / month</span></span>
+        <span class="lnote hint">{{ row.source_note or 'read from the bill' }}</span>
+        {% else %}
+        <span class="lcost hint">not read yet</span>
+        <span class="lnote hint">the next read will add it — or use the button
+          above</span>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    <div class="sec-note" style="margin-top:12px;">
+      {% if synced %}Last read
+        {%- if sync_age is not none %}
+          {%- if sync_age < 1 %} less than an hour ago
+          {%- elif sync_age < 2 %} an hour ago
+          {%- elif sync_age < 48 %} {{ sync_age|round|int }} hours ago
+          {%- else %} on {{ synced[:10] }}{% endif %}
+        {%- else %} on {{ synced[:10] }}{% endif %}, and it runs again on its own
+        after six hours.
+      {% else %}Not read yet — it runs on its own when this page is opened.{% endif %}
+      The cost on these rows comes from the provider's own bill and is refreshed
+      for you; an owner, a project or a note you add is kept. A read that fails
+      leaves the last known figure alone rather than writing a zero.
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{# ── the list ─────────────────────────────────────────────────────────── #}
+<div class="card" id="register">
+  <div class="card-h">
+    <b>The register</b>
+    {% if month %}
+    <span class="badge" style="color:var(--accent-ink);">
+      falling due in {{ picked.label if picked else month }}</span>
+    <a class="hint" href="/spend?tab={{ tab }}#register">clear</a>
+    {% elif filtered %}
+    <span class="hint">filtered · the figures and charts above cover every
+      active row</span>
+    {% endif %}
+    <span style="flex:1"></span>
+    {# lands on the register rather than the top of the page: changing a filter
+       and being thrown back past two charts to find the table again is the
+       single most irritating thing this page did #}
+    <form method="get" action="/spend#register" class="filterbar">
+      <input type="hidden" name="tab" value="{{ tab }}">
+      <div class="searchbox">
+        <span class="mag">⌕</span>
+        <input type="text" name="q" value="{{ q }}"
+               placeholder="name, vendor, owner…">
+      </div>
+      <select name="category" data-submit>
+        <option value="">every category</option>
+        {% for key, label in categories.items() %}
+        <option value="{{ key }}" {{ 'selected' if category == key }}>{{ label }}</option>
+        {% endfor %}
+      </select>
+      <select name="status" data-submit>
+        {% for s in ['active', 'cancelled', 'ended', 'all'] %}
+        <option value="{{ s }}" {{ 'selected' if status_filter == s }}>{{ s }}</option>
+        {% endfor %}
+      </select>
+      {# the month the register is narrowed to, kept in step with the charts #}
+      <select name="month" data-submit>
+        <option value="">any month</option>
+        {% for m in fc.months %}
+        <option value="{{ m.ym }}" {{ 'selected' if month == m.ym }}>
+          {{ m.label }}{% if m.amount %} · {{ fc.currency }}
+          {{ '{:,.0f}'.format(m.amount) }}{% endif %}</option>
+        {% endfor %}
+      </select>
+      <select name="sort" data-submit>
+        <option value="renews" {{ 'selected' if sort == 'renews' }}>by renewal</option>
+        <option value="cost" {{ 'selected' if sort == 'cost' }}>by cost</option>
+        <option value="vendor" {{ 'selected' if sort == 'vendor' }}>by vendor</option>
+        <option value="name" {{ 'selected' if sort == 'name' }}>by name</option>
+      </select>
+    </form>
+  </div>
+
+  {# ── a table per billing cycle ──────────────────────────────────────────
+     Split because the totals are different kinds of number and must not be
+     added: a subscription has a run rate, a thing bought once has an amount
+     that was charged and will not be charged again. Each tab carries its own
+     total on the chip, so the answer to "what do we pay a month" and "what did
+     we buy" are both readable without opening anything. #}
+  <div class="card-b" style="padding:0;">
+    <div class="regtabs" role="tablist" aria-label="The register by billing cycle">
+      {% for g in groups %}{% if g.always or g.rows %}
+      <button type="button" class="regtab{{ ' on' if g.key == tab }}"
+              id="tabb-{{ g.key }}" role="tab" data-tab="{{ g.key }}"
+              aria-selected="{{ 'true' if g.key == tab else 'false' }}"
+              aria-controls="pan-{{ g.key }}">
+        <span class="rtl">{{ g.label }}
+          <span class="rtn">{{ g.count }}</span></span>
+        <span class="rtv">{% if g.count %}{{ g.currency }}
+          {{ '{:,.0f}'.format(g.headline) }}
+          <i>{{ g.unit }}</i>{% else %}<i>empty</i>{% endif %}</span>
+      </button>
+      {% endif %}{% endfor %}
+    </div>
+
+    {% for g in groups %}{% if g.always or g.rows %}
+    {{ reg.panel(g, t, cycles, categories, tab, filtered) }}
+    {% endif %}{% endfor %}
+  </div>
+</div>
+
+
+
+{# ── currency, so the totals can be trusted ───────────────────────────── #}
+<div class="card" id="rates">
+  <div class="card-h">Exchange rates
+    <span class="hint">held against {{ pivot }} · showing {{ t.base }}</span></div>
+  <div class="card-b">
+    <p class="sub" style="margin:0 0 16px;">Rates are kept as one number per
+      currency against {{ pivot }} and conversion goes through it, so
+      {{ (choices|reject('eq', pivot)|list|first) or 'AED' }}→{{ t.base }} can
+      never disagree with the reverse. Pegged currencies are built in — those are
+      published constants, not estimates. Everything else is entered here rather
+      than fetched, so a total never moves because someone else's number moved.</p>
+
+    <table class="jenkins" style="margin-bottom:16px;">
+      <thead><tr><th>currency</th><th>1 {{ pivot }} buys</th>
+        <th>1 unit is worth</th><th>source</th><th>set</th></tr></thead>
+      <tbody>
+      {% for r in fx %}
+      <tr>
+        <td><b>{{ r.code }}</b></td>
+        <td style="font-family:var(--mono);">{{ r.rate }}</td>
+        <td style="font-family:var(--mono);" class="hint">{{ r.inverse }}
+          {{ pivot }}</td>
+        <td>{% if r.src == 'peg' %}<span class="badge">pegged</span>
+            {% else %}<span class="badge">entered</span>{% endif %}</td>
+        <td class="{{ 'hint' if not r.stale }}"
+            style="{{ 'color:var(--warn-ink);' if r.stale }}">
+          {% if r.at %}{{ r.at }}{% if r.age is not none %} ·
+            {% if r.age == 0 %}today{% elif r.age == 1 %}yesterday
+            {% else %}{{ r.age }} days ago{% endif %}{% endif %}
+          {% else %}fixed by the central bank{% endif %}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+
+    <form method="post" action="/spend/currency" class="grid3-lic">
+      <div class="dfield" style="margin:0;">
+        <label for="code">currency</label>
+        <input id="code" type="text" name="code" maxlength="3"
+               placeholder="KES" style="text-transform:uppercase;">
+      </div>
+      <div class="dfield" style="margin:0;">
+        <label for="rate">1 {{ pivot }} buys how many</label>
+        <input id="rate" type="text" name="rate" placeholder="129.50">
+        <div class="dhelp">Save as 0 to forget a rate. A rate entered here
+          overrides a peg, in case one is ever revalued.</div>
+      </div>
+      <div><button type="submit">Save the rate</button></div>
+    </form>
+  </div>
+</div>
+
+{# ── add / edit, one dialog for both ──────────────────────────────────── #}
+{% include "_spend_dialog.html" %}
+
+<style>
+  /* the filter bar sits inside a flex card header, where an unconstrained
+     select stretches to the full row and pushes the header three lines tall */
+  /* ── the lead band: one hero figure, counts beside it ─────────────── */
+  .lead { display:grid; grid-template-columns:minmax(280px,1fr) 2fr; gap:0;
+          align-items:stretch; }
+  @media (max-width:900px) { .lead { grid-template-columns:1fr; } }
+  .lead-hero { padding:22px 26px; }
+  .lead-label { font-size:11px; text-transform:uppercase; letter-spacing:.9px;
+                color:var(--faint); font-weight:700; }
+  /* proportional figures, not tabular: equal-width digits look loose this big */
+  .hero { font-size:44px; line-height:1.1; font-weight:700; letter-spacing:-1.5px;
+          margin:7px 0 5px; }
+  .lead-sub { font-size:12.5px; color:var(--muted); }
+  .lead-stats { display:grid; grid-template-columns:repeat(3,1fr);
+                border-left:1px solid var(--line); }
+  @media (max-width:900px) { .lead-stats { border-left:0;
+    border-top:1px solid var(--line); } }
+  @media (max-width:620px) { .lead-stats { grid-template-columns:1fr; } }
+  .lstat { padding:22px 22px; border-left:1px solid var(--hairline);
+           color:var(--text); text-decoration:none; display:block; }
+  .lstat:first-child { border-left:0; }
+  a.lstat:hover { background:var(--overlay-soft); }
+  .lstat-k { font-size:11px; text-transform:uppercase; letter-spacing:.8px;
+             color:var(--faint); font-weight:700; }
+  .lstat-v { font-size:23px; font-weight:700; letter-spacing:-.6px;
+             margin:8px 0 4px; display:flex; align-items:center; gap:7px; }
+  .lstat-s { font-size:11.5px; color:var(--muted); }
+  /* status carries an icon and a label, never colour alone */
+  .lstat.is-bad .lstat-v { color:var(--danger-ink); }
+  .lstat .ic { width:17px; height:17px; flex:none; }
+
+  /* ── the column chart ─────────────────────────────────────────────── */
+  .chartwrap { position:relative; }
+  .fcchart { width:100%; height:auto; display:block; overflow:visible; }
+  .fcchart .fcgl { stroke:var(--hairline); stroke-width:1; }
+  .fcchart .fcaxis { stroke:var(--line2); stroke-width:1; }
+  .fcchart .fctick, .fcchart .fcmlab { fill:var(--faint); font-size:11px;
+                             font-variant-numeric:tabular-nums; }
+  .fcchart .fcmlab { fill:var(--muted); }
+  .fcchart .fcyr { fill:var(--faint); font-size:10px; }
+  .fcchart .fccap { fill:var(--text); font-size:11.5px; font-weight:700;
+               font-variant-numeric:tabular-nums; }
+  .fcchart .fcbar { fill:var(--series-1); }
+  .fcchart .fchit { fill:transparent; }
+  .fcchart .fccol { cursor:default; }
+  .fcchart .fcclick { cursor:pointer; }
+  .fcchart .fcbar { fill:var(--series-1); }
+  /* the month in progress is not comparable with the ones beside
+     it, so it is drawn as provisional rather than as a fall */
+  .fcchart .fcpart { fill:var(--series-1); opacity:.42; }
+  .fcchart .fccol:hover .bar, .fcchart .fccol:focus-visible .bar { fill:var(--series-1-hi); }
+  .fcchart .fccol:focus { outline:none; }
+  .fcchart .fccol:focus-visible .hit { fill:var(--overlay); }
+  .fctip { position:absolute; pointer-events:none; z-index:5; max-width:280px;
+         background:var(--panel2); border:1px solid var(--line2);
+         border-radius:9px; padding:9px 12px; box-shadow:var(--shadow);
+         font-size:12px; }
+  .fctip b { display:block; font-size:12.5px; }
+  .fctip .tv { font-variant-numeric:tabular-nums; font-weight:700;
+             margin:3px 0 5px; }
+  .fctip .tr { color:var(--muted); font-size:11.5px; white-space:pre-line;
+             line-height:1.5; }
+  .numcell { text-align:right; font-variant-numeric:tabular-nums; }
+
+  /* ── linked cloud accounts ────────────────────────────────────────── */
+  .linked { display:flex; flex-direction:column; }
+  .lrow { display:grid; grid-template-columns:1fr auto 1.4fr; gap:16px;
+          align-items:baseline; padding:10px 0;
+          border-top:1px solid var(--hairline); }
+  .lrow:first-child { border-top:0; }
+  @media (max-width:760px) { .lrow { grid-template-columns:1fr; gap:3px; } }
+  .lname { font-weight:600; font-size:13.5px; }
+  .lcost { font-size:14px; font-weight:700; text-align:right;
+           font-variant-numeric:tabular-nums; }
+  .lnote { font-size:11.5px; }
+  /* a row the provider owns, so it is obvious why the cost cannot be typed */
+  .auto { font-size:9.5px; text-transform:uppercase; letter-spacing:.8px;
+          font-weight:800; padding:1.5px 6px; border-radius:4px;
+          background:var(--overlay); border:1px solid var(--line2);
+          color:var(--muted); vertical-align:1px; }
+
+  .filterbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap;
+               justify-content:flex-end; }
+  .filterbar .dd, .filterbar select { width:auto; min-width:132px; padding:7px 11px;
+                      font-size:12.5px; }
+  .filterbar .searchbox input { width:190px; }
+  /* a breakdown that reads at a glance and needs no charting library */
+  .bars { display:grid; gap:7px; }
+  .bar-row { display:grid; grid-template-columns:minmax(90px,190px) 1fr auto;
+             gap:12px; align-items:center; font-size:12.5px; }
+  .bar-k { color:var(--text2); overflow:hidden; text-overflow:ellipsis;
+           white-space:nowrap; }
+  .bar-t { height:8px; border-radius:99px; background:var(--well);
+           border:1px solid var(--line); overflow:hidden; }
+  .bar-f { display:block; height:100%; background:var(--accent);
+           border-radius:99px; }
+  .bar-f.alt { background:var(--accent2, var(--accent-ink)); opacity:.75; }
+  .bar-v { font-family:var(--mono); font-size:11.5px; color:var(--muted);
+           min-width:64px; text-align:right; }
+  /* drawn row controls, matching the DNS manager */
+  .iconb { width:27px; height:27px; padding:0; border-radius:7px;
+           border:1px solid var(--line); background:transparent;
+           color:var(--muted); cursor:pointer; box-shadow:none;
+           display:inline-flex; align-items:center; justify-content:center; }
+  .iconb:hover { color:var(--text); border-color:var(--line2);
+                 background:var(--overlay); filter:none; }
+  .iconb.danger:hover { color:var(--danger-ink);
+                        border-color:var(--danger-ink); }
+  .iconb:focus-visible { outline:2px solid var(--accent-ink);
+                         outline-offset:2px; }
+  .iconb + .iconb { margin-left:5px; }
+
+  /* ── the register's tabs ───────────────────────────────────────────────
+     Each chip carries its own total, so "what do we pay a month" and "what
+     did we buy once" are both answered without opening anything. */
+  .regtabs { display:flex; gap:2px; padding:0 10px; overflow-x:auto;
+             border-bottom:1px solid var(--line); scrollbar-width:thin; }
+  .regtab { flex:0 0 auto; display:flex; flex-direction:column; gap:3px;
+            align-items:flex-start; padding:11px 15px 10px; border:none;
+            border-bottom:2px solid transparent; background:none; cursor:pointer;
+            color:var(--muted); font:inherit; text-align:left;
+            border-radius:8px 8px 0 0; transition:background .12s, color .12s; }
+  .regtab:hover { background:var(--well); color:var(--text); }
+  .regtab.on { color:var(--text); border-bottom-color:var(--accent); }
+  .regtab:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+  .rtl { display:flex; align-items:center; gap:7px; font-size:12.5px;
+         font-weight:650; letter-spacing:.01em; }
+  .rtn { min-width:19px; padding:1px 6px; border-radius:99px; font-size:10.5px;
+         font-weight:700; background:var(--well); color:var(--muted);
+         text-align:center; font-variant-numeric:tabular-nums; }
+  .regtab.on .rtn { background:var(--accent); color:var(--ink-on-accent); }
+  .rtv { font-size:12px; font-variant-numeric:tabular-nums; font-weight:600;
+         color:var(--muted); white-space:nowrap; }
+  .regtab.on .rtv { color:var(--text); }
+  .rtv i { font-style:normal; font-weight:400; color:var(--faint); }
+
+  /* the total strip above each table */
+  .gtot { display:flex; flex-wrap:wrap; gap:26px; padding:14px 16px 13px;
+          border-bottom:1px solid var(--line); background:var(--well); }
+  .gtv { font-size:19px; font-weight:750; font-variant-numeric:tabular-nums;
+         letter-spacing:-.01em; }
+  .gtl { font-size:11px; color:var(--muted); margin-top:1px; }
+  .gtwarn .gtv { font-size:14px; color:var(--warn-ink); padding-top:4px; }
+
+  /* ── cells that are inputs but must not look like a form ─────────────── */
+  .regtable td { vertical-align:top; }
+  /* Wide enough that the browser scrolls the wrapper instead of crushing the
+     columns. Without it the table squeezed to fit: vendor and cycle came out
+     at 74–78px, and the add row's controls — which cannot shrink past their
+     own content — spilled across the columns beside them. */
+  .regtable { min-width:960px; }
+  /* box-sizing, or width:100% means 100% PLUS 14px of padding and 2px of
+     border, so every control was 16px wider than the cell holding it.
+     min-width:0 because a select will not otherwise shrink below its longest
+     option, and "SaaS and software" was dragging the first column out from
+     under the two beside it. */
+  .cel:hover { border-color:var(--line); }
+  .cel:focus { border-color:var(--accent); background:var(--panel);
+               outline:none; }
+  tr.dirty td { background:color-mix(in srgb, var(--accent) 7%, transparent); }
+  .regrow { cursor:pointer; }
+  .regrow:hover { background:var(--panel2); }
+  .regrow:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+  .rowacts { white-space:nowrap; text-align:right; }
+  /* the add row sits at the foot of every table and is always ready */
+  .addr td { background:var(--well); border-top:1px solid var(--line); }
+  .addr .cel { border-color:var(--line); background:var(--panel); }
+
+  /* the tabs inside the detail table */
+  .dtabs { display:flex; gap:5px; flex-wrap:wrap; }
+  .dtab { background:none; border:1px solid var(--line); color:var(--muted);
+    border-radius:99px; padding:5px 13px; font:inherit; font-size:12px;
+    font-weight:600; cursor:pointer; box-shadow:none; }
+  .dtab:hover { color:var(--text); border-color:var(--line2); background:var(--panel2); }
+  .dtab.on { color:var(--on-accent); background:var(--accent);
+    border-color:var(--accent); }
+  .dn { font-variant-numeric:tabular-nums; opacity:.75; margin-left:4px; }
+</style>
+
+<script nonce="{{ csp_nonce() }}">
+// ── the detail table's tabs ────────────────────────────────────────────────
+// Filtering rows already on the page rather than fetching: the whole month is
+// here, the counts are known, and a round trip to hide four rows would be a
+// round trip nobody asked for. The footer re-totals so the number under the
+// column always describes the rows above it.
+(function () {
+  const tabs = [...document.querySelectorAll('.dtab')];
+  const table = document.getElementById('dtable');
+  if (!tabs.length || !table) return;
+  const sum = document.getElementById('dsum');
+  const cur = sum ? (sum.dataset.cur || '') : '';
+  const rows = [...table.querySelectorAll('tbody tr')];
+
+  const money = n => cur + ' ' + n.toLocaleString(undefined,
+    { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  function show(which) {
+    let total = 0;
+    rows.forEach(tr => {
+      const on = which === 'all' || tr.dataset.b === which;
+      tr.hidden = !on;
+      if (on) total += parseFloat(tr.dataset.amt || '0');
+    });
+    if (sum) sum.textContent = money(total);
+    tabs.forEach(t => t.classList.toggle('on', t.dataset.b === which));
+  }
+  tabs.forEach(t => t.addEventListener('click', () => show(t.dataset.b)));
+})();
+
+// ── the register's tabs ────────────────────────────────────────────────────
+// Every tab is already rendered, so switching is a class change rather than a
+// round trip. The choice goes in the URL so that adding a row, or changing a
+// filter, comes back to the table you were working in.
+(function () {
+  const tabs = [...document.querySelectorAll('.regtab')];
+  if (!tabs.length) return;
+  const show = (key, push) => {
+    tabs.forEach(t => {
+      const on = t.dataset.tab === key;
+      t.classList.toggle('on', on);
+      t.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    document.querySelectorAll('.regpanel').forEach(p => {
+      p.hidden = p.id !== 'pan-' + key;
+    });
+    document.querySelectorAll('.filterbar input[name=tab], .offform input[name=tab]')
+      .forEach(i => { if (i.closest('.filterbar')) i.value = key; });
+    if (push) {
+      const u = new URL(location.href);
+      u.searchParams.set('tab', key);
+      u.hash = 'register';
+      history.replaceState(null, '', u);
+    }
+  };
+  tabs.forEach(t => t.addEventListener('click', () => show(t.dataset.tab, true)));
+  // left/right move between tabs, the way a tablist is expected to behave
+  document.querySelector('.regtabs').addEventListener('keydown', e => {
+    const i = tabs.indexOf(document.activeElement);
+    if (i < 0 || (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft')) return;
+    e.preventDefault();
+    const next = tabs[(i + (e.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length];
+    next.focus();
+    show(next.dataset.tab, true);
+  });
+})();
+
+// ── the charts' hover layer ────────────────────────────────────────────────
+// Keyboard focus shows the same thing as the mouse, and the values are also in
+// the table under the chart — a tooltip enhances, it never gates. There are two
+// charts on this page now, so each wrap owns its own tooltip rather than one
+// element being fought over.
+(function () {
+  document.querySelectorAll('.chartwrap').forEach(wrap => {
+    const tip = wrap.querySelector('.fctip');
+    if (!tip) return;
+
+    function show(g) {
+      const rows = g.dataset.rows || '';
+      tip.innerHTML = `<b>${g.dataset.label}</b>`
+        + `<div class="tv">${g.dataset.value}</div>`
+        + (rows ? `<div class="tr">${rows}</div>`
+                : `<div class="tr">nothing in this month</div>`);
+      tip.hidden = false;
+      // placed from the column's own box, so it tracks the mark and not the
+      // pointer — a tooltip that jitters under the cursor is hard to read
+      const box = g.getBoundingClientRect();
+      const host = wrap.getBoundingClientRect();
+      const left = box.left - host.left + box.width / 2;
+      tip.style.left = '0px';                     // measure at natural width
+      const w = tip.offsetWidth;
+      tip.style.left = Math.max(4, Math.min(host.width - w - 4, left - w / 2)) + 'px';
+      tip.style.top = Math.max(4, box.top - host.top - tip.offsetHeight - 8) + 'px';
+    }
+    const hide = () => { tip.hidden = true; };
+
+    wrap.querySelectorAll('.fccol').forEach(g => {
+      g.addEventListener('mouseenter', () => show(g));
+      g.addEventListener('focus', () => show(g));
+      g.addEventListener('mouseleave', hide);
+      g.addEventListener('blur', hide);
+      // a column is a way into the month, not just a mark to read
+      const go = () => { if (g.dataset.href) location.search = g.dataset.href; };
+      g.addEventListener('click', go);
+      g.addEventListener('keydown', e => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); }
+      });
+    });
+    wrap.addEventListener('mouseleave', hide);
+  });
+})();
+
+</script>
+{% endblock %}

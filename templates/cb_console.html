@@ -1,0 +1,311 @@
+{% extends "base.html" %}
+{% block crumbs %}<a href="/db">Databases</a> <span class="sep">/</span>
+  <b>{{ server.name }}</b>{% endblock %}
+{% block content %}
+
+<div class="kv" style="margin-bottom:8px;flex-wrap:wrap;gap:8px;">
+  <h1 style="margin:0;">{{ plogo(provider, 22) }} {{ server.name }}</h1>
+  <span class="badge" style="font-family:var(--mono);">{{ where }}</span>
+  <span class="badge">as {{ held.user or 'no account' }}</span>
+  {% if held.write %}
+  <span class="badge" style="color:var(--danger-ink);border-color:var(--danger-line);">
+    ⚠ write mode</span>
+  {% else %}
+  <span class="badge" style="color:var(--ok-ink);">read-only</span>
+  {% endif %}
+  <span style="flex:1"></span>
+  {# Write mode is its own audited action, exactly as on a SQL console: after
+     this a bucket can be created, and "when did this session gain that" has to
+     be answerable on its own. Turning it ON needs the word typed — the route
+     enforces that, so a button that only posted on=1 would simply be refused. #}
+  {% if held.write %}
+  <form method="post" action="/db/{{ server.id }}/write">
+    <input type="hidden" name="on" value="">
+    <button class="btn-ghost" style="padding:6px 14px;font-size:12px;">
+      Back to read-only</button></form>
+  {% else %}
+  <button class="btn-ghost" style="padding:6px 14px;font-size:12px;"
+          data-dlg-open="wmode">
+    Enable write mode</button>
+  {% endif %}
+  <button class="btn-ghost" id="refresh"
+          style="padding:6px 14px;font-size:12px;">Refresh</button>
+  <form method="post" action="/db/{{ server.id }}/close">
+    <button class="btn-ghost" style="padding:6px 14px;font-size:12px;">Sign out</button></form>
+</div>
+
+{% if msg %}<div class="flash">✓ {{ msg }}</div>{% endif %}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+
+<div id="dbhead">{% include "cbtabs/_head.html" %}</div>
+
+{% set labels = {'overview': 'Overview', 'buckets': 'Buckets', 'xdcr': 'XDCR',
+                 'indexes': 'Indexes', 'query': 'SQL++', 'users': 'Users'} %}
+<div class="kv" style="gap:6px;margin-bottom:12px;flex-wrap:wrap;" id="dbtabs">
+  {% for key in tabs %}
+  <button class="{{ 'btn' if tab == key else 'btn-ghost' }} tabbtn"
+          data-tab="{{ key }}" style="padding:6px 15px;font-size:12px;">{{
+    labels.get(key, key) }}</button>
+  {% endfor %}
+  <span style="flex:1"></span>
+  <span class="sec-note" id="tabspin" style="margin:0;visibility:hidden;">working…</span>
+</div>
+
+<div id="dbpanel">{% include "cbtabs/" ~ tab ~ ".html" %}</div>
+
+{% if not held.write %}
+<dialog id="wmode" class="pdialog">
+  <form method="post" action="/db/{{ server.id }}/write">
+    <input type="hidden" name="on" value="1">
+    <div class="dhead">
+      <span>
+        <span class="dtitle">Allow changes to this cluster</span>
+        <span class="dwhere">{{ server.name }} · {{ where }}</span>
+      </span>
+      <span style="flex:1"></span>
+      <button type="button" class="dx"
+              data-dlg-close="wmode" aria-label="Close">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2.2" stroke-linecap="round"
+             aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div class="dbody">
+      <div class="dnote" style="margin-bottom:16px;">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2" stroke-linecap="round"
+             aria-hidden="true"><circle cx="12" cy="12" r="9"/>
+          <path d="M12 11v5M12 7.6v.1"/></svg>
+        <span>Two things become possible: creating a bucket, and running a SQL++
+          statement that changes documents. Until now the query service has been
+          refusing those itself, whatever was typed. This switch and everything
+          after it are written to the audit log with your name.</span>
+      </div>
+      <p class="sub" style="margin:0 0 14px;">It applies to this console only and
+        ends when you sign out. Your Couchbase account still decides what is
+        actually permitted. Flush and delete stay unavailable either way.</p>
+      <div class="dfield">
+        <label for="wword">type <b>write</b> to confirm</label>
+        <input id="wword" type="text" name="confirm" autocomplete="off"
+               required placeholder="write">
+      </div>
+    </div>
+    <div class="dfoot">
+      <button type="button" class="btn-ghost"
+              data-dlg-close="wmode">Cancel</button>
+      <span class="spacer"></span>
+      <button type="submit" class="btn-danger">Enable write mode</button>
+    </div>
+  </form>
+</dialog>
+{% endif %}
+
+<script nonce="{{ csp_nonce() }}">
+// ── the Couchbase console's front end ───────────────────────────────────────
+// Swaps tabs as fragments, like the SQL console, for the same reason: the
+// header counters and the bucket list are several round trips to a cluster that
+// may be in another region, and changing tab must not pay for them again.
+//
+// Deliberately without the SQL editor's completion. That is driven by a schema
+// map of tables and columns; a document store has no fixed schema to offer, and
+// a completion list built from guesses would be worse than none.
+(function () {
+  const CID = {{ server.id|tojson }};
+  let tab = {{ tab|tojson }};
+  const panel = document.getElementById('dbpanel');
+  const spin = document.getElementById('tabspin');
+
+  const url = (path, extra) =>
+    `/db/${CID}${path}?` + new URLSearchParams(extra || {});
+
+  async function swap(path, extra) {
+    spin.style.visibility = 'visible';
+    panel.classList.add('busy');
+    try {
+      const r = await fetch(url(path, extra), {headers: {'X-Panel': '1'}});
+      if (r.status === 409) {          // the console was closed underneath us
+        location.href = `/db?open=${CID}&back=` +
+          encodeURIComponent(location.pathname + location.search);
+        return;
+      }
+      panel.innerHTML = await r.text();
+      wire();
+    } catch (e) {
+      panel.innerHTML = '<div class="flash err">⚠ could not load that: ' +
+        String(e).replace(/[<>&]/g, '') + '</div>';
+    } finally {
+      spin.style.visibility = 'hidden';
+      panel.classList.remove('busy');
+    }
+  }
+
+  function show(name) {
+    tab = name;
+    document.querySelectorAll('.tabbtn').forEach(b => {
+      b.className = (b.dataset.tab === name ? 'btn' : 'btn-ghost') + ' tabbtn';
+    });
+    history.replaceState(null, '', `/db/${CID}?tab=${encodeURIComponent(name)}`);
+    return swap(`/tab/${name}`);
+  }
+
+  document.getElementById('dbtabs').addEventListener('click', e => {
+    const b = e.target.closest('.tabbtn');
+    if (b) show(b.dataset.tab);
+  });
+
+  document.getElementById('refresh').addEventListener('click', async () => {
+    spin.style.visibility = 'visible';
+    const head = await fetch(url('/head', {refresh: '1'}));
+    if (head.ok) document.getElementById('dbhead').innerHTML = await head.text();
+    await swap(`/tab/${tab}`, {refresh: '1'});
+  });
+
+  // Everything a panel offers is wired HERE, not in the fragment that renders
+  // it. A <script nonce="{{ csp_nonce() }}"> inside a fragment does not run: the panel is swapped in with
+  // innerHTML, which parses script tags and refuses to execute them. Wiring
+  // that looked correct in the template would simply never fire.
+  function wire() {
+    // Clicking a past statement puts it back in the editor. The history lives
+    // in the query tab, so this may have to change tab first.
+    panel.querySelectorAll('.sqlfill').forEach(el =>
+      el.addEventListener('click', async () => {
+        const sql = el.dataset.sql;
+        if (tab !== 'query') await show('query');
+        const box = document.getElementById('sql');
+        if (box) { box.value = sql; box.focus(); }
+      }));
+
+    // a bucket name opens its settings, scopes and collections
+    panel.querySelectorAll('.cbbucket').forEach(a =>
+      a.addEventListener('click', e => {
+        e.preventDefault();
+        swap('/cbbucket', {name: a.dataset.name});
+      }));
+    panel.querySelectorAll('.backtab').forEach(a =>
+      a.addEventListener('click', e => { e.preventDefault(); show(a.dataset.tab); }));
+
+    wireUsers();
+    const form = panel.querySelector('#qform');
+    if (form) wireQuery(form);
+  }
+
+  // ── the account form ───────────────────────────────────────
+  function wireUsers() {
+    const form = panel.querySelector('#uform');
+    if (!form) return;
+    const $ = id => panel.querySelector('#' + id);
+
+    // Clicking a role appends it, and a bucket-scoped one leaves the caret
+    // inside the brackets — that is the part people forget and the part
+    // Couchbase rejects.
+    panel.querySelectorAll('.urole').forEach(el => el.addEventListener('click', () => {
+      const box = $('uroles');
+      const scoped = el.dataset.scoped === '1';
+      const add = el.dataset.role + (scoped ? '[]' : '');
+      const have = box.value.split(',').map(s => s.trim()).filter(Boolean);
+      if (have.includes(add) || have.includes(el.dataset.role)) return;
+      have.push(add);
+      box.value = have.join(',');
+      box.focus();
+      if (scoped) {
+        const at = box.value.lastIndexOf('[') + 1;
+        box.setSelectionRange(at, at);
+      }
+    }));
+
+    const filter = $('ufilter');
+    if (filter) filter.addEventListener('input', () => {
+      const want = filter.value.trim().toLowerCase();
+      panel.querySelectorAll('.urole').forEach(el => {
+        el.hidden = want && !el.dataset.find.includes(want);
+      });
+    });
+
+    // Edit reuses this form. A second form for the same three fields would be
+    // two things to keep in step, and the only real difference is that the
+    // password becomes optional once the account exists.
+    panel.querySelectorAll('.cbedit').forEach(a => a.addEventListener('click', e => {
+      e.preventDefault();
+      $('uuid').value = a.dataset.uid;
+      $('uuid').readOnly = true;
+      $('uname').value = a.dataset.name || '';
+      $('uroles').value = a.dataset.roles || '';
+      $('unew').value = '';
+      $('upw').value = '';
+      $('upwhint').textContent = 'leave empty to keep the current one';
+      $('uformtitle').textContent = 'Edit ' + a.dataset.uid;
+      $('usave').textContent = 'Save changes';
+      $('ureset').style.display = '';
+      form.scrollIntoView({block: 'nearest', behavior: 'smooth'});
+    }));
+
+    const reset = $('ureset');
+    if (reset) reset.addEventListener('click', () => {
+      form.reset();
+      $('uuid').readOnly = false;
+      $('unew').value = '1';
+      $('upwhint').textContent = 'required for a new account';
+      $('uformtitle').textContent = 'Add an account';
+      $('usave').textContent = 'Create account';
+      reset.style.display = 'none';
+    });
+  }
+
+  function wireQuery(form) {
+    const box = form.querySelector('#sql');
+    if (box) {
+      // What is typed survives changing tab: tabs are rebuilt from scratch, so
+      // glancing at Buckets and coming back would otherwise throw it away and
+      // the next Run would post an empty statement.
+      const KEY = `cbsql:${CID}`;
+      if (!box.value) {
+        const kept = sessionStorage.getItem(KEY);
+        if (kept) box.value = kept;
+      }
+      box.addEventListener('input', () => {
+        if (box.value.trim()) sessionStorage.setItem(KEY, box.value);
+        else sessionStorage.removeItem(KEY);
+      });
+      box.addEventListener('keydown', e => {
+        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+          e.preventDefault();
+          run(form);
+        }
+      });
+    }
+    form.addEventListener('submit', e => { e.preventDefault(); run(form); });
+  }
+
+  async function run(form) {
+    const box = form.querySelector('#sql');
+    // An empty editor is not a failed statement. Posting it produced "nothing
+    // to run" in red, which reads as though the cluster refused something.
+    if (box && !box.value.trim()) {
+      box.focus();
+      box.placeholder = 'Type a statement first — then Run, or ⌘/Ctrl+Enter.';
+      return;
+    }
+    spin.style.visibility = 'visible';
+    panel.classList.add('busy');
+    try {
+      const r = await fetch(form.action, {method: 'POST',
+                                          body: new FormData(form)});
+      if (r.status === 409) {
+        location.href = `/db?open=${CID}&back=` +
+          encodeURIComponent(location.pathname + location.search);
+        return;
+      }
+      panel.innerHTML = await r.text();
+      wire();
+      const nb = document.getElementById('sql');
+      if (nb) nb.focus();
+    } finally {
+      spin.style.visibility = 'hidden';
+      panel.classList.remove('busy');
+    }
+  }
+
+  wire();
+})();
+</script>
+{% endblock %}

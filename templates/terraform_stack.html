@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% import "_bits.html" as bits %}
+{% block crumbs %}<a href="/terraform">Infrastructure Provisioning</a> <span class="sep">/</span>
+  <a href="/terraform?sec=stacks">Stacks</a> <span class="sep">/</span>
+  <b>{{ st.name if st else 'New stack' }}</b>{% endblock %}
+{% block content %}
+
+<div class="page-head"><div>
+  <h1>{{ st.name if st else 'New stack' }}</h1>
+  <p class="sub">The <code>.tf</code>, its variables, and the provider credential —
+    sealed at rest and injected only at run time.</p>
+</div>{% if st %}<div>
+  <button type="button" class="btn" data-tfrun="{{ st.id }}" data-tfname="{{ st.name }}"
+          data-tfprod="{{ 1 if st.is_prod else 0 }}">▷ Run…</button>
+</div>{% endif %}</div>
+
+{% if msg %}<div class="flash ok">✓ {{ msg }}</div>{% endif %}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+
+<form method="post" action="/terraform/stack/save">
+  {% if sid %}<input type="hidden" name="sid" value="{{ sid }}">{% endif %}
+
+  <div class="card">
+    <div class="card-h">This stack</div>
+    <div class="card-b">
+      <div class="field-row"><label>name</label>
+        <div><input type="text" name="name" required value="{{ st.name if st else '' }}"
+               placeholder="proxmox-ke-web" spellcheck="false" autocomplete="off">
+          <div class="sec-note">Shown in the list and used to name the stack's
+            working directory (state + provider cache).</div></div></div>
+      <div class="field-row"><label>provider</label>
+        <div><input type="text" name="provider" list="tfProviders"
+               value="{{ st.provider if st else 'proxmox' }}" spellcheck="false"
+               autocomplete="off" style="max-width:220px;">
+          <datalist id="tfProviders">
+            <option value="proxmox"><option value="vsphere"><option value="aws">
+            <option value="azure"><option value="gcp"><option value="other">
+          </datalist>
+          <div class="sec-note">A label — which platform this targets. It also
+            names the credential's environment variables (see below).</div></div></div>
+      {{ bits.place_fields(st.pid if st else '', st.rgid if st else '', place_options,
+                           st.env if st else '', env_suggest) }}
+      <div class="field-row"><label>production</label>
+        <div><label class="inline-ck"><input type="checkbox" name="is_prod" value="1"
+            {% if st and st.is_prod %}checked{% endif %}> an apply or destroy on this
+            stack needs its name typed to confirm</label>
+          <div class="sec-note">Set automatically when the environment above is
+            production. plan is never gated by this.</div></div></div>
+      <div class="field-row"><label>notes</label>
+        <div><input type="text" name="notes" value="{{ st.notes if st else '' }}"
+               placeholder="what this builds" autocomplete="off"></div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-h">The code
+      <span class="hint">HCL — the same .tf you would run from a laptop</span></div>
+    <div class="card-b">
+      <div class="tgt-field wide">
+        <label>main.tf</label>
+        <textarea name="body" rows="16" spellcheck="false"
+                  style="width:100%;box-sizing:border-box;font-family:var(--mono);font-size:12.5px;"
+                  placeholder="terraform {&#10;  required_providers { proxmox = { source = &quot;bpg/proxmox&quot; } }&#10;}&#10;&#10;resource &quot;proxmox_virtual_environment_vm&quot; &quot;web&quot; { ... }">{{ st.body if st else '' }}</textarea>
+      </div>
+      <div class="tgt-field wide" style="margin-top:12px;">
+        <label>terraform.tfvars <span class="hint">optional</span></label>
+        <textarea name="tfvars" rows="4" spellcheck="false"
+                  style="width:100%;box-sizing:border-box;font-family:var(--mono);font-size:12.5px;"
+                  placeholder="node_name = &quot;pve-01&quot;&#10;vm_count  = 3">{{ st.tfvars if st else '' }}</textarea>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-h">Provider credential
+      <span class="hint">sealed at rest · injected as environment variables · never shown back</span></div>
+    <div class="card-b">
+      <div class="tgt-field wide">
+        <label>KEY=value, one per line</label>
+        <textarea name="creds" rows="4" spellcheck="false" autocomplete="off"
+                  data-nosave
+                  style="width:100%;box-sizing:border-box;font-family:var(--mono);font-size:12.5px;"
+                  placeholder="{% if st and st.has_creds %}•••••• stored — paste to replace{% else %}PROXMOX_VE_ENDPOINT=https://pve.example.com:8006/&#10;PROXMOX_VE_API_TOKEN=root@pam!portal=xxxxxxxx-...&#10;PROXMOX_VE_INSECURE=true{% endif %}"></textarea>
+        <div class="sec-note">Each line becomes an environment variable for the
+          run — the provider reads it, nothing is written to disk, and the secret
+          never rides back into this page. Blank on an edit keeps what is stored.
+          {% if st and st.has_creds %}
+          <label class="inline-ck" style="margin-top:6px;display:block;">
+            <input type="checkbox" name="drop_creds" value="1"> clear the stored credential</label>
+          {% endif %}</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="actions" style="margin-bottom:22px;">
+    <button type="submit" style="padding:6px 18px;font-size:12.5px;">Save stack</button>
+    <a class="btn btn-ghost" href="/terraform?sec=stacks"
+       style="padding:6px 18px;font-size:12.5px;">Cancel</a>
+  </div>
+</form>
+
+{% if st and revs %}
+<div class="card"><div class="card-h">History
+  <span class="hint">the .tf, each time it changed</span></div>
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr><th>When</th><th>By</th><th class="actcol" style="width:110px;"></th></tr></thead>
+      <tbody>
+      {% for rv in revs %}
+      <tr><td class="mono-c">{{ rv.at|replace('T',' ') }}</td><td>{{ rv.by or '—' }}</td>
+        <td class="mid actcol"><button type="submit" class="abtn" form="rest-{{ rv.id }}">restore</button></td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% for rv in revs %}
+<form method="post" action="/terraform/stack/restore" id="rest-{{ rv.id }}">
+  <input type="hidden" name="sid" value="{{ sid }}">
+  <input type="hidden" name="rev" value="{{ rv.id }}"></form>
+{% endfor %}
+{% endif %}
+
+{% if st %}{% include "_tf_run.html" %}{% endif %}
+{% endblock %}

@@ -1,0 +1,107 @@
+{#- Shared pieces of the hypervisor management pages. static/virt.js drives
+    every [data-act]; `caps` is virtops.capabilities: "" where the person may,
+    otherwise the sentence saying why not — which becomes the disabled
+    button's title (house rule: an inapplicable control is disabled with its
+    reason, never hidden). -#}
+
+{%- macro no(caps, need) -%}
+{%- if caps[need] %} disabled title="{{ caps[need] }}"{% endif -%}
+{%- endmacro -%}
+
+{%- macro status() -%}
+<div id="vstatus" class="vstatus" role="status" aria-live="polite" hidden></div>
+{%- endmacro -%}
+
+{%- macro prod_dialog() -%}
+<dialog id="vprod" class="pdialog">
+  <div class="dhead">
+    <span><span class="dtitle">Production hypervisor</span>
+      <span class="dwhere">type the name to <span data-vprod-what>make this change</span></span></span>
+    <span style="flex:1"></span>
+    <button type="button" class="dx" aria-label="Close" data-dlg-close="vprod">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+  </div>
+  <div class="dbody">
+    <p style="margin:0 0 10px;">This connection is marked production. Type
+      <b data-vprod-name></b> to confirm.</p>
+    <input type="text" autocomplete="off" spellcheck="false" data-nosave aria-label="name to confirm">
+  </div>
+  <div class="dfoot">
+    <button type="button" class="btn-ghost" data-dlg-close="vprod">Cancel</button>
+    <span class="spacer"></span>
+    <button type="button" data-vprod-go disabled>Confirm</button>
+  </div>
+</dialog>
+{%- endmacro -%}
+
+{#- power buttons for one VM: what applies to its state, the rest disabled
+    with the reason -#}
+{%- macro power(vm, caps, flavor, compact=false, impact='') -%}
+{%- set on = vm.power in ('poweredOn', 'running') -%}
+{%- set off = vm.power in ('poweredOff', 'stopped') -%}
+{%- set paused = vm.power in ('suspended', 'paused') -%}
+{%- set tools = flavor != 'esxi' or vm.tools == 'guestToolsRunning' -%}
+{%- set t = vm.name -%}
+<button type="button" class="abtn go" data-act="vm.start" data-target="{{ t }}" data-label="Start {{ t }}"
+  {%- if on %} disabled title="already running"{% else %}{{ no(caps, 'power') }}{% endif %}>▶ {{ 'Resume' if paused and flavor == 'esxi' else 'Start' }}</button>
+<button type="button" class="abtn" data-act="vm.shutdown" data-target="{{ t }}"{% if impact %} data-impact="{{ impact }}"{% endif %} data-label="Shut down {{ t }}"
+  data-ask="Shut down {{ t }}? The guest is asked to shut itself down cleanly."
+  {%- if not on %} disabled title="not running"{% elif not tools %} disabled title="VMware Tools is not running in the guest, so it cannot be asked to shut down — use Power off"{% else %}{{ no(caps, 'power') }}{% endif %}>⏻ Shut down</button>
+<button type="button" class="abtn" data-act="vm.reboot" data-target="{{ t }}"{% if impact %} data-impact="{{ impact }}"{% endif %} data-label="Restart {{ t }}"
+  data-ask="Restart {{ t }}? The guest is asked to restart cleanly."
+  {%- if not on %} disabled title="not running"{% elif not tools %} disabled title="VMware Tools is not running in the guest — use Reset"{% else %}{{ no(caps, 'power') }}{% endif %}>↻ Restart</button>
+{%- if not compact %}
+<button type="button" class="abtn danger" data-act="vm.stop" data-target="{{ t }}"{% if impact %} data-impact="{{ impact }}"{% endif %} data-label="Power off {{ t }}"
+  data-ask="Power off {{ t }} now? This is pulling the plug: the guest does not shut down, and unsaved work is lost."
+  {%- if off %} disabled title="already off"{% else %}{{ no(caps, 'power') }}{% endif %}>■ Power off</button>
+<button type="button" class="abtn danger" data-act="vm.reset" data-target="{{ t }}"{% if impact %} data-impact="{{ impact }}"{% endif %} data-label="Reset {{ t }}"
+  data-ask="Reset {{ t }} now? This is pressing the reset button: the guest restarts without shutting down."
+  {%- if not on %} disabled title="not running"{% else %}{{ no(caps, 'power') }}{% endif %}>⟲ Reset</button>
+<button type="button" class="abtn" data-act="vm.suspend" data-target="{{ t }}"{% if impact %} data-impact="{{ impact }}"{% endif %} data-label="Suspend {{ t }}"
+  data-ask="Suspend {{ t }}? Its memory is written to disk and it stops until resumed."
+  {%- if not on %} disabled title="not running"{% else %}{{ no(caps, 'power') }}{% endif %}>⏸ Suspend</button>
+{%- if flavor == 'proxmox' %}
+<button type="button" class="abtn" data-act="vm.resume" data-target="{{ t }}" data-label="Resume {{ t }}"
+  {%- if not paused %} disabled title="not suspended"{% else %}{{ no(caps, 'power') }}{% endif %}>▶ Resume</button>
+{%- endif %}
+{%- endif %}
+{%- endmacro -%}
+
+{%- macro console_link(conn, vm, node, kind, caps, label='Console') -%}
+{%- set on = vm.power in ('poweredOn', 'running') -%}
+<a class="abtn go" data-console="{{ conn.id }}-{{ vm.id }}"
+   href="/virt/console?c={{ conn.id|urlencode }}&vm={{ vm.id|urlencode }}&node={{ node|urlencode }}&kind={{ kind|urlencode }}&name={{ vm.name|urlencode }}"
+   target="_blank" rel="noopener"
+   {%- if caps.console %} aria-disabled="true" title="{{ caps.console }}"{% elif not on %} aria-disabled="true" title="the VM is not running"{% endif %}>▣ {{ label }}</a>
+{%- endmacro -%}
+
+{%- macro bytes(n) -%}
+{%- if n is none or n == '' %}—{% elif n >= 1073741824 %}{{ '%.1f'|format(n / 1073741824) }} GiB{% elif n >= 1048576 %}{{ '%.1f'|format(n / 1048576) }} MiB{% elif n >= 1024 %}{{ '%.0f'|format(n / 1024) }} KiB{% else %}{{ n }} B{% endif -%}
+{%- endmacro -%}
+
+{%- macro when(ts) -%}{{ ts|vtime }}{%- endmacro -%}
+
+{%- macro task_rows(tasks) -%}
+{%- if tasks %}
+<div style="overflow-x:auto;"><table class="jenkins">
+  <thead><tr><th>Task</th><th>Target</th><th>State</th><th>Who</th><th>Started</th><th>Finished</th></tr></thead>
+  <tbody>
+  {%- for t in tasks %}
+  <tr>
+    <td><b>{{ t.what }}</b></td>
+    <td class="hint">{{ t.entity }}</td>
+    <td><span class="sv {{ 'sv-ok' if t.state == 'success' else ('sv-high' if t.state == 'error' else 'sv-medium') }}"
+          style="{{ 'color:var(--ok-ink);' if t.state == 'success' }}">{{ t.state }}{% if t.progress and t.state == 'running' %} {{ t.progress }}%{% endif %}</span>
+      {%- if t.error %}<div class="hint" style="color:var(--danger-ink);font-size:11.5px;">{{ t.error }}</div>{% endif %}</td>
+    <td class="hint">{{ t.who or '—' }}</td>
+    <td class="hint">{{ when(t.started) }}</td>
+    <td class="hint">{{ when(t.finished) }}</td>
+  </tr>
+  {%- endfor %}
+  </tbody></table></div>
+{%- else %}
+<div class="sec-note">No recent tasks.</div>
+{%- endif %}
+{%- endmacro -%}

@@ -1,0 +1,88 @@
+{#- The Synchronize panel, once.
+
+    It is drawn on the application page AND fetched into a drawer on the
+    applications list, because "sync this app" from a list of tiles should not
+    cost a whole page load of somewhere else. One definition, so the options a
+    person sees cannot depend on which page they started from.
+
+    The caller owns the drawer shell (`#syncPanel` on the app page, the list
+    page's own drawer) — this is only what goes inside it. -#}
+
+  <form method="post" id="syncForm"
+        action="/gitops/app/sync?conn={{ conn.id }}&name={{ app.name|urlencode }}">
+    <div class="sdrawer-h">
+      <button class="btn" type="submit" id="syncGo">Synchronize</button>
+      <button type="button" class="btn-ghost" id="syncCancel">Cancel</button>
+      <span style="flex:1"></span>
+      <button type="button" class="psh-x" id="syncClose">✕</button>
+    </div>
+    <div class="sdrawer-b">
+      <p class="sub" style="margin:0 0 14px;">Synchronizing application
+        manifests from <b style="overflow-wrap:anywhere;">{{ app.repo }}</b>{%
+        if app.path %} · <code>{{ app.path }}</code>{% endif %}</p>
+
+      <label class="sfield">
+        <span>Revision</span>
+        <input name="revision" value="{{ app.target or 'HEAD' }}"
+               autocomplete="off" spellcheck="false">
+      </label>
+
+      <div class="srow">
+        <label class="schk"><input type="checkbox" name="prune"> Prune</label>
+        <label class="schk"><input type="checkbox" name="dry"> Dry run</label>
+        <label class="schk"><input type="checkbox" name="apply_only"> Apply only</label>
+        <label class="schk"><input type="checkbox" name="force"> Force</label>
+      </div>
+
+      <div class="sgroup">Sync options</div>
+      <div class="srow two">
+        {% for key, meta in sync_flags.items() if key != 'replace' %}
+        <label class="schk"><input type="checkbox" name="flag" value="{{ key }}"
+          {%- if key == 'createns' %} checked{% endif %}> {{ meta[0] }}</label>
+        {% endfor %}
+      </div>
+
+      <label class="sfield row">
+        <span>Prune propagation policy</span>
+        <select name="prune_policy">
+          {% for p in prune_policies %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
+        </select>
+      </label>
+
+      <div class="srow">
+        <label class="schk"><input type="checkbox" name="flag" value="replace">
+          Replace <span class="swarn" title="Replace deletes and re-creates the
+          object rather than patching it">⚠</span></label>
+        <label class="schk"><input type="checkbox" name="retry"> Retry</label>
+      </div>
+
+      <div class="sgroup">Synchronize resources
+        <span class="spick">
+          <a href="#" data-spick="all">all</a> /
+          <a href="#" data-spick="oos">out of sync</a> /
+          <a href="#" data-spick="none">none</a>
+        </span>
+      </div>
+      {% if tree.flat %}
+      <div class="sres">
+        {% for n in tree.flat %}
+        <label class="schk sresi" data-sync="{{ n.sync }}">
+          <input type="checkbox" name="res" data-oos="{{ 1 if n.sync == 'OutOfSync' else 0 }}"
+                 value="{{ n.group }}|{{ n.kind }}|{{ n.name }}|{{ n.namespace }}">
+          <span class="sresk">/{{ n.kind|upper }}/{{ n.namespace or '-' }}/{{ n.name }}</span>
+          {% if n.sync == 'OutOfSync' %}<span class="sv sv-medium">out of sync</span>{% endif %}
+        </label>
+        {% endfor %}
+      </div>
+      <div class="sec-note" style="margin-top:8px;">Ticking nothing syncs the
+        whole application — the same as Argo CD.</div>
+      {% endif %}
+
+      <div class="sconfirm">
+        <input name="confirm" autocomplete="off" placeholder="type sync"
+               id="syncWord">
+        <span class="sec-note" style="margin:0;">a sync changes the cluster, so
+          this one word is asked for — and audited</span>
+      </div>
+    </div>
+  </form>

@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block crumbs %}<b>Storage</b>{% endblock %}
+{% block content %}
+
+{% if not conns %}
+<div class="empty">
+  <div class="big">{{ glyph("hard-drive", 40) }}</div>
+  <h2>No storage devices registered</h2>
+  <p>Add the boxes your backups land on — Synology, TrueNAS, MinIO, any S3
+     endpoint, or a plain NFS or SMB share — and this page shows which of them
+     are answering.</p>
+  <a class="btn" href="/settings/storage">＋ Add a device</a>
+</div>
+
+{% else %}
+<div class="page-head">
+  <div><h1>Storage devices</h1>
+    <p class="sub">{{ conns|length }} device{{ 's' if conns|length != 1 }} ·
+      <span style="color:{{ 'var(--ok-ink)' if healthy == conns|length else 'var(--warn-ink)' }};">
+        {{ healthy }} answering</span>
+      {% if down %} · <span style="color:var(--danger-ink);">{{ down }} not answering</span>{% endif %}
+      {% if never %} · {{ never }} never checked{% endif %}</p></div>
+  <div style="display:flex;gap:10px;">
+    <a class="btn btn-ghost" href="/storage?refresh=1">↻ Check all now</a>
+    <a class="btn btn-ghost" href="/settings/storage">⚙ Manage devices</a>
+  </div>
+</div>
+
+{% if checked %}
+<div class="flash">✓ Checked {{ checked }} device{{ 's' if checked != 1 }} just now.</div>
+{% endif %}
+
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(190px,1fr));margin-bottom:18px;">
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat" style="color:{{ 'var(--ok-ink)' if healthy == conns|length else 'var(--warn-ink)' }};">
+      {{ healthy }}/{{ conns|length }}</div>
+    <div class="statsub">answering</div></div></div>
+  {% for kind, n in by_kind.items() %}
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat">{{ n }}</div>
+    <div class="statsub">{{ logo(kind, '', 18) }}
+      {{ providers[kind].label|lower if kind in providers else kind }}</div></div></div>
+  {% endfor %}
+</div>
+
+<div class="card">
+  <div class="card-h">Devices
+    <span class="hint">status is from the last check — press “Check all now” to retest</span></div>
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr>
+        <th style="min-width:180px;">Device</th><th style="min-width:130px;">Type</th>
+        <th style="min-width:200px;">Address</th><th style="min-width:150px;">Purpose</th>
+        <th style="min-width:120px;">Scope</th><th>Last check</th>
+        <th style="width:90px;"></th>
+      </tr></thead>
+      <tbody>
+      {% for c in rows %}
+      <tr>
+        <td class="jname">
+          <span class="dot {{ '' if c.ok else 'dirty' }}"></span>
+          <b>{{ c.conn.name }}</b></td>
+        <td>{{ logo(c.conn.type, c.conn.name, 18) }}
+          {{ providers[c.conn.type].label if c.conn.type in providers else c.conn.type }}</td>
+        <td style="font-family:var(--mono);font-size:11.5px;">{{ c.conn.base_url }}</td>
+        <td class="hint">{{ c.conn.purpose or '—' }}</td>
+        <td class="hint">{{ c.scope }}</td>
+        <td style="white-space:normal;color:{{ 'var(--ok-ink)' if c.ok else 'var(--danger-ink)' if c.conn.status else 'var(--muted)' }};">
+          {{ c.conn.status or 'not checked yet' }}</td>
+        <td>
+          <form method="post" action="/storage/{{ c.conn.id }}/test">
+            <input type="hidden" name="pid" value="{{ c.conn.pid }}">
+            <button class="btn-ghost" style="padding:4px 11px;font-size:11px;">Test</button>
+          </form></td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-b">
+    <div class="sec-note" style="margin:0;">A check proves the device answers and,
+      where the protocol allows it cheaply, that the credentials work. Whether
+      last night's backup is actually on it belongs to your backup software's own
+      reporting — connect that through
+      <a href="/settings/monitoring">Monitoring</a> and it appears on the
+      Overview alongside everything else.</div>
+  </div>
+</div>
+{% endif %}
+{% endblock %}

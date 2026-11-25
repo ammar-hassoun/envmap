@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+{% from "_back.html" import back %}
+{% block crumbs %}
+<a href="/monitoring">Monitoring</a> <span class="sep">/</span>
+<a href="/monitoring?sec=dashboards">Dashboards</a> <span class="sep">/</span>
+<b>{{ dash.title }}</b>
+{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="/static/grafdash.css?v={{ portal_version() }}">
+
+<div class="page-head">
+  <div>
+    {{ back('/monitoring?sec=dashboards', 'Dashboards') }}
+    <h1 class="withico">{{ logo(sel.type, dash.title, 26) }} {{ dash.title }}</h1>
+    <p class="sub">{{ dash.folder }} · {{ panel_total }} panel{{ 's' if panel_total != 1 }}
+      {%- if collapsed %} · {{ collapsed }} in closed rows, loaded when opened{% endif %}
+      · {{ sel.name }}{% if dash.tags %} · {{ dash.tags|join(', ') }}{% endif %}</p>
+  </div>
+  <div style="display:flex;gap:9px;align-items:center;">
+    {% if not play %}<a class="btn btn-ghost" href="{{ tv_on_url }}" title="Full-width, no sidebar — for a wall screen. Esc leaves it.">⛶ TV mode</a>{% endif %}
+    <a class="btn btn-ghost" href="{{ dash.url }}" target="_blank" rel="noopener">Open in Grafana ↗</a>
+  </div>
+</div>
+
+{#- THE PLAYLIST BAR. A wall screen cycles through dashboards on its own; this
+    is where it says which one it is on, what comes next and when, and where
+    somebody standing at it pauses or skips. The timer is static/grafdash.js;
+    every URL here is built by the server. -#}
+{% if play %}
+<div class="gplay" data-every="{{ play.every }}" data-next="{{ play.next }}"
+     data-scroll="{{ 1 if play.scroll else 0 }}" data-hold="{{ play.hold }}" data-speed="{{ play.speed }}"
+     data-prev="{{ play.prev }}" data-stop="{{ play.stop }}"
+     data-tv-on="{{ play.tv_on }}" data-tv-off="{{ play.tv_off }}"{% if tv %} data-tv{% endif %}>
+  <span class="gp-prog" aria-hidden="true"></span>
+  <span class="gpl-ttl">{{ dash.title }}</span>
+  <span class="gpl-meta">{{ play.index + 1 }} of {{ play.total }} · {{ play.label }}</span>
+  <span class="gpl-next" aria-live="polite"><span data-play-phase></span>next: <b>{{ play.next_title }}</b> in <span data-play-left>{{ play.every }}s</span></span>
+  <span style="flex:1"></span>
+  <span class="gpl-ctl">
+    {% if play.scroll %}
+    <span class="gpl-speed" title="Scroll speed — − and + here, or the - and + keys">
+      <button type="button" class="abtn" data-play-slower aria-label="Scroll slower">−</button>
+      <b data-play-speed>{{ 'auto' if play.speed == 'auto' else play.speed ~ ' px/s' }}</b>
+      <button type="button" class="abtn" data-play-faster aria-label="Scroll faster">+</button>
+    </span>
+    {% endif %}
+    <button type="button" class="abtn" data-play-prev title="Previous (←)">⏮</button>
+    <button type="button" class="abtn go" data-play-pause title="Pause / resume (space)">⏸ pause</button>
+    <button type="button" class="abtn" data-play-next title="Next (→)">⏭</button>
+    {% if tv %}<button type="button" class="abtn" data-play-tv-off title="Leave TV mode (Esc)">⤢ exit TV</button>
+    {% else %}<button type="button" class="abtn" data-play-tv-on title="Full-width, no sidebar">⛶ TV</button>{% endif %}
+    <button type="button" class="abtn" data-play-fs title="Full screen">⛶ full screen</button>
+    <button type="button" class="abtn danger" data-play-stop title="Stop the rotation here">■ stop</button>
+  </span>
+</div>
+{% elif tv %}
+<div class="gplay single" data-tv data-tv-off="{{ tv_off_url }}">
+  <span class="gpl-ttl">{{ dash.title }}</span>
+  <span style="flex:1"></span>
+  <span class="gpl-ctl">
+    <button type="button" class="abtn" data-play-fs title="Full screen">⛶ full screen</button>
+    <button type="button" class="abtn" data-play-tv-off title="Leave TV mode (Esc)">⤢ exit TV</button>
+  </span>
+</div>
+{% endif %}
+
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+{% for v in vars if v.error %}<div class="flash err">⚠ variable {{ v.label }}: {{ v.error }}</div>{% endfor %}
+
+{#- ONE form for the variables and the time range, so changing either keeps
+    the other: a variable change that dropped the chosen window, or a window
+    change that reset every variable, is the bug two forms invite. -#}
+<form method="get" action="/monitoring/dashboard" class="gform">
+  <input type="hidden" name="conn" value="{{ sel.id }}">
+  <input type="hidden" name="uid" value="{{ dash.uid }}">
+  <input type="hidden" name="to" value="{{ trange.to }}">
+  {% if play %}<input type="hidden" name="plist" value="{{ play.spec }}">
+  <input type="hidden" name="pi" value="{{ play.index }}">
+  <input type="hidden" name="every" value="{{ play.every }}">
+  {% if not play.scroll %}<input type="hidden" name="scroll" value="0">{% endif %}
+  <input type="hidden" name="hold" value="{{ play.hold }}">
+  {% if play.speed != 'auto' %}<input type="hidden" name="speed" value="{{ play.speed }}">{% endif %}{% endif %}
+  {% if tv %}<input type="hidden" name="kiosk" value="1">{% endif %}
+  <div class="gvars">
+    {% for v in vars if v.hide < 2 %}
+    <div class="gvar">
+      {% if v.hide < 1 %}<label for="gv-{{ loop.index }}">{{ v.label }}</label>{% endif %}
+      <select id="gv-{{ loop.index }}" name="var-{{ v.name }}" data-submit>
+        {% if v.include_all %}<option value="$__all" {{ 'selected' if v.is_all }}>All</option>{% endif %}
+        {% for o in v.options[:800] %}
+        <option value="{{ o.value }}" {{ 'selected' if (not v.is_all and o.value in v.current) }}>{{ o.text }}</option>
+        {% endfor %}
+        {% if not v.options and not v.include_all %}<option value="">— no values —</option>{% endif %}
+      </select>
+    </div>
+    {% endfor %}
+  </div>
+  <div class="gtime">
+    <select name="from" data-submit aria-label="Time range">
+      {% for key, label in quick %}
+      <option value="{{ key }}" {{ 'selected' if trange['from'] == key }}>{{ label }}</option>
+      {% endfor %}
+      {% if not quick_hit %}<option value="{{ trange['from'] }}" selected>{{ trange.label }}</option>{% endif %}
+    </select>
+    <select id="gdash-auto" aria-label="Auto refresh" class="no-dd">
+      {% for s, label in [('', 'auto-refresh off'), ('30', 'every 30s'), ('60', 'every 1m'), ('300', 'every 5m'), ('900', 'every 15m')] %}
+      <option value="{{ s }}" {{ 'selected' if auto|string == s }}>{{ label }}</option>
+      {% endfor %}
+    </select>
+    <a class="btn btn-ghost" style="padding:6px 13px;" href="{{ self_url }}&refresh=1">↻ Refresh</a>
+  </div>
+</form>
+
+<div class="gdash{{ ' kiosk' if tv }}" data-autorefresh="{{ auto }}">
+{% for sec in sections %}
+  <section class="gsec{{ ' collapsed' if sec.row and sec.row.row.collapsed }}">
+    {% if sec.row %}
+    <button type="button" class="gsec-head" data-row-toggle
+            aria-expanded="{{ 'false' if sec.row.row.collapsed else 'true' }}">
+      {{ glyph('chevron-down', 15) }} {{ sec.row.title_shown or 'Row' }}
+      <span class="hint">{{ sec.panels|length }} panel{{ 's' if sec.panels|length != 1 }}</span>
+    </button>
+    {% endif %}
+    {% if sec.panels %}
+    <div class="ggrid" style="grid-template-rows:repeat({{ sec.height }}, var(--gcell));">
+      {% for p in sec.panels %}
+      <div class="gp{{ ' notitle' if not p.title_shown and p.type in ('text', 'stat') }}"
+           style="grid-column:{{ p.grid.x + 1 }} / span {{ p.grid.w }};grid-row:{{ p._r }} / span {{ p.grid.h }};--h:{{ p.grid.h }};">
+        <div class="gp-h">
+          <span class="t" title="{{ p.title_shown }}">{{ p.title_shown }}</span>
+          {% if p.description %}<span class="gp-i" title="{{ p.description }}">ⓘ</span>{% endif %}
+          <span style="flex:1"></span>
+          <a class="gp-open" href="{{ dash.url }}?viewPanel={{ p.id }}" target="_blank" rel="noopener" title="Open this panel in Grafana">↗</a>
+        </div>
+        <div class="gp-body" data-src="{{ panel_base }}&panel={{ p.id }}"></div>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </section>
+{% endfor %}
+</div>
+
+<p class="sub gfoot" style="margin-top:14px;">
+  Drawn here from {{ sel.name }}: each panel's queries run through Grafana with this
+  dashboard's variables and time range. Read-only — nothing here changes the dashboard,
+  and ↗ on any panel opens it in Grafana.</p>
+
+<script nonce="{{ csp_nonce() }}" src="/static/grafdash.js?v={{ portal_version() }}" defer></script>
+{% endblock %}

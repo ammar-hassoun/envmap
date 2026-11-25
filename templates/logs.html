@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block crumbs %}
+  <a href="/">Projects</a> <span class="sep">/</span>
+  <a href="/p/{{ pid }}">{{ pname }}</a> <span class="sep">/</span>
+  <a href="/p/{{ pid }}/{{ rgid }}">{{ rname }}</a> <span class="sep">/</span>
+  <a href="/p/{{ pid }}/{{ rgid }}/{{ env }}?tab=pods">{{ env_label(env) }}</a>
+  <span class="sep">/</span> <b>logs</b>
+{% endblock %}
+{% block content %}
+{#- The direct link to a pod's log. It used to be a whole second implementation
+    of the same idea — a frozen snapshot, a "go live" button, and a renderer
+    that rebuilt every line on every line. It now opens the shared window, so
+    there is one log viewer in the product rather than two that drift.
+
+    The page beneath is what somebody sees if they close the window, and what
+    they get with no JavaScript at all: the same lines, served by the route. -#}
+
+<div class="page-head">
+  <div>
+    <h1 style="font-family:var(--mono);font-size:19px;">{{ pod }}</h1>
+    <p class="sub">{{ namespace }} · {{ cluster or 'no cluster' }}</p>
+  </div>
+  <div style="display:flex;gap:10px;">
+    <button type="button" class="btn" id="reopen">▶ Live logs</button>
+    <a class="btn btn-ghost" href="/p/{{ pid }}/{{ rgid }}/{{ env }}?tab=pods">← back to pods</a>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-h">
+    <b>Last {{ tail }} lines</b>
+    <span class="hint">a snapshot — the live window is where this is followed</span>
+    <span style="flex:1"></span>
+    <form method="get" style="display:flex;gap:8px;align-items:center;">
+      {% if containers|length > 1 %}
+      <select name="container" data-submit
+              style="padding:4px 10px;font-size:12px;width:auto;">
+        {% for c in containers %}
+        <option value="{{ c }}" {% if c == container %}selected{% endif %}>{{ c }}</option>
+        {% endfor %}
+      </select>
+      {% endif %}
+      <select name="tail" data-submit
+              style="padding:4px 10px;font-size:12px;width:auto;">
+        {% for t in [100, 300, 1000, 5000] %}
+        <option value="{{ t }}" {% if t == tail %}selected{% endif %}>last {{ t }}</option>
+        {% endfor %}
+      </select>
+    </form>
+  </div>
+  <div class="card-b">
+    <pre class="cmdout" style="max-height:520px;">{{ text }}</pre>
+  </div>
+</div>
+
+{% include "_logs_dialog.html" %}
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  const open = () => openPodLogs({
+    stream: '/p/{{ pid }}/{{ rgid }}/{{ env }}/logstream/{{ namespace|urlencode }}/{{ pod|urlencode }}',
+    meta: '/p/{{ pid }}/{{ rgid }}/{{ env }}/containers/{{ namespace|urlencode }}/{{ pod|urlencode }}',
+    namespace: {{ namespace|tojson }}, pod: {{ pod|tojson }},
+    container: {{ (container or '')|tojson }},
+    containers: {{ (containers or [])|tojson }}});
+  document.getElementById('reopen').addEventListener('click', open);
+  // Somebody who followed a link to this URL came for the log, so it opens
+  // already streaming rather than asking them to press a button first.
+  open();
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% import "_bits.html" as bits %}
+{% block crumbs %}<a href="/">Overview</a> <span>›</span> <b>Pods</b>{% endblock %}
+{% block content %}
+{{ bits.collecting(pending, "The counts below are of the clusters that have
+   answered so far.") }}
+<div class="page-head">
+  <div>
+    <h1>Pods — whole fleet</h1>
+    <p class="sub">{{ shown|length }}{% if total > shown|length %} of {{ total }}{% endif %}
+      pod{{ 's' if total != 1 }} across {{ groups|length }}
+      cluster{{ 's' if groups|length != 1 }}
+      {% if attention %} · needing attention{% endif %}
+      {% if broken %} · <span style="color:var(--warn-ink);">{{ broken|length }}
+        cluster{{ 's' if broken|length != 1 }} unreachable</span>{% endif %}</p>
+  </div>
+  <a class="btn btn-ghost" href="/pods?refresh=1{{ '&attention=1' if attention }}{{ '&cluster=' ~ (want_cluster|urlencode) if want_cluster }}{{ '&q=' ~ (q|urlencode) if q }}">↻ Refresh</a>
+</div>
+
+<form method="get" action="/pods" class="card" style="margin-bottom:14px;">
+  <div class="card-b" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+    <select name="cluster" data-submit>
+      <option value="">every cluster</option>
+      {% for g in groups %}
+      <option value="{{ g.cid }}" {% if g.cid == want_cluster %}selected{% endif %}>
+        {{ g.project }} · {{ g.cluster }}</option>
+      {% endfor %}
+    </select>
+    <input type="search" name="q" value="{{ q }}" placeholder="filter by name, namespace, node, image…"
+           style="flex:1;min-width:180px;">
+    <label class="chk"><input type="checkbox" name="attention" value="1"
+      {% if attention %}checked{% endif %} data-submit> needs attention only</label>
+    <button class="btn-ghost tbtn" type="submit">Apply</button>
+  </div>
+</form>
+
+{% for b in broken %}
+<div class="flash err">⚠ {{ b.project }} · {{ b.cluster }}: {{ b.error }}
+  — <a href="/clusters?project={{ b.pid|urlencode }}&cluster={{ b.cid|urlencode }}">open</a></div>
+{% endfor %}
+
+{% if shown %}
+<div class="card"><div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+  <table class="jenkins">
+    <thead><tr>
+      <th style="min-width:220px;">Pod</th><th style="min-width:140px;">Cluster</th>
+      <th style="min-width:120px;">Namespace</th><th style="width:105px;">Status</th>
+      <th style="width:60px;">Ready</th><th style="width:70px;">Restarts</th>
+      <th style="width:120px;">Node</th><th style="width:55px;">Age</th>
+      {# Pinned to the right edge, like the cluster page's pod table. This one
+         is nine columns wide on a laptop, and an action you have to scroll
+         sideways to reach is an action nobody uses. #}
+      <th class="actcol"></th>
+    </tr></thead>
+    <tbody>
+    {% for p in shown %}
+    <tr>
+      <td class="jname"><b>{{ p.name }}</b></td>
+      {#- The cluster NAME goes to the cluster, and nothing else. It used to
+          carry inspect=describe&target=<pod>, so following it opened a
+          describe window on arrival — clicking the name of a place and being
+          handed a document about one pod inside it. The row's own `desc`
+          button is where that belongs, and it is two columns to the right. -#}
+      <td><a href="/clusters?project={{ p.pid|urlencode }}&cluster={{ p.cid|urlencode }}&tab=pods">
+        {{ p.project }} · {{ p.cluster }}</a></td>
+      <td>{{ p.namespace }}</td>
+      <td>{% if p.problem %}<span class="sv sv-high">{{ p.problem }}</span>
+          {% else %}<span class="sv sv-ok" style="color:var(--ok-ink);">{{ p.phase }}</span>{% endif %}</td>
+      <td>{{ p.ready }}</td>
+      <td {% if p.restarts > 5 %}style="color:var(--warn-ink);font-weight:600;"{% endif %}>{{ p.restarts }}</td>
+      <td class="hint">{{ p.node }}</td>
+      <td>{{ p.age }}</td>
+      <td class="mid actcol">
+        {#- urlencode is applied once per row rather than once per URL: the same
+            four values were being re-encoded fourteen times across this cell. -#}
+        {% set look = '/clusters?project=' ~ p.pid|urlencode ~ '&cluster='
+                      ~ p.cid|urlencode ~ '&tab=pods&target='
+                      ~ (p.namespace ~ '/' ~ p.name)|urlencode %}
+        {#- `oneline`: this is an auto-layout table, so the column grows to fit
+            and the card scrolls — the wrapping default is for a fixed-layout
+            cell, where an overflowing button would smear over its neighbour.
+            Without it these three stacked into three rows and made every row
+            three times as tall. See CLAUDE.md → action buttons stay on ONE
+            line. -#}
+        <div class="actrow oneline">
+          {# Same component and the same data- attributes as the cluster page,
+             so the live window opens here without a second implementation. The
+             href stays a real URL, so the row is still linkable. #}
+          <a class="abtn" href="{{ look }}&inspect=logs"
+             title="stream this pod's log"
+             {{ bits.cluster_podlog_attrs(p.pid, p.cid, p.namespace, p.name) }}>logs</a>
+          <a class="abtn" href="{{ look }}&inspect=describe"
+             title="kubectl describe"
+             {{ bits.describe_attrs(p.pid, p.cid, p.namespace, p.name) }}>desc</a>
+          {% if p.manage %}
+          <a class="abtn go" href="{{ look }}&inspect=shell"
+             title="run a command inside this pod">shell</a>
+          {% endif %}
+        </div>
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div></div>
+{% if total > shown|length %}
+<div class="sec-note">Showing the first {{ shown|length }} (worst first). Narrow it
+  with the filter — every pod is still counted in the totals above.</div>
+{% endif %}
+{% elif not broken %}
+<div class="empty"><div class="big">{{ glyph("boxes", 40) }}</div>
+  <h2>{% if attention %}Nothing needs attention{% else %}No pods to show{% endif %}</h2>
+  <p>{% if attention %}Every pod that could be read is healthy.{% elif want_cluster or q %}
+    Nothing matches this filter.{% else %}Connect a cluster and its pods appear here.{% endif %}</p></div>
+{% endif %}
+{% include "_logs_dialog.html" %}
+{% include "_describe_dialog.html" %}
+{% endblock %}

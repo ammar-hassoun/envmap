@@ -1,0 +1,41 @@
+# state, never committed: it holds git tokens, kubeconfigs and sealing keys
+data/
+certs/
+.venv/
+__pycache__/
+*.pyc
+*.sqlite
+*.db
+*.db-shm
+*.db-wal
+.DS_Store
+kubeconfigs/
+data/dev/
+
+# private commercial notes and the licence ledger: never published
+LICENSING.private.md
+*.private.md
+licences.json
+*.signing.key
+licence-signing.key
+
+# written per-build by scripts/release.sh; a source tree is never stamped
+app/_build.py
+
+# release artefacts: images and chart packages are large and rebuildable
+dist/
+
+# Security scan artefacts: raw scanner JSON is large, machine-generated and
+# regenerated on every run — the dated markdown reports in security/reports/
+# ARE committed, because "what did we know, and when" is the point of them.
+security/reports/raw/
+# scan.sh ROTATES the previous run to raw_prev_<pid>, and the exact-directory
+# pattern above does not match it -- so a rotation put bandit/gitleaks/trivy
+# output into a commit, and gitleaks output embeds the secret values it
+# matched. Glob the rotation too.
+security/reports/raw*/
+security/baseline/
+
+# Internal planning: estate details and personal decision items, not a
+# public roadmap. Kept locally.
+BACKLOG.md

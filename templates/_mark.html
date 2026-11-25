@@ -1,0 +1,52 @@
+{# ── the product mark ──────────────────────────────────────────────────────
+
+   Three layers of unequal width, threaded by one axis: environments stacked
+   dev → uat → prod, and a single thing traced through all of them. That is
+   what the portal is for, so that is what the mark says.
+
+   Drawn rather than lettered because the letter was never a mark — it was the
+   first character of whatever the install happened to be called, which is a
+   placeholder wearing a logo's clothes.
+
+   WHY IT IS NOT ALWAYS SHOWN
+       The portal white-labels: PORTAL_BRAND_NAME and the brand setting let a
+       customer put their own name on it. Stamping our mark over their name
+       would be worse than no mark at all, so this is the DEFAULT identity —
+       shown when nobody has set a brand — and an install that has been renamed
+       keeps its initial. `branded` decides, and comes from the caller.
+
+   WHY NO GRADIENT INSIDE
+       It sits on the accent gradient tile that was already there, in
+       --on-accent. One accent decision, made once, still correct in both
+       themes and on whatever accent an install ends up with.
+
+   Geometry is on a 24 unit grid and holds together down to 16px: three bars
+   3.2 units tall is about 2px each at favicon size, which still reads as
+   three. Nothing thinner than that survives.
+#}
+{% macro mark(size=18) -%}
+<svg width="{{ size }}" height="{{ size }}" viewBox="0 0 24 24" fill="none"
+     aria-hidden="true" focusable="false">
+  {# Two planes seen at an angle — environments stacked, the near one behind
+     the far one, which is the thing the portal draws.
+
+     It got here by elimination, rasterised and looked at rather than reasoned
+     about. Three stacked bars read as a text-align button. Nested contours
+     collapsed into a record button at every size below 40. A route through
+     three nodes carried the best meaning and lost its nodes at 16, which is
+     the size that matters most because it is the browser tab.
+
+     Four straight edges each, no strokes, no curves: nothing here degrades
+     when it is 16 pixels across. #}
+  <path d="M12 3.4 21 7.6 12 11.8 3 7.6Z" fill="currentColor"/>
+  <path d="M12 12.4 21 16.6 12 20.8 3 16.6Z" fill="currentColor" opacity=".5"/>
+</svg>
+{%- endmacro %}
+
+{# The tile, with the mark inside it or the brand's initial when the install
+   has been renamed. `cls` is the existing .logo class in either shell, so the
+   size, radius, gradient and shadow stay where they were defined. #}
+{% macro tile(brand, cls='logo', size=18) -%}
+<div class="{{ cls }}">{% if brand.branded %}{{
+  (brand.short or brand.name)[:1]|upper }}{% else %}{{ mark(size) }}{% endif %}</div>
+{%- endmacro %}

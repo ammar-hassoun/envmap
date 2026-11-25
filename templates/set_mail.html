@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% from "_set_head.html" import head %}
+{% block crumbs %}<a href="/settings">Settings</a> <span class="sep">/</span>
+  <b>Email</b>{% endblock %}
+{% block content %}
+{{ head("Email",
+        "One relay, used for two things: sending an invitation to a new account and sending a password reset link. Without it both still work — the portal shows you the link to pass on yourself — but an address it never posted to cannot be called verified, and accounts invited that way say so.",
+        msg, err) }}
+
+<div class="card">
+  <div class="card-h">SMTP relay
+    {% if configured %}<span class="badge" style="color:var(--ok-ink);">configured</span>
+    {% else %}<span class="badge" style="color:var(--warn-ink);">not configured</span>{% endif %}
+  </div>
+  <div class="card-b">
+    <form method="post" action="/settings/mail">
+      <div class="field-row"><label>server</label>
+        <input type="text" name="host" value="{{ s.host }}"
+               placeholder="smtp.office365.com"></div>
+      <div class="field-row"><label>port</label>
+        <input type="text" name="port" value="{{ s.port }}" style="max-width:120px;"></div>
+      <div class="field-row"><label>encryption</label>
+        <select name="security">
+          {% for key, label in security.items() %}
+          <option value="{{ key }}" {{ 'selected' if s.security == key }}>{{ label }}</option>
+          {% endfor %}
+        </select></div>
+      <div class="field-row"><label>username</label>
+        <input type="text" name="username" value="{{ s.username }}"
+               autocomplete="off" placeholder="leave blank for an open relay"></div>
+      <div class="field-row"><label>password</label>
+        <input type="password" name="password" autocomplete="new-password"
+               placeholder="{{ 'unchanged — type to replace' if s.has_password
+                              else 'the relay account password' }}"></div>
+      <div class="field-row"><label>from address</label>
+        <input type="email" name="from_addr" value="{{ s.from_addr }}"
+               placeholder="portal@yourcompany.com"></div>
+      <div class="field-row"><label>from name</label>
+        <input type="text" name="from_name" value="{{ s.from_name }}"
+               placeholder="{{ brand().name }}"></div>
+      <div class="field-row"><label>public address</label>
+        <input type="url" name="base_url" value="{{ s.base_url }}"
+               placeholder="https://portal.yourcompany.com"
+               {{ 'disabled' if s.base_url_from_env }}></div>
+      {# Not taken from the request. The Host header decides request.base_url,
+         and the password-reset form is open to anonymous callers — so a link
+         built from it and then emailed is a reset somebody else can collect. #}
+      <div class="sec-note">Where links inside emails point. Taken from here
+        rather than from the request, because the header a browser sends
+        cannot be trusted to build a link that is then posted to somebody
+        else. {% if s.base_url_from_env %}Set by
+        <span style="font-family:var(--mono);">PORTAL_BASE_URL</span>, so it
+        cannot be changed here.{% else %}Leave it empty and invitations are not
+        emailed at all — you are handed the link to pass on instead.{% endif %}</div>
+      {# said here rather than in a wiki nobody opens: this password sits in the
+         same table as every API token the portal holds, unencrypted #}
+      <div class="sec-note">Use a relay account that can only send. This
+        password is stored in the portal's database alongside the other
+        connection credentials, so anybody who can read that file can read it.</div>
+      <div class="actions"><button type="submit">Save</button></div>
+    </form>
+  </div>
+</div>
+
+{# Provider-neutral on purpose: every install relays through whatever that
+   company already sends mail with. What does not change is the three DNS
+   records, and those are where "the test worked but nothing arrives" almost
+   always turns out to live. #}
+<div class="card">
+  <div class="card-h">What your domain needs
+    <span class="hint">or the mail sends and lands in spam</span></div>
+  <div class="card-b">
+    <p class="sub" style="margin:0 0 14px;">A relay will happily accept a
+      message for a domain that has not authorised it. The receiving side is
+      what rejects it. Three records on the domain in your <b>from</b> address
+      settle that, and all three are free:</p>
+    <table class="jenkins">
+      <thead><tr><th style="width:88px;">Record</th><th style="width:150px;">Name</th>
+        <th>Value</th><th style="width:230px;">Why</th></tr></thead>
+      <tbody>
+        <tr><td><b>SPF</b><div class="sec-note" style="margin:0;">TXT</div></td>
+          <td style="font-family:var(--mono);font-size:11.5px;">@</td>
+          <td style="font-family:var(--mono);font-size:11.5px;">v=spf1
+            include:<i>your-relay</i> ~all</td>
+          <td class="hint">Says this relay may send as you. Your provider gives
+            you the include to use. One SPF record only — a second one breaks
+            both.</td></tr>
+        <tr><td><b>DKIM</b><div class="sec-note" style="margin:0;">TXT or CNAME</div></td>
+          <td style="font-family:var(--mono);font-size:11.5px;"><i>selector</i>._domainkey</td>
+          <td class="hint">generated by your provider — copy it exactly</td>
+          <td class="hint">Signs each message so it survives being forwarded,
+            which SPF alone does not.</td></tr>
+        <tr><td><b>DMARC</b><div class="sec-note" style="margin:0;">TXT</div></td>
+          <td style="font-family:var(--mono);font-size:11.5px;">_dmarc</td>
+          <td style="font-family:var(--mono);font-size:11.5px;">v=DMARC1; p=none;
+            rua=mailto:<i>you@example.com</i></td>
+          <td class="hint">Start at <span style="font-family:var(--mono);">p=none</span>
+            and read the reports before tightening it. Going straight to
+            <span style="font-family:var(--mono);">reject</span> is how a
+            company stops receiving its own invoices.</td></tr>
+      </tbody>
+    </table>
+    <div class="sec-note" style="margin-top:12px;">A from address on a domain
+      you do not control will be rejected or silently binned however correct
+      the relay settings are. And sending is separate from receiving: if
+      nothing is listening on that address, bounces and replies to your
+      invitations go nowhere — worth pointing the from address somewhere real,
+      or setting a reply-to that is.</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-h">Send a test</div>
+  <div class="card-b">
+    <p class="sub" style="margin:0 0 14px;">Proves the relay accepts a message
+      from this installation before somebody's invitation depends on it.</p>
+    <form method="post" action="/settings/mail/test">
+      <div class="field-row"><label>send to</label>
+        <input type="email" name="to" required value="{{ me.email }}"></div>
+      <div class="actions"><button type="submit" class="btn-ghost"
+        {{ 'disabled' if not configured }}>Send a test message</button></div>
+    </form>
+  </div>
+</div>
+{% endblock %}

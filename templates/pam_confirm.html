@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block crumbs %}<a href="/pam">Privileged Access</a> <span class="sep">/</span>
+  <b>{{ t.name }}</b>{% endblock %}
+{% block content %}
+{#- The gate on the way into a live session. A production target demands its name
+    typed; when the installation requires a reason, a three-part justification is
+    demanded — a ticket URL, the expected session time, and a summary of the
+    work. Everything is carried to the terminal/console page on the query string
+    and enforced again at the socket — this page is the convenience, not the
+    boundary. -#}
+<div class="page-head"><div>
+  <h1>Connect to {{ t.name }}</h1>
+  <p class="sub">
+    {% if need_name %}{{ t.name }} is marked <b>production</b>. {% endif %}
+    {% if need_reason %}A justification is required before this session opens. {% endif %}
+    Live session on <b>{{ t.address }}</b>.</p>
+</div></div>
+
+{% if bad %}<div class="flash err">⚠ That did not match {{ t.name }}.</div>{% endif %}
+
+<form method="get" action="/pam/targets/{{ t.id }}/{{ action }}" class="card">
+  {#- CARRIED THROUGH THE GATE. The form is a GET to the same page, so without
+      this the confirmation drops the window back into the portal frame -- the
+      session opens in a small window wearing a sidebar, which is the thing the
+      window exists to avoid. -#}
+  {% if bare %}<input type="hidden" name="win" value="1">{% endif %}
+  <div class="card-b">
+    {% if need_name %}
+    <div class="field-row"><label>type {{ t.name }}</label>
+      <div><input type="text" name="confirm" required placeholder="{{ t.name }}"
+             value="{{ confirm or '' }}" spellcheck="false" autocomplete="off" autofocus>
+        <div class="sec-note">This target is production — type its name exactly to confirm.</div>
+      </div></div>
+    {% else %}
+    <input type="hidden" name="confirm" value="{{ confirm or '' }}">
+    {% endif %}
+
+    {% if need_reason %}
+    <div class="field-row"><label>ticket URL</label>
+      <div><input type="url" name="ticket" required value="{{ ticket or '' }}"
+             spellcheck="false" autocomplete="off"
+             placeholder="https://jira.example.com/browse/INC-4821"
+             {% if not need_name %}autofocus{% endif %}>
+        <div class="sec-note">The change or incident this access is for. Must be a
+          full <code>http(s)</code> link.</div>
+      </div></div>
+
+    {#- CHOSEN, NOT TYPED, and it is a limit rather than a note. This was a text
+        box, so it took "asap", "30 min", "half an hour" and anything else --
+        and typed prose cannot bound a session, which is why the field never did
+        what its name said. Reported as "I don't think it is really working",
+        which was correct. -#}
+    <div class="field-row"><label>session time</label>
+      <div><select name="stime" required>
+          <option value="" {% if not stime %}selected{% endif %}
+                  disabled>choose how long…</option>
+          {% for mins, label in session_times %}
+          <option value="{{ label }}"
+                  {% if stime == label %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+        <div class="sec-note">The session ends itself when this is up. If this
+          installation sets its own maximum, whichever is shorter applies.</div>
+      </div></div>
+
+    <div class="field-row"><label>summary</label>
+      <div><textarea name="summary" required minlength="4" rows="3"
+             spellcheck="false" placeholder="what you are going to do on this host"
+             style="width:100%;box-sizing:border-box;resize:vertical;">{{ summary or '' }}</textarea>
+        <div class="sec-note">A short description of the work. Recorded on the
+          session and written to the audit trail.</div>
+      </div></div>
+    {% else %}
+    <input type="hidden" name="ticket" value="{{ ticket or '' }}">
+    <input type="hidden" name="stime" value="{{ stime or '' }}">
+    <input type="hidden" name="summary" value="{{ summary or '' }}">
+    {% endif %}
+
+    <div class="actions" style="margin-top:6px;">
+      <button type="submit" style="padding:6px 16px;font-size:12.5px;">Open the session</button>
+      <a class="btn btn-ghost" href="/pam" style="padding:6px 16px;font-size:12.5px;">Cancel</a>
+    </div>
+  </div>
+</form>
+{% endblock %}

@@ -1,0 +1,104 @@
+{% if section_error %}
+<div class="flash err">⚠ {{ section_error }}</div>
+{% endif %}
+
+<div class="card" style="margin-bottom:14px;">
+  <div class="card-h">SQL++
+    <span class="hint">the query service on {{ server.host }}:{{
+      server.query_port or 8093 }}</span>
+    <span style="flex:1"></span>
+    {% if held.write %}
+    <span class="badge" style="color:var(--danger-ink);
+          border-color:var(--danger-line);">write mode</span>
+    {% else %}
+    <span class="badge" style="color:var(--ok-ink);">read-only</span>
+    {% endif %}</div>
+  <div class="card-b">
+    <form method="post" action="/db/{{ server.id }}/cbquery" id="qform">
+      <textarea name="sql" id="sql" rows="6" spellcheck="false"
+                style="width:100%;box-sizing:border-box;font-family:var(--mono);
+                       font-size:13px;line-height:1.55;"
+                placeholder="SELECT META().id, * FROM `default` LIMIT 10">{{ sql }}</textarea>
+      <div class="actions" style="margin-top:10px;">
+        <button class="btn">Run</button>
+        <span class="hint" style="margin-left:10px;">⌘/Ctrl+Enter runs it.
+          {% if not held.write %}Read-only is enforced by Couchbase itself —
+          the request carries <span style="font-family:var(--mono);">readonly=true</span>,
+          so a statement that mutates is refused by the server rather than
+          guessed at here.{% endif %}</span>
+      </div>
+    </form>
+  </div>
+</div>
+
+{% if result %}
+{% if not result.ok %}
+<div class="flash err" style="margin-bottom:14px;">⚠ {{ result.error }}{%
+  if result.code %} <span class="hint">(code {{ result.code }})</span>{% endif %}</div>
+{% else %}
+<div class="card" style="margin-bottom:14px;">
+  <div class="card-h">Result
+    <span class="hint">{{ result.count }} row{{ '' if result.count == 1 else 's' }}{%
+      if result.elapsed %} in {{ result.elapsed }}{% endif %}{%
+      if result.mutations %} · {{ result.mutations }} mutation(s){% endif %}</span>
+    {% if result.truncated %}
+    <span style="flex:1"></span>
+    <span class="badge" style="color:var(--warn-ink);border-color:var(--warn-line);">
+      showing the first {{ max_rows }}</span>
+    {% endif %}</div>
+  <div class="card-b" style="overflow-x:auto;">
+    {% if not result.rows %}
+    <p class="sub" style="margin:0;">The statement succeeded and returned no rows.</p>
+    {% elif result.columns %}
+    <table class="jenkins" style="min-width:600px;">
+      <thead><tr>{% for c in result.columns %}<th>{{ c }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        {% for row in result.rows %}
+        <tr>{% for c in result.columns %}
+          {# a document's field can itself be an object or an array, so anything
+             that is not scalar is shown as the JSON it actually is #}
+          <td style="font-family:var(--mono);font-size:11.5px;
+                     max-width:380px;overflow-wrap:anywhere;">{{
+            row.get(c)|tojson if row.get(c) is mapping or row.get(c) is sequence
+            and row.get(c) is not string else row.get(c) if row.get(c) is not none
+            else '' }}</td>
+        {% endfor %}</tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    {# a projection of non-objects — SELECT RAW, or COUNT(*) unwrapped #}
+    <pre style="margin:0;font-size:12px;overflow-x:auto;">{{ result.rows|tojson }}</pre>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+{% endif %}
+
+{% if history %}
+<div class="card">
+  <div class="card-h">This session <span class="hint">{{ history|length }}</span></div>
+  <div class="card-b" style="overflow-x:auto;">
+    <table class="jenkins" style="min-width:560px;">
+      <thead><tr><th></th><th>statement</th>
+        <th style="text-align:right;">rows</th>
+        <th style="text-align:right;">took</th></tr></thead>
+      <tbody>
+        {% for h in history %}
+        <tr>
+          <td>{{ '✓' if h.ok else '⚠' }}</td>
+          <td class="sqlfill" data-sql="{{ h.sql }}"
+              style="font-family:var(--mono);font-size:11.5px;cursor:pointer;
+                     max-width:520px;overflow-wrap:anywhere;"
+              title="click to put this back in the editor">{{ h.sql }}
+            {% if h.error %}<div class="hint"
+              style="color:var(--danger-ink);">{{ h.error }}</div>{% endif %}</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums;">{{ h.rows }}</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums;">{{ h.took }}s</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}

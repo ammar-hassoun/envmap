@@ -1,0 +1,181 @@
+{#- One recorded session, in a window over the page — the same .psh chrome the
+    pod-log and describe windows use.
+
+    Two views of the same session, toggled at the top:
+      * SESSION (default) — the whole typescript, prompts and commands AND their
+        output, exactly what was on the screen. Rebuilt from the recording's
+        output stream, so it never holds a no-echo password (the screen never
+        showed one either).
+      * COMMANDS — just the lines that were run, redacted, for a quick audit read.
+
+    Opened by a delegated click on anything carrying data-pamcmd (the session id)
+    and data-pamname (its label) — a button anywhere on any PAM page opens this
+    and nothing else, the contract the log and describe windows use. -#}
+<dialog id="cmdDlg" class="psh cmdwin">
+  <div class="psh-bar">
+    <span class="psh-dots"><b title="close" data-cmddot="close">✕</b><b
+      title="minimise" data-cmddot="mini">–</b><b title="maximise" data-cmddot="maxi">+</b></span>
+    <b>session</b>
+    <span class="psh-ns" id="cmdWhat"></span>
+    <span style="flex:1"></span>
+    <span class="psh-state" id="cmdState"></span>
+    <button type="button" class="psh-x" id="cmdClose">close</button>
+  </div>
+  <div class="lgbar">
+    <span class="cmd-seg">
+      <button type="button" class="psh-x on" data-cmdview="session"
+              title="the whole screen: prompts, commands and output">session</button>
+      <button type="button" class="psh-x" data-cmdview="commands"
+              title="just the commands that were run">commands</button>
+    </span>
+    <input type="search" class="psh-find" id="cmdFind"
+           placeholder="filter lines…" spellcheck="false" autocomplete="off">
+    <button type="button" class="psh-x" id="cmdWrap" title="wrap long lines">wrap</button>
+    <button type="button" class="psh-x" id="cmdCopy">copy</button>
+    <button type="button" class="psh-x" id="cmdDownload">download</button>
+    <span style="flex:1"></span>
+    <span class="psh-state" id="cmdCount"></span>
+  </div>
+  <div class="cmdv" id="cmdView" tabindex="0"></div>
+</dialog>
+
+<style>
+  dialog.cmdwin { width:min(900px,95vw); height:min(660px,84vh); }
+  dialog.psh.cmdwin[open] { display:flex; flex-direction:column; }
+  .cmdwin .cmdv { flex:1 1 auto; min-height:0; }
+  .cmdv { flex:1; overflow:auto; padding:11px 14px 16px; font-family:var(--mono);
+    font-size:12.5px; line-height:1.55; white-space:pre; color:#cfe0f5; }
+  .cmdv.wrap { white-space:pre-wrap; word-break:break-word; }
+  .cmdv .l { display:block; }
+  .cmdv .meta { color:var(--muted); }
+  .cmdv .hidden { color:var(--warn-on-wash, #febc2e); font-style:italic; }
+  .cmdv mark { background:rgba(245,196,81,.28); color:var(--warn-on-wash); border-radius:3px; }
+  .cmdv .none { color:var(--muted); font-family:var(--sans); white-space:normal; }
+  .cmd-seg { display:inline-flex; gap:0; border:1px solid #263149; border-radius:7px;
+    overflow:hidden; }
+  .cmd-seg .psh-x { border:none; border-radius:0; }
+  .psh-find { width:180px; padding:3px 9px; font-size:11.5px; border-radius:6px;
+    border:1px solid #263149; background:#0e131d; color:#cfe0f5; font-family:var(--mono); }
+</style>
+
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  const dlg = document.getElementById('cmdDlg');
+  if (!dlg) return;
+  const view = document.getElementById('cmdView');
+  const what = document.getElementById('cmdWhat');
+  const state = document.getElementById('cmdState');
+  const count = document.getElementById('cmdCount');
+  const find = document.getElementById('cmdFind');
+  let sid = null, mode = 'session', lines = [];
+
+  const urlFor = m => '/pam/sessions/' + encodeURIComponent(sid)
+    + (m === 'commands' ? '/commands.txt' : '/transcript.txt');
+
+  function paint() {
+    const needle = find.value.trim().toLowerCase();
+    const frag = document.createDocumentFragment();
+    let shown = 0, cmds = 0;
+    for (const line of lines) {
+      const meta = line.startsWith('#') || line.startsWith('──');
+      if (mode === 'commands' && !meta && line.trim()) cmds++;
+      const hit = !needle || line.toLowerCase().includes(needle);
+      if (!hit) continue;
+      shown++;
+      const el = document.createElement('span');
+      let cls = 'l';
+      if (mode === 'commands') {           // only the command list is annotated
+        if (meta) cls += ' meta';
+        else if (line.startsWith('<hidden')) cls += ' hidden';
+      }
+      el.className = cls;
+      if (needle) {
+        const at = line.toLowerCase().indexOf(needle);
+        el.append(document.createTextNode(line.slice(0, at)));
+        const m = document.createElement('mark');
+        m.textContent = line.slice(at, at + needle.length);
+        el.append(m, document.createTextNode(line.slice(at + needle.length)));
+      } else {
+        el.textContent = line || ' ';
+      }
+      frag.appendChild(el);
+    }
+    view.replaceChildren(frag);
+    if (!shown) {
+      const p = document.createElement('span'); p.className = 'none';
+      p.textContent = needle ? 'No line contains “' + find.value.trim() + '”.'
+        : (mode === 'commands' ? 'No commands in this session.'
+                               : 'Nothing was on the screen.');
+      view.appendChild(p);
+    }
+    count.textContent = mode === 'commands'
+      ? cmds.toLocaleString() + ' command' + (cmds === 1 ? '' : 's')
+      : lines.length.toLocaleString() + ' line' + (lines.length === 1 ? '' : 's');
+  }
+
+  function load() {
+    if (!sid) return;
+    state.textContent = 'reading…'; lines = []; view.replaceChildren(); count.textContent = '';
+    fetch(urlFor(mode))
+      .then(r => r.ok ? r.text() : Promise.reject(r.status))
+      .then(text => { lines = text.replace(/\s+$/, '').split('\n');
+        state.textContent = ''; paint(); view.scrollTop = 0; })
+      .catch(err => {
+        state.textContent = '';
+        const p = document.createElement('span'); p.className = 'none';
+        p.textContent = mode === 'session' && err === 404
+          ? 'This session has no text transcript (a graphical session, or the '
+            + 'recording was cleared).'
+          : 'Could not load' + (err ? ' (' + err + ')' : '') + '.';
+        view.replaceChildren(p);
+      });
+  }
+
+  function setMode(m) {
+    mode = m;
+    dlg.querySelectorAll('[data-cmdview]').forEach(b =>
+      b.classList.toggle('on', b.dataset.cmdview === m));
+    load();
+  }
+  dlg.querySelectorAll('[data-cmdview]').forEach(b =>
+    b.addEventListener('click', () => { if (b.dataset.cmdview !== mode) setMode(b.dataset.cmdview); }));
+
+  find.addEventListener('input', paint);
+  document.getElementById('cmdWrap').addEventListener('click', e => {
+    view.classList.toggle('wrap');
+    e.currentTarget.classList.toggle('on', view.classList.contains('wrap'));
+  });
+  document.getElementById('cmdCopy').addEventListener('click', e => {
+    navigator.clipboard.writeText(lines.join('\n')).then(() => {
+      const b = e.currentTarget, was = b.textContent;
+      b.textContent = 'copied'; setTimeout(() => { b.textContent = was; }, 1200);
+    }).catch(() => {});
+  });
+  document.getElementById('cmdDownload').addEventListener('click', () => {
+    const a = document.createElement('a'); a.href = urlFor(mode); a.click();
+  });
+
+  function shut() { dlg.close(); }
+  document.getElementById('cmdClose').addEventListener('click', shut);
+  dlg.querySelector('[data-cmddot="close"]').addEventListener('click', shut);
+  dlg.querySelector('[data-cmddot="mini"]').addEventListener('click', shut);
+  dlg.querySelector('[data-cmddot="maxi"]').addEventListener('click', () => dlg.classList.toggle('maxi'));
+  dlg.addEventListener('cancel', shut);
+
+  document.addEventListener('click', e => {
+    const a = e.target.closest && e.target.closest('[data-pamcmd]');
+    if (!a || e.metaKey || e.ctrlKey || e.shiftKey || e.button) return;
+    e.preventDefault();
+    window.pamCommands(a.dataset.pamcmd, a.dataset.pamname || '');
+  });
+
+  window.pamCommands = function (id, label) {
+    sid = id; what.textContent = label || ''; find.value = '';
+    mode = 'session';
+    dlg.querySelectorAll('[data-cmdview]').forEach(b =>
+      b.classList.toggle('on', b.dataset.cmdview === 'session'));
+    if (!dlg.open) dlg.showModal();
+    load();
+  };
+})();
+</script>

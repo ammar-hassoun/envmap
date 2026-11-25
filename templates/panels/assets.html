@@ -1,0 +1,33 @@
+{# Inventory totals, from the Server Assets database. #}
+{% set a = d.assets %}
+<div class="card" style="margin:0;">
+  <div class="card-h">🖥 <a href="/assets" style="color:var(--text);">Server assets</a>
+    <span class="hint">{{ a.total }} recorded</span></div>
+  <div class="card-b">
+    {% if not a.total %}
+    <div class="sec-note">Nothing recorded yet —
+      <a href="/assets/new">add a server</a> or import a CSV.</div>
+    {% else %}
+    <div style="display:flex;gap:9px;flex-wrap:wrap;margin-bottom:11px;">
+      <span class="sv sv-info">{{ a.classes.physical }}<i>physical</i></span>
+      <span class="sv sv-info">{{ a.classes.virtual }}<i>virtual</i></span>
+      {% if a.cpu %}<span class="badge">{{ a.cpu }} cpu</span>{% endif %}
+      {% if a.ram %}<span class="badge">{{ (a.ram / 1024)|round(1) }} TB memory</span>{% endif %}
+      {% if a.disk %}<span class="badge">{{ (a.disk / 1024)|round(1) }} TB disk</span>{% endif %}
+    </div>
+    {% if a.warranty_expired or a.warranty_soon %}
+    <div style="display:flex;gap:9px;flex-wrap:wrap;">
+      {% if a.warranty_expired %}
+      <a class="sv sv-critical" href="/assets?sort=warranty_until">
+        {{ a.warranty_expired }}<i>warranty expired</i></a>{% endif %}
+      {% if a.warranty_soon %}
+      <a class="sv sv-medium" href="/assets?sort=warranty_until">
+        {{ a.warranty_soon }}<i>within 30 days</i></a>{% endif %}
+    </div>
+    {% else %}
+    <div class="sec-note" style="color:var(--ok-ink);">no warranty lapsing in the
+      next 30 days</div>
+    {% endif %}
+    {% endif %}
+  </div>
+</div>

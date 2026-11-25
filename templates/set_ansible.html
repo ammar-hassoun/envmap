@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% from "_set_head.html" import head %}
+{% block crumbs %}<a href="/settings">Settings</a> <span class="sep">/</span>
+  <b>Ansible</b>{% endblock %}
+{% block content %}
+{{ head("Ansible", "Whether this installation may change hosts, and how hard it
+  pushes when it does. Playbooks and the inventory live on the Ansible page
+  itself — this is only what the runner is allowed to do.", msg, err) }}
+
+<div class="card">
+  <div class="card-h">The runner
+    <span class="hint">what the portal found when it looked</span></div>
+  <div class="card-b">
+    <div class="field-row"><label>ansible-playbook</label>
+      <div>{% if tool.found %}
+        <span class="sv sv-clean">found</span>
+        <span class="badge" style="font-family:var(--mono);">{{ tool.version }}</span>
+        <div class="sec-note" style="font-family:var(--mono);">{{ tool.path }}</div>
+        {% else %}
+        <span class="sv sv-critical">not available</span>
+        <div class="sec-note">{{ tool.error }}</div>
+        <div class="sec-note">The container image ships <code>ansible-core</code>.
+          A source install needs it in the portal's own environment; a binary
+          somewhere unusual can be named with <code>PORTAL_ANSIBLE</code>.</div>
+        {% endif %}
+      </div></div>
+    <div class="field-row"><label>runs recorded</label>
+      <div>{{ summary.runs }} · {{ summary.playbooks }} playbook{{ 's' if summary.playbooks != 1 }}
+        · {{ summary.hosts }} host{{ 's' if summary.hosts != 1 }} in
+        {{ summary.groups }} group{{ 's' if summary.groups != 1 }}
+        <div class="sec-note">Output is kept per run, newest
+          {{ keep }} per playbook.</div>
+      </div></div>
+  </div>
+</div>
+
+<form method="post" action="/settings/ansible">
+<div class="card">
+  <div class="card-h">What it may do</div>
+  <div class="card-b">
+    {# The one switch that matters. Off on a new installation, so an inventory
+       can be built and playbooks written and dry-run before anything on this
+       page can change a machine. #}
+    <div class="field-row"><label>real runs</label>
+      <div>
+        <label style="font-weight:400;font-size:13px;cursor:pointer;">
+          <input type="checkbox" name="allow_real" value="1"
+                 style="width:auto;vertical-align:-2px;margin-right:7px;"
+                 {% if cfg.allow_real %}checked{% endif %}>
+          permit runs that are not <code>--check</code></label>
+        <div class="sec-note">With this off, every run from this portal is a dry
+          run: ansible reports what it would change and changes nothing. Turning
+          it on does not grant it to anybody — a person also needs the
+          <b>Ansible: run playbooks</b> area, and a group marked production still
+          has to have its name typed. Every run is audited either way.</div>
+        <div class="sec-note">This is the same posture as a cluster's “allow
+          management”: the portal being willing, and the credentials being
+          allowed, are two separate things.</div>
+      </div></div>
+    <div class="field-row"><label>forks</label>
+      <div><input type="number" name="forks" min="1" max="100" value="{{ cfg.forks }}"
+                  style="max-width:120px;">
+        <div class="sec-note">How many hosts ansible works on at once. Its own
+          default is 5. Raising this makes a run across a large group faster and
+          makes the load it puts on the portal, and on whatever the hosts talk
+          to, proportionally larger.</div>
+      </div></div>
+    <div class="field-row"><label>ssh timeout</label>
+      <div><input type="number" name="ssh_timeout" min="1" max="300"
+                  value="{{ cfg.ssh_timeout }}" style="max-width:120px;">
+        <span class="hint">seconds</span>
+        <div class="sec-note">How long ansible waits for a host to answer. This
+          is what decides how long a playbook takes to fail against a machine
+          that is simply switched off.</div>
+      </div></div>
+    {# On by default: a terminal on a host is the one place a person acts on a
+       machine free-hand, which is exactly what a bastion records. Off is a
+       deliberate choice, and the empty Recordings tab says where the switch is. #}
+    <div class="field-row"><label>record sessions</label>
+      <div>
+        <label style="font-weight:400;font-size:13px;cursor:pointer;">
+          <input type="checkbox" name="record_sessions" value="1"
+                 style="width:auto;vertical-align:-2px;margin-right:7px;"
+                 {% if cfg.record_sessions %}checked{% endif %}>
+          keep a replayable recording of every host terminal</label>
+        <div class="sec-note">When on, opening a terminal on an inventory host
+          records the screen as a replayable cast and the commands as a
+          transcript, both on the <b>Recordings</b> tab — the commands are also
+          in the audit trail either way. The recording is output only: a value a
+          host asks for without echoing back (a password) is never in it.</div>
+      </div></div>
+    <div class="actions">
+      <button type="submit" style="padding:6px 16px;font-size:12.5px;">
+        Save</button>
+      <a class="btn btn-ghost" style="padding:6px 16px;font-size:12.5px;"
+         href="/ansible">Go to Ansible →</a>
+    </div>
+  </div>
+</div>
+</form>
+
+<div class="card">
+  <div class="card-h">How a run reaches a host</div>
+  <div class="card-b">
+    <p class="sec-note" style="margin:0 0 9px;">Worth knowing before the first
+      real run, because none of it is configurable here and all of it is
+      visible:</p>
+    <ul class="sec-note" style="margin:0;line-height:1.75;">
+      <li>The portal connects <b>from wherever the portal runs</b> — in a
+        cluster, that is the pod's own network. A host it cannot reach on SSH is
+        a host no playbook here can touch, however correct the playbook is.</li>
+      <li>Each group's key is <b>encrypted at rest</b> and written to a 0600 file
+        inside a private directory that is removed when the run ends. A group can
+        instead name a key path, for an installation that must not hold keys in
+        its database.</li>
+      <li>The inventory, the playbook and any extra variables are <b>files</b>,
+        and the command is built as a list of arguments. Nothing typed on these
+        pages reaches a shell.</li>
+      <li>Every run keeps <b>the whole output</b>, the exact command, who started
+        it and ansible's own recap. That is the record afterwards.</li>
+    </ul>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,60 @@
+{# What IT costs a month, and what lapses next. From the subscription register. #}
+{% set s = d.spend %}
+<div class="card" style="margin:0;">
+  <div class="card-h">🧾 <a href="/spend" style="color:var(--text);">IT spend</a>
+    <span class="hint">{{ s.total }} tracked{% if s.seats %} ·
+      {{ s.seats }} seats{% endif %}</span></div>
+  <div class="card-b">
+    {% if not s.total %}
+    <div class="sec-note">Nothing recorded yet —
+      <a href="/spend">add what you already pay for</a> and this shows the
+      monthly run rate and what renews next.</div>
+    {% else %}
+    <div style="display:flex;gap:26px;flex-wrap:wrap;margin-bottom:12px;">
+      <div>
+        <div class="sec-note" style="margin:0;">per month</div>
+        <div class="stat num" style="font-size:20px;">{{ s.base }}
+          {{ '{:,.0f}'.format(s.monthly) }}</div>
+      </div>
+      <div>
+        <div class="sec-note" style="margin:0;">per year</div>
+        <div class="stat num" style="font-size:20px;">{{ s.base }}
+          {{ '{:,.0f}'.format(s.yearly) }}</div>
+      </div>
+    </div>
+
+    {% if s.expired or s.soon %}
+    <div style="display:flex;gap:9px;flex-wrap:wrap;">
+      {% if s.expired %}
+      <a class="sv sv-critical" href="/spend?sort=renews">
+        {{ s.expired }}<i>lapsed</i></a>{% endif %}
+      {% if s.soon %}
+      <a class="sv sv-medium" href="/spend?sort=renews">
+        {{ s.soon }}<i>within 30 days</i></a>{% endif %}
+    </div>
+    {% if s.next %}
+    <div class="sec-note" style="margin-top:9px;">
+      Next: <b>{{ s.next.name }}</b> — {{ s.next.renewal.label }}{%
+        if not s.next.auto_renew %}, and it does not auto-renew{% endif %}.</div>
+    {% endif %}
+    {% else %}
+    <div class="sec-note" style="color:var(--ok-ink);">nothing lapsing in the next
+      30 days</div>
+    {% endif %}
+
+    {% if s.unconverted %}
+    <div class="sec-note" style="margin-top:9px;color:var(--warn-ink);">
+      {{ s.unconverted|join(', ') }} excluded — no rate to {{ s.base }} set.</div>
+    {% endif %}
+
+    {% if s.top %}
+    <div style="display:flex;gap:7px;flex-wrap:wrap;margin-top:11px;">
+      {% for who, amount in s.top %}
+      <span class="badge">{{ who }} <b>{{ s.base }}
+        {{ '{:,.0f}'.format(amount) }}</b></span>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% endif %}
+  </div>
+</div>

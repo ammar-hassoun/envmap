@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% from "_set_head.html" import head %}
+{% block crumbs %}<a href="/settings">Settings</a> <span class="sep">/</span> <b>Assistant</b>{% endblock %}
+{% block content %}
+{{ head("Assistant",
+        "A model here is OPTIONAL. The assistant answers by running real queries against live state, which needs no model and no extra pod — a model only adds a written summary above each table. Configure one if you want the prose; leave it empty and everything still works.",
+        msg, err) }}
+
+<div class="card">
+  <div class="card-h">Model
+    <span class="hint">{{ (cfg.model ~ ' · ' ~ (providers[cfg.provider].label if cfg.provider in providers else cfg.provider)) if cfg.enabled and cfg.model else 'off' }}</span>
+  </div>
+  <div class="card-b">
+    <form method="post" action="/settings/assistant">
+      <div class="field-row"><label>enabled</label>
+        <div><input type="checkbox" name="enabled" style="width:auto"
+                    {% if cfg.enabled %}checked{% endif %}>
+          <span class="sec-note" style="margin:0 0 0 8px;">off hides the
+            Assistant page for everyone</span></div></div>
+      <div class="field-row"><label>provider</label>
+        <select name="provider" data-call-change="pickAi" required>
+          <option value="">— choose —</option>
+          {% for key, pv in providers.items() %}
+          <option value="{{ key }}" {% if cfg.provider == key %}selected{% endif %}>
+            {{ pv.icon }} {{ pv.label }}</option>
+          {% endfor %}
+        </select></div>
+      <div class="field-row"><label>endpoint URL</label>
+        <input type="text" name="base_url" id="ai-url" value="{{ cfg.base_url }}"
+               placeholder="leave blank for the provider's default"></div>
+      <div class="field-row"><label>model</label>
+        <input type="text" name="model" id="ai-model" value="{{ cfg.model }}"
+               placeholder="choose a provider first"></div>
+      <div class="field-row"><label>API key</label>
+        <input type="password" name="token" autocomplete="new-password"
+               placeholder="{% if cfg.token %}•••••• stored — type to replace{% else %}not needed for a local Ollama{% endif %}"></div>
+      <div class="field-row"><label>skip TLS verification</label>
+        <div><input type="checkbox" name="skip_tls" style="width:auto"
+                    {% if cfg.skip_tls %}checked{% endif %}>
+          <span class="sec-note" style="margin:0 0 0 8px;">only for an internal
+            gateway with a self-signed certificate</span></div></div>
+      <div class="sec-note" id="ai-note"></div>
+      <div class="actions">
+        <button type="submit">Save</button>
+        <button type="submit" name="do_test" value="1" class="btn-ghost">Save &amp; test</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-h">What gets sent, and what never does</div>
+  <div class="card-b">
+    <p class="sub" style="margin:0 0 10px;">Each question sends two things: the
+      question itself, and a briefing describing this estate. The briefing is
+      rebuilt per request from the live database and filtered by the asking
+      person's roles — someone who cannot see a project in the UI cannot learn
+      about it here either.</p>
+    <div class="sec-note" style="margin-bottom:12px;">
+      <b>Credentials are never sent.</b> The briefing is assembled from named
+      fields — names, URLs, counts, statuses — and never from whole connection
+      rows, so tokens, passwords, kubeconfigs and sealing certificates cannot
+      reach it. As a backstop the portal compares the finished briefing against
+      every stored secret and refuses to send it if one appears.
+      The assistant also has no way to act: no commands, no commits, no changes.</div>
+
+    <details class="adv"><summary>See exactly what would be sent for your account
+      right now ({{ sample.split('\n')|length }} lines)</summary>
+      <pre class="console" style="margin-top:10px;max-height:420px;">{{ sample }}</pre>
+    </details>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-h">The three ways to run it</div>
+  <div class="card-b">
+    {% for key, pv in providers.items() %}
+    <div class="kv" style="border-top:1px solid var(--line);padding-top:10px;margin-top:10px;">
+      <span style="font-size:15px;">{{ pv.icon }}</span>
+      <div style="min-width:0;">
+        <b style="font-size:13.5px;">{{ pv.label }}</b>
+        <span class="badge">e.g. {{ pv.model_hint }}</span>
+        <div class="sec-note" style="margin:2px 0 0;">{{ pv.note }}</div>
+      </div>
+    </div>
+    {% endfor %}
+    <div class="sec-note" style="margin-top:14px;">If sending a description of
+      your infrastructure to a third party is not acceptable, use the Ollama
+      option: the model runs on hardware you control and nothing leaves the
+      network.</div>
+  </div>
+</div>
+
+<script nonce="{{ csp_nonce() }}">
+const AI_NOTES = {{ provider_notes|tojson }};
+const AI_HINTS = {{ provider_hints|tojson }};
+const AI_MODELS = {{ provider_models|tojson }};
+function pickAi(p) {
+  document.getElementById('ai-note').textContent = AI_NOTES[p] || '';
+  document.getElementById('ai-url').placeholder = AI_HINTS[p] || 'leave blank for the default';
+  document.getElementById('ai-model').placeholder = AI_MODELS[p] || 'choose a provider first';
+}
+pickAi(document.querySelector('[name=provider]').value);
+</script>
+{% endblock %}

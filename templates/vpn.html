@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block crumbs %}<b>VPN</b>{% endblock %}
+{% block content %}
+<div class="kv" style="margin-bottom:6px;">
+  <h1 style="margin:0;">VPN</h1>
+  <span style="flex:1"></span>
+  <a class="btn btn-ghost" href="/vpn?refresh=1"
+     style="padding:6px 14px;font-size:12px;">Refresh</a>
+  <a class="btn btn-ghost" href="/settings/conns/vpn"
+     style="padding:6px 14px;font-size:12px;">Settings</a>
+</div>
+<p class="sub">Which tunnels are up, and who is on them. Read-only — enabling a
+  user, restarting a server or revoking a certificate stays in the tool that
+  owns the account.</p>
+
+{% if msg %}<div class="flash">✓ {{ msg }}</div>{% endif %}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+
+{% if not portals %}
+<div class="card"><div class="card-b">
+  <p class="sub" style="margin:0 0 12px;">No VPN portal is connected yet.
+    Pritunl, OpenVPN Access Server, wg-easy and Netmaker are supported, and you
+    can add as many as you run — one per site, or one per environment.</p>
+  <a class="btn" href="/settings/conns/vpn">Connect a VPN portal</a>
+</div></div>
+{% else %}
+
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
+                         margin-bottom:16px;">
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat">{{ totals.connected }}</div>
+    <div class="statsub">connected now</div></div></div>
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat">{{ totals.users }}</div>
+    <div class="statsub">accounts</div></div></div>
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat" style="color:{{ 'var(--ok-ink)' if totals.online == totals.servers
+                                       else 'var(--warn-ink)' }};">{{ totals.online }}<span
+      style="font-size:58%;font-weight:600;color:var(--muted);"> / {{ totals.servers }}</span></div>
+    <div class="statsub">servers up</div></div></div>
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat" style="color:{{ 'var(--danger-ink)' if totals.down else 'var(--ok-ink)' }};">
+      {{ totals.down }}</div>
+    <div class="statsub">portals unreachable</div></div></div>
+</div>
+
+{% for p in portals %}
+<div class="card">
+  <div class="card-h">
+    {{ logo(p.conn.type, p.conn.name, 18) }}
+    {{ p.conn.name }}
+    <span class="hint">{{ providers[p.conn.type].label if p.conn.type in providers else p.conn.type }}{%
+      if p.conn.base_url %} · {{ p.conn.base_url }}{% endif %}</span>
+  </div>
+  <div class="card-b">
+    {% if p.error %}
+    <div class="sec-note" style="color:var(--danger-ink);margin:0;">
+      <b>Cannot read this portal:</b> {{ p.error }}</div>
+    {% else %}
+
+    <table class="jenkins">
+      <thead><tr><th>server</th><th>state</th><th>network</th>
+        <th>protocol</th><th class="num">on now</th></tr></thead>
+      <tbody>
+        {% for s in p.data.servers %}
+        <tr>
+          <td><b>{{ s.name }}</b>{% if s.detail %}
+            <span class="sec-note" style="margin:0;">{{ s.detail }}</span>{% endif %}</td>
+          <td><span class="badge" style="color:{{ 'var(--ok-ink)' if s.online else 'var(--danger-ink)' }};">
+            {{ s.status }}</span></td>
+          <td style="font-family:var(--mono);font-size:11.5px;">{{ s.network or '—' }}</td>
+          <td>{{ s.protocol or '—' }}{% if s.port %}:{{ s.port }}{% endif %}</td>
+          <td class="num">{{ s.users }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    {% if p.data.peers %}
+    <table class="jenkins" style="margin-top:14px;">
+      <thead><tr><th>who</th><th>server</th><th>address</th><th>since</th>
+        <th class="num">in</th><th class="num">out</th><th>client</th></tr></thead>
+      <tbody>
+        {% for w in p.data.peers %}
+        <tr>
+          <td><b>{{ w.user or '—' }}</b></td>
+          <td>{{ w.server or '—' }}</td>
+          <td style="font-family:var(--mono);font-size:11.5px;">{{ w.address or '—' }}</td>
+          <td>{{ w.since or '—' }}</td>
+          <td class="num">{{ human(w.bytes_in) if w.bytes_in else '—' }}</td>
+          <td class="num">{{ human(w.bytes_out) if w.bytes_out else '—' }}</td>
+          <td>{{ w.client or '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="sec-note" style="margin-top:12px;">Nobody is connected.</div>
+    {% endif %}
+    {% endif %}
+  </div>
+</div>
+{% endfor %}
+{% endif %}
+{% endblock %}

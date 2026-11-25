@@ -1,0 +1,203 @@
+{# The progress card, and the script that drives the whole thing.
+
+   Page-level: it is a card in its own right, so it cannot live inside another
+   page's card. The button lives in _update_button.html and may be anywhere on
+   the page — this finds it by id.
+
+   Included by About and by Settings → Deployment. It was written once and copied
+   once, and the copy had neither the button nor a true sentence about it: it
+   still said the portal could not update itself, on the page that had just
+   announced a new version. A control on one of the two pages people look at is a
+   control they cannot find.
+
+   Wants in the context: upd, selfupd, can_update, updating.
+#}
+{% if updating or (selfupd.possible and can_update and upd.available) %}
+{# Rendered whether or not an update is running, and revealed by the script when
+   the button is pressed. Once the patch lands there is no process left to serve
+   a page, so the page that reports progress has to already be in the browser.
+   The first version redirected here instead, and a customer got the ingress's
+   own error twice. #}
+{# The health URL comes from the server, not from arithmetic on the current path.
+   A relative 'healthz' resolves to /healthz from /about and to
+   /settings/healthz from Settings → Deployment, and root_path is the only thing
+   that knows about an ingress sub-path. #}
+<div class="card" id="updating" data-target="{{ updating or upd.latest }}"
+     data-healthz="{{ request.scope.root_path }}/healthz"
+     {{ '' if updating else 'hidden' }} style="border-color:var(--accent);">
+  <div class="card-h">Updating to {{ updating or upd.latest }}
+    <span class="badge" id="updstate">asking the cluster…</span></div>
+  <div class="card-b">
+    <p class="sub" style="margin:0 0 10px;">The new version is starting. It copies
+      the database before it changes anything in it, so this takes a few seconds
+      longer than a restart.</p>
+    <div class="bar"><span id="updbar"></span></div>
+    <p class="sub" id="updnote" style="margin:10px 0 0;">This page will reload
+      itself when {{ updating or upd.latest }} answers. You can close it — the
+      update carries on either way.</p>
+  </div>
+</div>
+{% endif %}
+
+<style>
+  .bar { height:6px; border-radius:99px; background:var(--panel2);
+    overflow:hidden; }
+  .bar span { display:block; height:100%; width:15%; border-radius:99px;
+    background:var(--accent); animation:crawl 1.4s ease-in-out infinite; }
+  @keyframes crawl {
+    0% { margin-inline-start:0; width:15%; }
+    50% { margin-inline-start:42%; width:38%; }
+    100% { margin-inline-start:100%; width:15%; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .bar span { animation:none; width:100%; opacity:.5; }
+  }
+</style>
+
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  // Wait for the document. This include is placed near the top of a page so its
+  // card reads before the detail, which means the form it wires up does not
+  // exist yet when this runs — and a null form meant the click fell through to a
+  // plain navigation, which is the exact failure this file exists to prevent.
+  // Waiting also frees a page to put the include wherever it reads best.
+  function ready(fn) {
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', fn, {once: true});
+    } else {
+      fn();
+    }
+  }
+  ready(start);
+
+  function start() {
+  const box = document.getElementById('updating');
+  if (!box) return;
+  const want = box.dataset.target;
+  const state = document.getElementById('updstate');
+  const note = document.getElementById('updnote');
+  const form = document.getElementById('updform');
+  // what the card says before anything has happened, so a refusal can put it
+  // back — otherwise a second press reveals the card mid-sentence, still
+  // reporting the poll from the attempt that was refused
+  const restState = state.textContent;
+  const restNote = note.textContent;
+  let tries = 0;
+  let started = false;
+
+  // The click is sent from here rather than by navigating, because navigating
+  // needs a response and there will not be one: the pod answering it is the pod
+  // being replaced. The page therefore switches itself into the updating state
+  // and stops caring what comes back — a failed fetch after the patch looks
+  // exactly like success and is treated as such.
+  //
+  // A refusal is different: it is decided before anything is patched, so it
+  // arrives quickly and as JSON, and it is worth showing.
+  let sending = false;
+  if (form) form.addEventListener('submit', ev => {
+    ev.preventDefault();
+    if (sending) return;              // one press is one update
+    if (!window.confirm('Update this installation to ' + want
+                        + ' now? It restarts, and is unavailable for a few '
+                        + 'seconds.')) {
+      return;
+    }
+    sending = true;
+    // a refusal from a previous press describes a state that no longer exists
+    form.parentNode.querySelectorAll('.flash.err').forEach(el => el.remove());
+    form.querySelectorAll('button').forEach(b => { b.disabled = true; });
+
+    // Shown NOW, before the request, not when it answers. The answer waits on a
+    // call to the Kubernetes API, and on a real cluster that is seconds — during
+    // which the page said nothing at all and the button looked broken. It was
+    // pressed repeatedly, which is exactly what a control with no feedback
+    // invites. Undone below if the answer turns out to be a refusal.
+    begin();
+
+    fetch(form.action, {
+      method: 'POST',
+      headers: {'Accept': 'application/json'},
+      body: new FormData(form),
+    }).then(r => r.status === 202 ? null : r.json().catch(() => null))
+      .then(problem => {
+        if (problem && problem.error) {
+          undo();
+          const flash = document.createElement('div');
+          flash.className = 'flash err';
+          flash.textContent = '⚠ ' + problem.error;
+          form.parentNode.insertBefore(flash, form);
+        }
+      })
+      // The request dying mid-flight is the normal case: the process answering
+      // it is the one being replaced. Nothing to undo — it already started.
+      .catch(() => {});
+  });
+
+  let timer = null;
+
+  function begin() {
+    if (started) return;
+    started = true;
+    box.hidden = false;
+    box.scrollIntoView({block: 'center', behavior: 'smooth'});
+    if (form) form.hidden = true;
+    timer = setTimeout(tick, 2000);
+  }
+
+  // Only ever reached by a refusal, which is decided before anything is patched
+  // — so there is genuinely nothing running and the page must go back to how it
+  // was rather than sit on a progress card for an update that never started.
+  function undo() {
+    started = false;
+    sending = false;
+    tries = 0;
+    if (timer) { clearTimeout(timer); timer = null; }
+    state.textContent = restState;
+    note.textContent = restNote;
+    box.hidden = true;
+    if (form) {
+      form.hidden = false;
+      form.querySelectorAll('button').forEach(b => { b.disabled = false; });
+    }
+  }
+
+  // /healthz answers the version and needs no session, so it can be asked while
+  // the portal is still coming up and before this browser is authenticated
+  // against the new process. Its path was rendered into the card by the server.
+  const tick = () => {
+    tries += 1;
+    fetch(box.dataset.healthz, {cache: 'no-store'})
+      .then(r => r.ok ? r.json() : Promise.reject(r.status))
+      .then(d => {
+        if (d.version === want) {
+          state.textContent = want + ' is serving';
+          note.textContent = 'reloading…';
+          setTimeout(() => window.location.reload(), 700);
+        } else {
+          state.textContent = 'still ' + d.version;
+          again();
+        }
+      })
+      .catch(() => { state.textContent = 'restarting…'; again(); });
+  };
+
+  const again = () => {
+    // Gives up after five minutes rather than polling for ever: by then either
+    // the image could not be pulled or the pod is not scheduling, and both want
+    // a person looking at kubectl rather than a spinner.
+    if (tries > 100) {
+      state.textContent = 'taking longer than expected';
+      note.textContent = 'Check the pod: it may be pulling the image, or unable '
+                       + 'to. Nothing has been lost — the previous version can '
+                       + 'be restored by moving the tag back.';
+      return;
+    }
+    timer = setTimeout(tick, 3000);
+  };
+
+  // Server-rendered updating state (no JavaScript on the click, or a reload):
+  // start straight away. Otherwise wait for the button.
+  if (!box.hidden) begin();
+  }
+})();
+</script>

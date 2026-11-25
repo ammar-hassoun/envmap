@@ -1,0 +1,157 @@
+{#- Watch a live session as it runs.
+
+    The house `.psh` window — the same chrome as the log, describe, values and
+    yaml windows, because every pop-over in this product is ONE shape.
+
+    It is a TAIL, not a second stream: the session is already writing a
+    line-buffered asciinema cast, so the frames are on disk the instant the host
+    prints them and reading from the last offset is watching. That also settles
+    the security question by construction — there is no path from this window
+    back to the terminal, so a supervisor can only watch. Only the person at the
+    keyboard types.
+
+    Opened from the Active tab by `data-pamwatch` on any control, carrying the
+    session id and who is on it. Delegated, so it survives the table being
+    re-rendered. -#}
+<dialog id="pwDlg" class="psh">
+  {#- The house window bar, exactly as _logs_dialog.html builds it: the
+      traffic-light dots, then the title, then the state and the buttons. The
+      first version invented `.psh-dot` (singular, no <b> inside), so no CSS
+      matched it and the window had NOTHING to close it with — reported as
+      "I don't have option to exit the live watch". Copy the shape, do not
+      approximate it. -#}
+  <div class="psh-bar">
+    <span class="psh-dots"><b title="close" data-pwdot="close">✕</b><b
+      title="minimise" data-pwdot="mini">–</b><b
+      title="maximise" data-pwdot="maxi">+</b></span>
+    <b id="pwWho">live session</b>
+    <span class="psh-ns" id="pwWhere"></span>
+    <span style="flex:1"></span>
+    <span class="psh-state" id="pwState">connecting…</span>
+    <button type="button" class="psh-x on" id="pwFollow">following</button>
+    <button type="button" class="psh-x" id="pwClose">close</button>
+  </div>
+  <div class="psh-body">
+    <div id="pwTerm" class="pw-term"></div>
+    <div class="hint pw-foot">
+      What the host is showing them, as it happens. This is a read-only view —
+      nothing typed here reaches the session. The full recording is kept and
+      replayable from <b>Recordings</b> once the session ends.
+    </div>
+  </div>
+</dialog>
+<style>
+  .pw-term { min-height:60vh; background:#0b0f16; border:1px solid var(--line);
+    border-radius:10px; padding:8px; overflow:hidden; }
+  .pw-foot { margin-top:9px; }
+</style>
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  const dlg = document.getElementById('pwDlg');
+  if (!dlg) return;
+  const termEl = document.getElementById('pwTerm'), state = document.getElementById('pwState'),
+        whoEl = document.getElementById('pwWho'), whereEl = document.getElementById('pwWhere'),
+        follow = document.getElementById('pwFollow');
+  let term = null, timer = 0, at = 0, sid = '', following = true, misses = 0;
+
+  function say(text, tone) {
+    state.textContent = text;
+    state.style.color = tone === 'bad' ? 'var(--danger-ink)'
+                      : tone === 'ok' ? 'var(--ok-ink)' : '';
+  }
+
+  function stop() { if (timer) { clearTimeout(timer); timer = 0; } }
+
+  function poll() {
+    fetch('/pam/session/' + encodeURIComponent(sid) + '/live.json?frm=' + at)
+      .then(r => r.ok ? r.json() : Promise.reject(r.status))
+      .then(j => {
+        if (!j.ok) { say(j.error || 'refused', 'bad'); return; }
+        if (j.text) {
+          at = j.next;
+          // The cast's first line is its header, and every line after is
+          // [elapsed, kind, data]. Only 'o' is output; 'r' is a resize.
+          j.text.split('\n').filter(Boolean).forEach(line => {
+            let ev; try { ev = JSON.parse(line); } catch (e) { return; }
+            if (!Array.isArray(ev)) return;              // the header line
+            if (ev[1] === 'o') term.write(ev[2]);
+            else if (ev[1] === 'r') {
+              const m = /^(\d+)x(\d+)$/.exec(ev[2] || '');
+              if (m) term.resize(+m[1], +m[2]);
+            }
+          });
+          if (following) term.scrollToBottom();
+          misses = 0;
+        } else { misses++; }
+        if (j.done) {
+          say('session ended', '');
+          term.write('\r\n\x1b[38;5;245m— the session ended —\x1b[0m\r\n');
+          stop();
+          return;
+        }
+        say(misses > 6 ? 'idle' : 'live', 'ok');
+        timer = setTimeout(poll, 1000);
+      })
+      .catch(code => {
+        say('lost (' + code + ')', 'bad');
+        // One retry at a slower beat, then stop: a watcher that hammers a
+        // refusing endpoint for ever is worse than one that gives up loudly.
+        timer = setTimeout(poll, 5000);
+      });
+  }
+
+  function open(btn) {
+    sid = btn.dataset.pamwatch;
+    whoEl.textContent = btn.dataset.pamwho || 'live session';
+    whereEl.textContent = btn.dataset.pamwhere || '';
+    at = 0; misses = 0; following = true;
+    follow.classList.add('on'); follow.textContent = 'following';
+    termEl.innerHTML = '';
+    if (!window.Terminal) { termEl.textContent = 'terminal library did not load'; return; }
+    term = new Terminal({
+      fontFamily: getComputedStyle(document.body).getPropertyValue('--mono')
+        || 'ui-monospace, monospace',
+      fontSize: 13, lineHeight: 1.25, cursorBlink: false, scrollback: 20000,
+      // READ-ONLY, and this is the line that makes it so.
+      disableStdin: true, convertEol: false, allowProposedApi: false,
+      theme: {background: '#0b0f16', foreground: '#d7e2f0'},
+    });
+    term.open(termEl);
+    say('connecting…', '');
+    dlg.showModal();
+    stop(); poll();
+  }
+
+  function shut() { stop(); try { dlg.close(); } catch (e) {} }
+
+  follow.addEventListener('click', () => {
+    following = !following;
+    follow.classList.toggle('on', following);
+    follow.textContent = following ? 'following' : 'paused';
+    if (following && term) term.scrollToBottom();
+  });
+  // Three ways out, because a modal with no exit is a trap: the red dot, the
+  // close button, and Escape. The shared handler in base.html drives the other
+  // two dots for a window that navigates away; this one is in-page, so it
+  // wires its own.
+  dlg.addEventListener('click', ev => {
+    const dot = ev.target.closest('.psh-dots b[data-pwdot]');
+    if (!dot) return;
+    ev.preventDefault();
+    const how = dot.dataset.pwdot;
+    if (how === 'close') { shut(); return; }
+    if (how === 'mini') { dlg.classList.toggle('mini'); dlg.classList.remove('maxi'); }
+    else { dlg.classList.toggle('maxi'); dlg.classList.remove('mini'); }
+    if (term && term.scrollToBottom && following) term.scrollToBottom();
+  });
+  document.getElementById('pwClose').addEventListener('click', shut);
+  dlg.addEventListener('cancel', ev => { ev.preventDefault(); shut(); });
+
+  document.addEventListener('click', ev => {
+    const btn = ev.target.closest('[data-pamwatch]');
+    if (!btn || btn.disabled) return;
+    ev.preventDefault();
+    open(btn);
+  });
+})();
+</script>

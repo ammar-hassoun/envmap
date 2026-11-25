@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+{% from "_set_head.html" import head %}
+{% block crumbs %}<a href="/settings">Settings</a> <span class="sep">/</span> <b>Security scanning</b>{% endblock %}
+{% block content %}
+{{ head("Security scanning",
+        "Connect DefectDojo, Dependency-Track or SonarQube. A connection does not have to belong to a project — leave it unassigned for a central platform.",
+        msg, err) }}
+
+<div class="card" id="sec">
+  <div class="card-h">Platforms
+    <span class="hint">{{ sec_conns|length }} configured · shown on
+      <a href="/security">Security</a></span>
+  </div>
+  <div class="card-b">
+    {% for c in sec_conns %}
+    <div class="rowcard" id="{{ c.id }}">
+      <div class="kv">
+        {{ logo(c.type, c.name, 18) }}
+        <b style="font-size:14.5px;">{{ c.name }}</b>
+        <span class="badge">{{ providers[c.type].label if c.type in providers else c.type }}</span>
+        <span class="badge">{{ project_names[c.pid] if c.pid else 'central · all projects' }}</span>
+        {% if c.scope %}<span class="badge">scope: {{ c.scope }}</span>{% endif %}
+        {% if c.skip_tls %}<span class="badge" style="color:var(--warn-ink);">⚠ TLS unverified</span>{% endif %}
+        <span style="flex:1"></span>
+        <form method="post" action="/settings/sec/{{ c.id }}/test">
+          <input type="hidden" name="pid" value="{{ c.pid }}">
+          <button class="btn-ghost" style="padding:5px 13px;font-size:11.5px;">Test</button></form>
+        <form method="post" action="/settings/sec/{{ c.id }}/delete"
+              data-del="{{ c.name }}">
+          <input type="hidden" name="pid" value="{{ c.pid }}">
+          <button class="btn-danger" style="padding:5px 13px;font-size:11.5px;">Remove</button></form>
+      </div>
+      <div class="sec-note" style="margin-top:7px;font-family:var(--mono);">{{ c.base_url }}</div>
+      {% if c.status %}
+      <div class="sec-note"
+           style="color:{{ 'var(--ok-ink)' if c.status.startswith('ok') else 'var(--danger-ink)' }};">{{ c.status }}</div>
+      {% endif %}
+
+      <details class="adv" style="margin-top:8px;"><summary>Edit</summary>
+        <form method="post" action="/settings/sec/{{ c.id }}/update" style="margin-top:10px;">
+          <input type="hidden" name="pid" value="{{ c.pid }}">
+          <div class="field-row"><label>display name</label>
+            <input type="text" name="name" value="{{ c.name }}"></div>
+          <div class="field-row"><label>base url</label>
+            <input type="text" name="base_url" value="{{ c.base_url }}"></div>
+          <div class="field-row"><label>{{ sec_scopes[c.type].label if c.type in sec_scopes else 'scope (optional)' }}</label>
+            <input type="text" name="scope" value="{{ c.scope or '' }}"
+                   placeholder="{{ sec_scopes[c.type].hint if c.type in sec_scopes else '' }}"></div>
+          <div class="field-row"><label>API key</label>
+            <input type="password" name="token" autocomplete="new-password"
+                   placeholder="•••••• stored — type to replace"></div>
+          {% if c.type == 'defectdojo' %}
+          <div class="field-row"><label>findings per page</label>
+            <input type="text" name="max_findings" value="{{ c.max_findings or '' }}"
+                   placeholder="200 — rows per page on the Findings tab"></div>
+          {% endif %}
+          <div class="field-row"><label>skip TLS verification</label>
+            <div><input type="checkbox" name="skip_tls" style="width:auto"
+                        {% if c.skip_tls %}checked{% endif %}>
+              <span class="sec-note" style="margin:0 0 0 8px;">only for an internal
+                server with an expired or self-signed certificate</span></div></div>
+          <div class="actions"><button type="submit"
+                  style="padding:6px 16px;font-size:12.5px;">Save &amp; test</button></div>
+        </form>
+      </details>
+    </div>
+    {% endfor %}
+
+    <details class="adv" {% if not sec_conns %}open{% endif %}>
+      <summary>＋ Connect a security platform</summary>
+      <form method="post" action="/settings/sec/new" style="margin-top:12px;">
+        <div class="field-row"><label>platform</label>
+          <select name="type" data-call-change="secType" required>
+            <option value="">— choose —</option>
+            {% for key, pv in providers.items() %}
+            <option value="{{ key }}">{{ pv.icon }} {{ pv.label }}</option>
+            {% endfor %}
+          </select></div>
+        <div class="field-row"><label>project <span style="font-family:inherit;
+              text-transform:none;letter-spacing:0;">(optional)</span></label>
+          <select name="pid">
+            <option value="">Not assigned — central platform, all projects</option>
+            {% for pid2, nm in project_names.items() %}
+            <option value="{{ pid2 }}">only {{ nm }}</option>
+            {% endfor %}
+          </select></div>
+        <div class="field-row"><label>display name</label>
+          <input type="text" name="name" placeholder="defaults to the platform name"></div>
+        <div class="field-row"><label>base url</label>
+          <input type="text" name="base_url" id="sec-url"
+                 placeholder="https://defectdojo.example.com"></div>
+        <div class="field-row"><label id="sec-scope-lbl">scope (optional)</label>
+          <input type="text" name="scope" id="sec-scope"></div>
+        <div class="field-row"><label>API key</label>
+          <input type="password" name="token" autocomplete="new-password"
+                 placeholder="never a password — use an API key or token"></div>
+        <div class="sec-defectdojo secf" style="display:none;">
+          <div class="field-row"><label>findings per page</label>
+            <input type="text" name="max_findings"
+                   placeholder="200 — rows per page on the Findings tab"></div></div>
+        <div class="field-row"><label>skip TLS verification</label>
+          <div><input type="checkbox" name="skip_tls" style="width:auto">
+            <span class="sec-note" style="margin:0 0 0 8px;">tick only for an internal
+              server whose certificate is expired or self-signed</span></div></div>
+        <div class="sec-note" id="sec-note"></div>
+        <div class="actions"><button type="submit">Connect &amp; test</button></div>
+      </form>
+    </details>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-h">What the portal reads</div>
+  <div class="card-b">
+    <p class="sub" style="margin:0 0 10px;">Every call is a GET. The portal never
+      triages, suppresses, re-scans or imports — that stays in the scanner's own
+      UI, so a read-only key is all it needs.</p>
+    {% for key, pv in providers.items() %}
+    <div class="kv" style="border-top:1px solid var(--line);padding-top:10px;margin-top:10px;">
+      {{ plogo(pv, 20) }}
+      <div style="min-width:0;">
+        <b style="font-size:13.5px;">{{ pv.label }}</b>
+        <div class="sec-note" style="margin:2px 0 0;">{{ pv.note }}</div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<script nonce="{{ csp_nonce() }}">
+const SEC_NOTES  = {{ sec_notes|tojson }};
+const SEC_SCOPES = {{ sec_scopes|tojson }};
+const SEC_URLS   = {{ providers|tojson }};
+function secType(t) {
+  document.querySelectorAll('.secf').forEach(el => {
+    el.style.display = t && el.classList.contains('sec-' + t) ? '' : 'none';
+  });
+  document.getElementById('sec-note').textContent = SEC_NOTES[t] || '';
+  const sc = SEC_SCOPES[t] || {};
+  document.getElementById('sec-scope-lbl').textContent = sc.label || 'scope (optional)';
+  document.getElementById('sec-scope').placeholder = sc.hint || '';
+  document.getElementById('sec-url').placeholder = (SEC_URLS[t] || {}).url_hint || '';
+}
+</script>
+
+<p class="sub" style="margin-top:4px;">
+  Findings are shown on <a href="/security">Security</a>.</p>
+{% endblock %}

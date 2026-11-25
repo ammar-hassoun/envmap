@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Console · {{ name }}</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:#0a0e17; color:#cfe0f5;
+    font-family:system-ui, -apple-system, sans-serif; }
+  body { display:flex; flex-direction:column; }
+  #bar { display:flex; align-items:center; gap:10px; padding:8px 14px; background:#121826;
+    border-bottom:1px solid #202839; font-size:13px; flex:none; flex-wrap:wrap; }
+  #bar b { font-size:14px; }
+  #bar .hint { color:#7f93b4; }
+  #cstate { font-family:ui-monospace, monospace; font-size:12px; color:#7f93b4; }
+  #bar button, #bar select { background:#1b2436; color:#cfe0f5; border:1px solid #2a3550;
+    border-radius:7px; padding:5px 11px; font:inherit; font-size:12px; cursor:pointer; }
+  #bar button:hover, #bar select:hover { border-color:#3d68ff; }
+  #bar button[disabled] { opacity:.45; cursor:not-allowed; }
+  #screen { flex:1 1 auto; min-height:0; overflow:hidden; display:flex;
+    align-items:center; justify-content:center; }
+  #screen canvas { display:block; }
+  .gate { margin:auto; max-width:460px; padding:28px; text-align:center; line-height:1.5; }
+  .gate input { width:100%; margin:12px 0; padding:9px 11px; border-radius:8px; border:1px solid #2a3550;
+    background:#121826; color:#cfe0f5; font:inherit; }
+  .gate button { background:#3d68ff; color:#fff; border:0; border-radius:8px; padding:9px 18px;
+    font:inherit; cursor:pointer; }
+  .gate button[disabled] { opacity:.5; cursor:not-allowed; }
+  .err { color:#ff8f8f; }
+  dialog { background:#121826; color:#cfe0f5; border:1px solid #2a3550; border-radius:12px;
+    padding:18px; width:min(520px, 92vw); }
+  dialog::backdrop { background:rgba(0,0,0,.55); }
+  dialog textarea { width:100%; min-height:120px; background:#0a0e17; color:#cfe0f5;
+    border:1px solid #2a3550; border-radius:8px; padding:9px; font:13px ui-monospace, monospace; }
+  dialog .row { display:flex; gap:10px; justify-content:flex-end; margin-top:12px; }
+  dialog button { background:#1b2436; color:#cfe0f5; border:1px solid #2a3550; border-radius:7px;
+    padding:6px 13px; font:inherit; cursor:pointer; }
+  dialog button.go { background:#3d68ff; border-color:#3d68ff; color:#fff; }
+</style>
+</head>
+<body>
+{% if why %}
+  <div class="gate"><b>The console cannot open.</b><p class="err">{{ why }}</p></div>
+{% else %}
+  <div id="bar">
+    <b>{{ name }}</b><span class="hint">{{ conn_name }}{% if node %} · {{ node }}{% endif %}</span>
+    <span id="cstate">{{ 'waiting for confirmation' if (prod or click_first) else 'connecting…' }}</span>
+    <span style="flex:1"></span>
+    <button id="cad" title="send Ctrl+Alt+Del to the guest" disabled>Ctrl+Alt+Del</button>
+    <select id="keys" aria-label="send a key combination" disabled>
+      <option value="">Keys…</option>
+      <option value="ctrl-alt-f1">Ctrl+Alt+F1</option><option value="ctrl-alt-f2">Ctrl+Alt+F2</option>
+      <option value="ctrl-alt-f7">Ctrl+Alt+F7</option><option value="alt-tab">Alt+Tab</option>
+      <option value="win">Windows key</option><option value="esc">Esc</option>
+      <option value="print">Print Screen</option>
+    </select>
+    <button id="ctype" title="type text into the guest, key by key" disabled>Type text…</button>
+    <button id="cscale" title="fit the screen to the window, or show it at its own size">Fit: on</button>
+    <button id="cfs">Fullscreen</button>
+    <button id="crc">Reconnect</button>
+  </div>
+  {% if prod %}
+  <div class="gate" id="gate">
+    <b>Production {{ 'server' if confirm_name else 'hypervisor' }}</b>
+    <p>This is on a connection marked production. Type <b>{{ confirm_name or name }}</b> to open its console.</p>
+    <input id="gname" autocomplete="off" spellcheck="false" aria-label="name to confirm">
+    <button id="ggo" disabled>Open console</button>
+  </div>
+  {% elif click_first %}
+  <div class="gate" id="gate">
+    <b>Open the console of {{ name }}?</b>
+    <p>This window was opened from a link on another site. The console opens in your name and is
+       written to the audit log, so open it only if you meant to.</p>
+    <button id="ggo">Open console</button>
+  </div>
+  {% endif %}
+  <div id="screen"></div>
+  <dialog id="typedlg">
+    <b>Type text into {{ name }}</b>
+    <p style="color:#7f93b4;font-size:12.5px;margin:6px 0 10px;">Sent as key presses, one character at a time, to
+      whatever has focus in the guest. For a US keyboard layout in the guest.</p>
+    <textarea id="typetext" spellcheck="false" data-nosave></textarea>
+    <div class="row"><button id="typecancel">Cancel</button><button class="go" id="typego">Type it</button></div>
+  </dialog>
+<script nonce="{{ csp_nonce() }}" type="module">
+  import RFB from '/static/novnc/core/rfb.js';
+  const c = {{ c|tojson }}, vm = {{ vm|tojson }}, node = {{ node|tojson }}, kind = {{ kind|tojson }};
+  const want = {{ (confirm_name or name)|tojson }}, prod = {{ 'true' if prod else 'false' }};
+  const clickFirst = {{ 'true' if click_first else 'false' }};
+  const openUrl = {{ (open_url or '/virt/console/open')|tojson }}, wsPath = {{ (ws_path or '/virt/console.ws')|tojson }};
+  const st = document.getElementById('cstate');
+  const setState = t => { st.textContent = t; };
+  const live = ['cad', 'keys', 'ctype'].map(id => document.getElementById(id));
+  let rfb = null, confirmText = '', scale = true;
+
+  async function connect() {
+    if (rfb) { try { rfb.disconnect(); } catch (e) {} rfb = null; }
+    live.forEach(el => { el.disabled = true; });
+    setState('connecting…');
+    let r;
+    try {
+      r = await (await fetch(openUrl, { method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ c, vm, node, kind, confirm: confirmText }) })).json();
+    } catch (e) { setState('✕ ' + e); return; }
+    if (!r.ok) { setState('✕ ' + r.error); return; }
+    const url = (location.protocol === 'https:' ? 'wss' : 'ws') + '://' + location.host +
+      wsPath + '?session=' + encodeURIComponent(r.session);
+    rfb = new RFB(document.getElementById('screen'), url,
+      r.password ? { credentials: { password: r.password } } : {});
+    rfb.scaleViewport = scale;
+    rfb.background = '#0a0e17';
+    rfb.addEventListener('connect', () => { setState('● connected'); live.forEach(el => { el.disabled = false; }); });
+    rfb.addEventListener('disconnect', e => {
+      live.forEach(el => { el.disabled = true; });
+      setState((e.detail && e.detail.clean) ? '○ disconnected' : '✕ connection lost — Reconnect to try again');
+    });
+    rfb.addEventListener('securityfailure', () => setState('✕ the hypervisor refused the console'));
+    rfb.addEventListener('credentialsrequired', () => rfb.sendCredentials({ password: r.password }));
+    rfb.addEventListener('desktopname', e => { document.title = 'Console · ' + (e.detail.name || want); });
+  }
+
+  // keysyms (X11) for the combinations in the menu
+  const K = { ctrl: 0xffe3, alt: 0xffe9, shift: 0xffe1, win: 0xffeb, tab: 0xff09, esc: 0xff1b,
+              ret: 0xff0d, print: 0xff61, f1: 0xffbe, f2: 0xffbf, f7: 0xffc4 };
+  const CODES = { ctrl: 'ControlLeft', alt: 'AltLeft', shift: 'ShiftLeft', win: 'MetaLeft' };
+  function combo(keys) {
+    if (!rfb) return;
+    keys.forEach(k => rfb.sendKey(K[k], CODES[k] || null, true));
+    keys.slice().reverse().forEach(k => rfb.sendKey(K[k], CODES[k] || null, false));
+  }
+  const COMBOS = { 'ctrl-alt-f1': ['ctrl', 'alt', 'f1'], 'ctrl-alt-f2': ['ctrl', 'alt', 'f2'],
+                   'ctrl-alt-f7': ['ctrl', 'alt', 'f7'], 'alt-tab': ['alt', 'tab'], win: ['win'],
+                   esc: ['esc'], print: ['print'] };
+  document.getElementById('keys').addEventListener('change', e => {
+    const v = e.target.value; e.target.value = '';
+    if (COMBOS[v]) combo(COMBOS[v]);
+    if (rfb) rfb.focus();
+  });
+  document.getElementById('cad').addEventListener('click', () => { if (rfb) rfb.sendCtrlAltDel(); });
+
+  // Type text: a console has no clipboard, so a password or a command is typed
+  // into it the way a person would, shift held for the characters that need it
+  const SHIFTED = '~!@#$%^&*()_+{}|:"<>?';
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  async function typeText(text) {
+    for (const ch of text) {
+      if (!rfb) return;
+      let sym = ch === '\n' ? K.ret : ch === '\t' ? K.tab : ch.codePointAt(0);
+      if (sym > 0xff && ch !== '\n' && ch !== '\t') sym = 0x01000000 + sym;
+      const shift = (ch >= 'A' && ch <= 'Z') || SHIFTED.includes(ch);
+      if (shift) rfb.sendKey(K.shift, 'ShiftLeft', true);
+      rfb.sendKey(sym, null, true); rfb.sendKey(sym, null, false);
+      if (shift) rfb.sendKey(K.shift, 'ShiftLeft', false);
+      await sleep(12);
+    }
+  }
+  const dlg = document.getElementById('typedlg'), ta = document.getElementById('typetext');
+  document.getElementById('ctype').addEventListener('click', () => { ta.value = ''; dlg.showModal(); ta.focus(); });
+  document.getElementById('typecancel').addEventListener('click', () => dlg.close());
+  document.getElementById('typego').addEventListener('click', async () => {
+    const t = ta.value; dlg.close(); ta.value = '';
+    setState('typing…'); await typeText(t); setState('● connected');
+    if (rfb) rfb.focus();
+  });
+
+  document.getElementById('cscale').addEventListener('click', e => {
+    scale = !scale; e.target.textContent = 'Fit: ' + (scale ? 'on' : 'off');
+    if (rfb) rfb.scaleViewport = scale;
+  });
+  document.getElementById('cfs').addEventListener('click', () => {
+    const el = document.documentElement;
+    (el.requestFullscreen || el.webkitRequestFullscreen || (() => {})).call(el);
+  });
+  let started = !(prod || clickFirst);
+  document.getElementById('crc').addEventListener('click', () => { if (started) connect(); });
+
+  if (prod || clickFirst) {
+    const gi = document.getElementById('gname'), gg = document.getElementById('ggo');
+    if (gi) gi.addEventListener('input', () => { gg.disabled = gi.value.trim() !== want; });
+    const go = () => {
+      confirmText = gi ? gi.value.trim() : ''; started = true;
+      document.getElementById('gate').remove(); connect();
+    };
+    gg.addEventListener('click', go);
+    if (gi) { gi.addEventListener('keydown', e => { if (e.key === 'Enter' && !gg.disabled) go(); }); gi.focus(); }
+    else gg.focus();
+  } else {
+    connect();
+  }
+</script>
+{% endif %}
+</body>
+</html>

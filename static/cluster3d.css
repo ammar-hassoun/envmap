@@ -1,0 +1,350 @@
+/* The 3D cluster view (templates/cluster_3d.html, static/cluster3d.js).
+
+   THE STAGE IS DARK IN BOTH THEMES, on purpose. It is a picture lit from
+   inside: the pods glow, the lines are additive light, and on a white ground
+   every one of those reads as a smudge. So the stage carries its own colours
+   rather than the theme's tokens, and only the page around it follows the
+   theme. Every var() below has its fallback on the rule that uses it. */
+
+.c3d-head { margin-bottom: 12px; }
+.c3d-kicker { font-size: 11px; font-weight: 700; letter-spacing: .08em;
+  text-transform: uppercase; vertical-align: middle; margin-left: 8px;
+  padding: 3px 9px; border-radius: 999px; color: #cfe0ff;
+  background: linear-gradient(135deg, #5b8def, #8b6cf5); }
+
+.c3d { position: fixed; inset: 0; z-index: 5; overflow: hidden; isolation: isolate;
+  background: #05070f; color: #e6ecff;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-user-select: none; user-select: none; }
+#c3dOver { pointer-events: none; z-index: 1; }
+.c3d-back { display: inline-block; font-size: 11.5px; font-weight: 600;
+  color: #9fb2e8; text-decoration: none; margin-bottom: 5px; }
+.c3d-back:hover { color: #fff; }
+/* The tour is a film: two bars slide in and a line says what is on screen. */
+.c3d::before, .c3d::after { content: ""; position: absolute; left: 0; right: 0;
+  height: 0; background: #000; z-index: 4; transition: height .6s ease; pointer-events: none; }
+.c3d::before { top: 0; } .c3d::after { bottom: 0; }
+.c3d.cine::before, .c3d.cine::after { height: 8.5%; }
+.c3d.cine .c3d-left, .c3d.cine .c3d-card, .c3d.cine .c3d-hint { opacity: 0; pointer-events: none; }
+.c3d-left, .c3d-card { transition: opacity .5s; }
+.c3d-caption { position: absolute; left: 0; right: 0; bottom: 11%; z-index: 4;
+  text-align: center; font-size: clamp(15px, 1.7vw, 24px); font-weight: 650;
+  letter-spacing: .01em; color: #fff; text-shadow: 0 2px 18px rgba(0, 0, 0, .9);
+  pointer-events: none; opacity: 0; transition: opacity .5s; padding: 0 5%; }
+.c3d.cine .c3d-caption { opacity: 1; }
+.c3d canvas { position: absolute; inset: 0; width: 100%; height: 100%;
+  display: block; outline: none; cursor: grab; touch-action: none; }
+.c3d canvas.drag { cursor: grabbing; }
+.c3d canvas.point { cursor: pointer; }
+.c3d-vh { position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* Glass panels: one look for every overlay. */
+.c3d-left, .c3d-tools, .c3d-card, .c3d-hint, .c3d-tip {
+  position: absolute; z-index: 2; }
+/* The column lets clicks through to the stage wherever a panel is not. */
+.c3d-left { top: 14px; left: 14px; bottom: 70px; display: flex;
+  flex-direction: column; align-items: flex-start; gap: 10px;
+  max-width: min(46%, 520px); pointer-events: none; }
+.c3d-left > * { pointer-events: auto; }
+.c3d-top, .c3d-side, .c3d-card, .c3d-seg, .c3d-search, .c3d-tip {
+  background: rgba(10, 16, 34, .66); border: 1px solid rgba(120, 150, 255, .18);
+  -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
+
+.c3d-top { padding: 10px 14px; border-radius: 12px; flex: 0 0 auto; }
+.c3d-title { font-size: 15px; font-weight: 700; display: flex; gap: 8px;
+  align-items: center; flex-wrap: wrap; }
+.c3d-prod { font-size: 10px; font-weight: 700; letter-spacing: .06em;
+  text-transform: uppercase; padding: 2px 7px; border-radius: 999px;
+  color: #ffd9d9; background: rgba(245, 113, 113, .22);
+  border: 1px solid rgba(245, 113, 113, .5); }
+.c3d-live { font-size: 11px; font-weight: 600; color: #9fb2e8;
+  display: inline-flex; align-items: center; gap: 6px; }
+.c3d-live::before { content: ""; width: 7px; height: 7px; border-radius: 50%;
+  background: #6b7ba8; }
+.c3d-live.on::before { background: #3ddc97;
+  box-shadow: 0 0 0 0 rgba(61, 220, 151, .7); animation: c3dpulse 2s infinite; }
+.c3d-live.bad::before { background: #f57171; }
+@keyframes c3dpulse { 70% { box-shadow: 0 0 0 7px rgba(61, 220, 151, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(61, 220, 151, 0); } }
+.c3d-totals { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.c3d-tot { all: unset; box-sizing: border-box; cursor: pointer;
+  font: 600 12px/1 ui-sans-serif, system-ui, sans-serif; color: #dfe7ff;
+  padding: 6px 9px; border-radius: 9px; display: inline-flex; gap: 6px;
+  align-items: center; background: rgba(255, 255, 255, .05);
+  border: 1px solid rgba(255, 255, 255, .08); }
+.c3d .c3d-tot:hover { background: rgba(255, 255, 255, .11); filter: none; }
+.c3d-tot b { font-size: 14px; }
+.c3d .c3d-tot.on { background: rgba(91, 141, 239, .34);
+  border-color: rgba(140, 170, 255, .7); }
+.c3d-tot.quiet { opacity: .5; }
+.c3d-tot i { width: 9px; height: 9px; border-radius: 50%; display: inline-block;
+  background: var(--c, #8a94a6); box-shadow: 0 0 8px var(--c, #8a94a6); }
+
+.c3d-tools { left: 50%; bottom: 16px; transform: translateX(-50%); display: flex;
+  gap: 8px; flex-wrap: nowrap; justify-content: center; max-width: calc(100% - 28px); }
+.c3d.cine .c3d-tools { opacity: .0; pointer-events: none; }
+/* Walking: the dock is one button, the key is put away, and the picture is yours. */
+.c3d .c3d-btn.c3d-go { color: #04121c; font-weight: 800; padding: 7px 18px;
+  background: linear-gradient(135deg, #5df2b3, #46c8ff); }
+.c3d .c3d-btn.c3d-go:hover { color: #000; background: linear-gradient(135deg, #8bffd0, #7fdcff); }
+.c3d.walk .c3d-tools > :not(.c3d-walkseg), .c3d.walk .c3d-side { display: none; }
+.c3d.walk .c3d-top { opacity: .82; }
+.c3d.walk canvas { cursor: crosshair; }
+/* The conversation: one panel, low and centred, like a line of dialogue in a game. */
+.c3d-talk { position: absolute; z-index: 3; left: 50%; bottom: 74px; transform: translateX(-50%);
+  width: min(760px, calc(100% - 420px)); min-width: min(520px, calc(100% - 28px));
+  padding: 14px 16px 12px; border-radius: 16px; background: rgba(8, 12, 26, .88);
+  border: 1px solid rgba(120, 170, 255, .35); box-shadow: 0 20px 60px -20px rgba(0, 0, 0, .9);
+  -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
+  -webkit-user-select: text; user-select: text; }
+.c3d-talk[hidden] { display: none; }
+.c3d-talk-who { font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #7fd4ff; }
+.c3d-talk-say { margin: 6px 0 10px; font-size: 15px; line-height: 1.45; color: #f2f6ff; }
+.c3d-talk-out { margin: 0 0 10px; max-height: 30vh; overflow: auto; padding: 10px 12px; border-radius: 10px;
+  background: rgba(0, 0, 0, .55); border: 1px solid rgba(255, 255, 255, .08); color: #cfe0ff;
+  font: 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.c3d-talk-out[hidden] { display: none; }
+.c3d-talk-opts { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.c3d .c3d-opt { all: unset; box-sizing: border-box; cursor: pointer; display: flex; align-items: center; gap: 9px;
+  padding: 8px 10px; border-radius: 9px; font: 600 12.5px/1.25 ui-sans-serif, system-ui, sans-serif; color: #dfe7ff;
+  background: rgba(255, 255, 255, .05); border: 1px solid rgba(255, 255, 255, .08); }
+.c3d .c3d-opt:hover { background: rgba(91, 141, 239, .3); border-color: rgba(140, 170, 255, .6); filter: none; }
+.c3d .c3d-opt[disabled] { opacity: .5; cursor: not-allowed; }
+.c3d .c3d-opt[disabled]:hover { background: rgba(255, 255, 255, .05); border-color: rgba(255, 255, 255, .08); }
+.c3d-opt kbd { flex: 0 0 auto; min-width: 18px; text-align: center; font: 700 11px/18px ui-monospace, monospace;
+  color: #04121c; background: #7fd4ff; border-radius: 5px; }
+.c3d-opt span { flex: 1 1 auto; min-width: 0; }
+.c3d-opt em { flex: 0 1 auto; font-style: normal; font-size: 10.5px; font-weight: 500; color: #ffcf99; text-align: right; }
+.c3d.talking .c3d-hint { opacity: 0; }
+/* a line typed to the doctor: one field, where the conversation panel sits */
+.c3d-say { position: absolute; z-index: 4; left: 50%; bottom: 74px; transform: translateX(-50%);
+  width: min(620px, calc(100% - 28px)); display: flex; flex-direction: column; gap: 8px;
+  padding: 8px 8px 8px 14px; border-radius: 14px; background: rgba(8, 12, 26, .92);
+  border: 1px solid rgba(226, 121, 76, .7); box-shadow: 0 20px 60px -20px rgba(0, 0, 0, .9);
+  -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
+.c3d-say[hidden] { display: none; }
+.c3d .c3d-say input { all: unset; box-sizing: border-box; flex: 1 1 auto; min-width: 0; padding: 6px 0;
+  font: 500 14px/1.3 ui-sans-serif, system-ui, sans-serif; color: #f2f6ff; -webkit-user-select: text; user-select: text; }
+.c3d .c3d-say input::placeholder { color: #8391bd; }
+.c3d-say-row { display: flex; gap: 8px; align-items: center; }
+.c3d-say-ask { padding: 4px 6px 0 0; font: 600 14px/1.4 ui-sans-serif, system-ui, sans-serif; color: #ffd9c7; }
+.c3d-say-ask[hidden], .c3d-say-opts[hidden] { display: none; }
+.c3d-say-opts { display: flex; flex-wrap: wrap; gap: 6px; padding-right: 6px; }
+.c3d-say-opts .c3d-opt { flex: 1 1 180px; }
+.c3d.saying .c3d-hint { opacity: 0; }
+/* the way into the walk: a row of characters and a row of rides, under the figure turning above them */
+.c3d-pick { position: absolute; z-index: 4; left: 50%; bottom: 40px; transform: translateX(-50%);
+  width: min(900px, calc(100% - 28px)); padding: 14px 16px 12px; border-radius: 16px; background: rgba(8, 12, 26, .88);
+  border: 1px solid rgba(120, 170, 255, .35); box-shadow: 0 20px 60px -20px rgba(0, 0, 0, .9);
+  -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
+.c3d-pick[hidden] { display: none; }
+.c3d-pick-head { font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #7fd4ff; }
+.c3d-pick-title { margin: 10px 0 6px; font: 600 14px/1.35 ui-sans-serif, system-ui, sans-serif; color: #f2f6ff; }
+.c3d-pick-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.c3d-pick-row .c3d-opt { flex: 1 1 96px; justify-content: center; text-align: center; }
+.c3d-pick-row .c3d-opt span { flex: 0 1 auto; }
+.c3d .c3d-pick-row .c3d-opt.on { background: rgba(91, 141, 239, .45); border-color: #7fd4ff; color: #fff; }
+.c3d-pick-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px;
+  font: 500 12px/1.3 ui-sans-serif, system-ui, sans-serif; color: #9fb0dc; }
+.c3d.picking .c3d-hint, .c3d.picking .c3d-tools { opacity: 0; pointer-events: none; }
+/* the chat with the doctor: above the map, newest at the bottom, never in the way of a click */
+.c3d-chat { position: absolute; z-index: 2; left: 16px; bottom: 268px; width: min(340px, calc(100% - 32px));
+  max-height: min(34vh, calc(100% - 440px)); overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end;
+  padding: 8px 10px; border-radius: 12px; background: rgba(6, 10, 24, .62); border: 1px solid rgba(226, 121, 76, .3);
+  font: 500 12px/1.4 ui-sans-serif, system-ui, sans-serif; color: #dfe7ff; pointer-events: none; }
+.c3d-chat[hidden] { display: none; }
+.c3d-chat-head { flex: 0 0 auto; margin-bottom: 4px; font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #ffb38a; }
+.c3d-chat-row { flex: 0 0 auto; margin-top: 3px; overflow-wrap: anywhere; }
+.c3d-chat-row b { margin-right: 6px; font-weight: 700; color: #ffb38a; }
+.c3d-chat-row.me b { color: #7fd4ff; }
+.c3d-chat-row.them b { color: #b8c4ea; }
+.c3d-chat-row.pod { color: #9aa7cf; font-style: italic; }
+.c3d-chat-row.pod b { color: #9aa7cf; }
+.c3d-chat-row.wait { color: #ffcf99; font-style: italic; }
+@media (max-height: 560px) { .c3d-chat { display: none; } }
+/* A finisher has the screen to itself: everything laid over the picture steps back until it is over. */
+.c3d-chat, .c3d-tools { transition: opacity .25s; }
+.c3d.fin .c3d-left, .c3d.fin .c3d-card, .c3d.fin .c3d-hint, .c3d.fin .c3d-tools, .c3d.fin .c3d-chat,
+.c3d.fin .c3d-talk, .c3d.fin .c3d-say { opacity: 0; pointer-events: none; }
+/* So has a dance. */
+.c3d.dancing .c3d-left, .c3d.dancing .c3d-card, .c3d.dancing .c3d-hint, .c3d.dancing .c3d-tools, .c3d.dancing .c3d-chat,
+.c3d.dancing .c3d-talk, .c3d.dancing .c3d-say { opacity: 0; pointer-events: none; }
+/* On the walk the panels wear the head-up display's look: dark glass, square, an amber edge. */
+.c3d.walk .c3d-pick, .c3d.walk .c3d-talk, .c3d.walk .c3d-say, .c3d.walk .c3d-chat {
+  border-radius: 3px; background: rgba(8, 10, 14, .82); border: 1px solid rgba(255, 255, 255, .1); border-left: 3px solid #ffc857; }
+.c3d.walk .c3d-pick-head { font-size: 13px; font-weight: 900; letter-spacing: .16em; color: #ffc857; }
+.c3d.walk .c3d-pick-title { font-size: 15px; font-weight: 800; letter-spacing: .02em; }
+.c3d.walk .c3d-talk-who, .c3d.walk .c3d-chat-head { letter-spacing: .14em; color: #ffc857; }
+.c3d.walk .c3d-opt { border-radius: 2px; }
+.c3d.walk .c3d-opt kbd { border-radius: 2px; background: #ffc857; }
+.c3d.walk .c3d-opt:hover { background: rgba(255, 200, 87, .16); border-color: rgba(255, 200, 87, .6); }
+.c3d.walk .c3d-pick-row .c3d-opt.on { background: rgba(255, 200, 87, .2); border-color: #ffc857; color: #fff; }
+.c3d.walk .c3d-pick-row .c3d-opt { text-transform: uppercase; letter-spacing: .06em; font-size: 11.5px; font-weight: 800; }
+.c3d.walk .c3d-btn.c3d-go { border-radius: 2px; letter-spacing: .12em; text-transform: uppercase; background: #ffc857; color: #14100a; }
+.c3d.walk .c3d-btn.c3d-go:hover { background: #ffd98a; color: #000; }
+/* the key list sits between the map and the loadout, and gives way where there is no room between them */
+.c3d.walk .c3d-hint { border-radius: 2px; letter-spacing: .04em; text-transform: uppercase; font-size: 10.5px; font-weight: 700;
+  background: rgba(8, 10, 14, .55); max-width: calc(100% - 720px); white-space: normal; text-align: center; line-height: 1.7; }
+@media (max-width: 1240px) { .c3d.walk .c3d-hint { display: none; } }
+.c3d.walk .c3d-top { border-radius: 3px; }
+.c3d-card-head .c3d-glyph { font-size: 10px; font-weight: 800; letter-spacing: .08em; color: #7fd4ff; line-height: 46px;
+  border: 1px solid rgba(127, 212, 255, .4); border-radius: 12px; }
+@media (max-width: 900px) { .c3d-talk-opts { grid-template-columns: 1fr; } }
+
+.c3d.cine #c3dTour { pointer-events: auto; }
+.c3d-seg { display: inline-flex; border-radius: 10px; padding: 3px; gap: 2px; }
+.c3d .c3d-btn { all: unset; box-sizing: border-box; cursor: pointer;
+  font: 600 12px/1 ui-sans-serif, system-ui, sans-serif; color: #aab8e6;
+  padding: 7px 10px; border-radius: 7px; white-space: nowrap; }
+.c3d .c3d-btn:hover { color: #fff; background: rgba(255, 255, 255, .08);
+  filter: none; }
+.c3d .c3d-btn.on { color: #fff;
+  background: linear-gradient(135deg, rgba(91, 141, 239, .75), rgba(139, 108, 245, .75)); }
+.c3d .c3d-btn:focus-visible, .c3d .c3d-tot:focus-visible,
+.c3d .c3d-chip:focus-visible, .c3d .c3d-link:focus-visible {
+  outline: 2px solid #8fb3ff; outline-offset: 1px; }
+.c3d-search { display: inline-flex; align-items: center; border-radius: 10px;
+  padding: 0 10px; gap: 6px; }
+.c3d .c3d-search input { all: unset; box-sizing: border-box; width: 150px;
+  font: 500 12.5px/1 ui-sans-serif, system-ui, sans-serif; color: #fff;
+  padding: 9px 0; -webkit-user-select: text; user-select: text; }
+.c3d .c3d-search input::placeholder { color: #7f8db8; }
+.c3d-count { font-size: 11px; color: #9fb2e8; white-space: nowrap; }
+
+.c3d-side { width: 214px; flex: 0 1 auto; min-height: 0;
+  overflow: auto; border-radius: 12px; padding: 10px 12px 12px;
+  scrollbar-width: thin; scrollbar-color: #2c3958 transparent; }
+.c3d-sec { font-size: 10px; font-weight: 700; letter-spacing: .09em;
+  text-transform: uppercase; color: #7f8db8; margin: 10px 0 6px; }
+.c3d-sec:first-child { margin-top: 0; }
+.c3d-side[hidden] { display: none; }
+.c3d-chips { display: flex; flex-direction: column; gap: 3px; }
+.c3d .c3d-chip { all: unset; box-sizing: border-box; cursor: pointer;
+  display: flex; align-items: center; gap: 7px; padding: 4px 6px;
+  border-radius: 7px; font: 500 12px/1.2 ui-sans-serif, system-ui, sans-serif;
+  color: #cfd9ff; }
+.c3d .c3d-chip:hover { background: rgba(255, 255, 255, .07); filter: none; }
+.c3d .c3d-chip.on { background: rgba(91, 141, 239, .3); color: #fff; }
+.c3d .c3d-chip.off { opacity: .4; }
+.c3d-chip i { flex: 0 0 9px; height: 9px; border-radius: 3px;
+  background: var(--c, #8a94a6); }
+.c3d-chip span { flex: 1 1 auto; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.c3d-chip em { font-style: normal; font-size: 11px; color: #8fa0d0; }
+.c3d-chip em.bad { color: #ff9a9a; font-weight: 700; }
+.c3d-legend { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 8px; }
+.c3d-leg { display: flex; align-items: center; gap: 6px; font-size: 11.5px;
+  color: #c3cdf0; min-width: 0; }
+.c3d-leg canvas { position: static; flex: 0 0 18px; width: 18px; height: 18px;
+  cursor: default; }
+.c3d-leg b { flex: 0 0 18px; font-size: 14px; text-align: center;
+  font-weight: 400; }
+.c3d-leg span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.c3d-leg i { flex: 0 0 16px; height: 3px; border-radius: 2px;
+  background: var(--c, #8a94a6); box-shadow: 0 0 6px var(--c, #8a94a6); }
+
+.c3d-card { top: 14px; right: 14px; width: 326px; max-height: calc(100% - 92px);
+  overflow: auto; border-radius: 14px; padding: 14px 14px 16px;
+  scrollbar-width: thin; scrollbar-color: #2c3958 transparent;
+  -webkit-user-select: text; user-select: text;
+  animation: c3din .22s ease-out; }
+@keyframes c3din { from { opacity: 0; transform: translateX(14px); } }
+.c3d-card[hidden] { display: none; }
+.c3d-card-head { display: flex; gap: 11px; align-items: center; }
+.c3d-card-head canvas { position: static; flex: 0 0 46px; width: 46px;
+  height: 46px; cursor: default; }
+.c3d-card-head .c3d-glyph { flex: 0 0 46px; font-size: 32px; text-align: center; }
+.c3d-card h2 { margin: 0; font-size: 14px; line-height: 1.25; color: #fff;
+  overflow-wrap: anywhere; }
+.c3d-kind { font-size: 10.5px; color: #8fa0d0; text-transform: uppercase;
+  letter-spacing: .07em; font-weight: 700; }
+.c3d .c3d-x { all: unset; cursor: pointer; margin-left: auto; align-self: flex-start;
+  color: #8fa0d0; font-size: 17px; line-height: 1; padding: 2px 6px;
+  border-radius: 6px; }
+.c3d .c3d-x:hover { color: #fff; background: rgba(255, 255, 255, .1); filter: none; }
+.c3d-state { margin: 10px 0 2px; font-size: 12.5px; font-weight: 600;
+  padding: 7px 10px; border-radius: 9px; background: rgba(255, 255, 255, .05);
+  border-left: 3px solid var(--c, #8a94a6); color: #eef2ff; }
+.c3d-kv { display: grid; grid-template-columns: 82px 1fr; gap: 5px 10px;
+  margin: 10px 0 0; font-size: 12px; }
+.c3d-kv dt { color: #8fa0d0; }
+.c3d-kv dd { margin: 0; color: #e6ecff; overflow-wrap: anywhere; }
+.c3d-h { font-size: 10px; font-weight: 700; letter-spacing: .09em;
+  text-transform: uppercase; color: #7f8db8; margin: 14px 0 6px; }
+.c3d-meter { margin: 0 0 9px; }
+.c3d-meter-top { display: flex; justify-content: space-between; font-size: 12px;
+  margin-bottom: 4px; }
+.c3d-meter-top b { color: #fff; }
+.c3d-meter-top span { color: #a9b6e0; }
+.c3d-bar { position: relative; height: 8px; border-radius: 5px;
+  background: rgba(255, 255, 255, .09); overflow: visible; }
+.c3d-bar u { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 5px;
+  background: var(--c, #3ddc97); text-decoration: none; }
+.c3d-bar s { position: absolute; top: -3px; bottom: -3px; width: 2px;
+  background: #cfe0ff; border-radius: 1px; text-decoration: none; }
+.c3d-meter small { display: block; margin-top: 4px; font-size: 11px; color: #8fa0d0; }
+.c3d-meter small.warn { color: #f5c451; }
+.c3d-links { display: flex; flex-direction: column; gap: 3px; }
+.c3d .c3d-link { all: unset; box-sizing: border-box; cursor: pointer;
+  display: flex; gap: 8px; align-items: baseline; padding: 5px 8px;
+  border-radius: 8px; font: 500 12px/1.3 ui-sans-serif, system-ui, sans-serif;
+  color: #dbe4ff; background: rgba(255, 255, 255, .04);
+  border-left: 2px solid var(--c, #8a94a6); }
+.c3d .c3d-link:hover { background: rgba(255, 255, 255, .1); filter: none; }
+.c3d-link span { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.c3d-link em { font-style: normal; font-size: 10.5px; color: #8fa0d0;
+  white-space: nowrap; }
+.c3d-note { font-size: 11px; color: #8fa0d0; margin: 6px 0 0; line-height: 1.4; }
+.c3d-acts { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 14px; }
+.c3d-acts a { font-size: 12px; font-weight: 600; color: #dfe7ff;
+  text-decoration: none; padding: 6px 11px; border-radius: 8px;
+  border: 1px solid rgba(140, 165, 255, .35); background: rgba(91, 141, 239, .16); }
+.c3d-acts a:hover { background: rgba(91, 141, 239, .34); color: #fff; }
+
+.c3d-hint { left: 50%; bottom: 62px; transform: translateX(-50%);
+  font-size: 11.5px; color: #8fa0d0; padding: 6px 12px; border-radius: 999px;
+  background: rgba(10, 16, 34, .5); white-space: nowrap; pointer-events: none;
+  transition: opacity .6s; }
+.c3d-hint.gone { opacity: 0; }
+.c3d-tip { pointer-events: none; padding: 6px 9px; border-radius: 8px;
+  font-size: 12px; line-height: 1.35; color: #fff; max-width: 300px;
+  white-space: nowrap; transform: translate(14px, 14px); }
+.c3d-tip[hidden] { display: none; }
+.c3d-tip small { display: block; color: #a9b6e0; font-size: 11px; }
+
+.c3d-veil { position: absolute; inset: 0; z-index: 3; display: flex;
+  flex-direction: column; gap: 14px; align-items: center; justify-content: center;
+  background: radial-gradient(ellipse at center, rgba(8, 12, 28, .2), rgba(5, 7, 15, .92));
+  font-size: 14px; color: #c3cdf0; text-align: center; padding: 0 24px;
+  transition: opacity .5s; }
+.c3d-veil.gone { opacity: 0; pointer-events: none; }
+.c3d-veil.err { color: #ffc0c0; }
+.c3d-veil-face { width: 46px; height: 46px; border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #fff3b0, #ffd23f 55%, #c98f00);
+  box-shadow: 0 0 30px rgba(255, 210, 63, .5); animation: c3dbob 1.1s ease-in-out infinite; }
+.c3d-veil.err .c3d-veil-face { background: radial-gradient(circle at 35% 30%, #d6e4ff, #7fa8ff 55%, #3d5fb0);
+  box-shadow: 0 0 30px rgba(245, 113, 113, .6); animation: none; }
+@keyframes c3dbob { 50% { transform: translateY(-12px); } }
+
+@media (max-width: 900px) {
+  .c3d-tools { flex-wrap: wrap; bottom: 10px; }
+  .c3d-left { max-width: calc(100% - 28px); bottom: auto; }
+  .c3d-side { display: none; }
+  .c3d-card { top: auto; bottom: 0; right: 0; left: 0; width: auto;
+    max-height: 56%; border-radius: 16px 16px 0 0; }
+  .c3d-hint { display: none; }
+  .c3d .c3d-search input { width: 110px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .c3d-live.on::before, .c3d-veil-face, .c3d-card { animation: none; }
+}
+
+/* The city: the same stage over a street. What belongs to one cluster's
+   inside (its controls, its key, a pod's card and conversation, the doctor's
+   chat) is put away; the script still finds each by id. */
+.c3d.city .c3d-tools, .c3d.city .c3d-side, .c3d.city .c3d-card, .c3d.city .c3d-say,
+.c3d.city .c3d-chat, .c3d.city .c3d-caption, .c3d.city .c3d-tip { display: none; }
+.c3d.city.going .c3d-left, .c3d.city.going .c3d-hint { opacity: 0; pointer-events: none; }
+.c3d-fade { position: absolute; inset: 0; background: #000; opacity: 0; pointer-events: none; transition: opacity .45s; z-index: 30; }
+.c3d-fade.on { opacity: 1; }

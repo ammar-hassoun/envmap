@@ -1,0 +1,142 @@
+{# The account search, on every cloud page.
+
+   It lived only on the account overview, so following a result meant losing the
+   thing that found it — search, then walk back to search again. One partial,
+   included by every page in this section, and "/" focuses it wherever you are.
+
+   The box is declared before the script that reads it, which is the whole
+   reason this is one file rather than markup in one place and behaviour in
+   another. #}
+{% macro searchbar(index, placeholder="") %}
+{% if index %}
+<div class="card cs-wrap" style="margin:0 0 12px;">
+  <div class="card-b" style="padding:10px 14px;">
+    <div class="cs-row">
+      <span class="cs-icon">⌕</span>
+      <input type="search" id="cs" autocomplete="off" spellcheck="false"
+             placeholder="{{ placeholder or 'search this account — ecs, ram, oss, slb, an instance id, an address…' }}"
+             aria-label="Search this account" aria-controls="cs-out" role="combobox"
+             aria-expanded="false">
+      <kbd class="cs-kbd">/</kbd>
+    </div>
+    <div id="cs-out" class="cs-out" role="listbox" hidden></div>
+  </div>
+</div>
+
+<style>
+  .cs-row { display:flex; align-items:center; gap:10px; }
+  .cs-icon { color:var(--muted); font-size:15px; }
+  .cs-row input { flex:1; border:0; background:transparent; color:var(--text);
+                  font-size:13.5px; padding:4px 0; outline:none; }
+  .cs-kbd { border:1px solid var(--line); border-radius:5px; padding:1px 6px;
+            font-family:var(--mono); font-size:10.5px; color:var(--muted); }
+  .cs-out { margin-top:8px; border-top:1px solid var(--line); padding-top:6px;
+            max-height:340px; overflow:auto; }
+  .cs-hit { display:grid; grid-template-columns:20px 1fr auto; gap:10px;
+            align-items:center; padding:6px 8px; border-radius:8px;
+            text-decoration:none; color:inherit; }
+  .cs-hit:hover, .cs-hit.on { background:color-mix(in srgb, var(--accent) 16%, transparent); }
+  .cs-hit b { font-size:12.5px; font-weight:600; }
+  .cs-hit .cs-sub { display:block; font-size:10.5px; color:var(--muted);
+                    font-family:var(--mono); overflow:hidden;
+                    text-overflow:ellipsis; white-space:nowrap; }
+  .cs-hit .cs-t { font-size:9.5px; text-transform:uppercase; letter-spacing:.7px;
+                  color:var(--muted); }
+  .cs-none { padding:8px; font-size:12px; color:var(--muted); }
+</style>
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  const box = document.getElementById('cs');
+  const out = document.getElementById('cs-out');
+  if (!box || !out) return;
+  const INDEX = {{ index|tojson }};
+  let hits = [], at = -1;
+
+  // Ranked, not just filtered: a service whose name starts with what was typed
+  // comes before a resource that merely contains it, so "ram" offers the RAM
+  // pages before an instance with "ram" somewhere in its id.
+  function score(entry, q) {
+    const label = entry.label.toLowerCase();
+    const words = (entry.words || '').toLowerCase();
+    const sub = (entry.sub || '').toLowerCase();
+    let s = 0;
+    if (label === q) s = 100;
+    else if (label.startsWith(q)) s = 80;
+    else if (words.split(/\s+/).some(w => w === q)) s = 70;
+    else if (words.includes(q)) s = 55;
+    else if (label.includes(q)) s = 40;
+    else if (sub.includes(q)) s = 20;
+    else return 0;
+    if (entry.t === 'service' || entry.t === 'page') s += 12;
+    return s;
+  }
+
+  function draw() {
+    out.textContent = '';
+    if (!hits.length) {
+      const n = document.createElement('div');
+      n.className = 'cs-none';
+      n.textContent = 'nothing here matches that';
+      out.appendChild(n);
+      return;
+    }
+    hits.forEach((h, i) => {
+      const a = document.createElement('a');
+      a.className = 'cs-hit' + (i === at ? ' on' : '');
+      a.href = h.url;
+      a.setAttribute('role', 'option');
+      const ic = document.createElement('span'); ic.textContent = h.icon || '•';
+      const mid = document.createElement('span');
+      const b = document.createElement('b'); b.textContent = h.label;
+      const sub = document.createElement('span');
+      sub.className = 'cs-sub'; sub.textContent = h.sub || '';
+      mid.appendChild(b); mid.appendChild(sub);
+      const t = document.createElement('span');
+      t.className = 'cs-t'; t.textContent = h.t;
+      a.append(ic, mid, t);
+      out.appendChild(a);
+    });
+  }
+
+  function run() {
+    const q = box.value.trim().toLowerCase();
+    out.hidden = q === '';
+    box.setAttribute('aria-expanded', q === '' ? 'false' : 'true');
+    if (!q) { hits = []; at = -1; return; }
+    hits = INDEX.map(e => [score(e, q), e]).filter(p => p[0] > 0)
+      .sort((a, b) => b[0] - a[0]).slice(0, 12).map(p => p[1]);
+    at = hits.length ? 0 : -1;
+    draw();
+  }
+
+  box.addEventListener('input', run);
+  box.addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (!hits.length) return;
+      at = (at + (e.key === 'ArrowDown' ? 1 : -1) + hits.length) % hits.length;
+      draw();
+      out.querySelector('.cs-hit.on')?.scrollIntoView({block: 'nearest'});
+    } else if (e.key === 'Enter') {
+      if (hits[at]) { e.preventDefault(); location.href = hits[at].url; }
+    } else if (e.key === 'Escape') {
+      box.value = ''; run(); box.blur();
+    }
+  });
+  // "/" focuses this one rather than the global search, because on this page
+  // that is what it means. Captured and stopped so both handlers do not fire
+  // and fight over the focus — base.html binds the same key.
+  document.addEventListener('keydown', e => {
+    if (e.key === '/' && !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) {
+      e.preventDefault();
+      e.stopPropagation();
+      box.focus();
+    }
+  }, true);
+  document.addEventListener('click', e => {
+    if (!e.target.closest('.cs-wrap')) { out.hidden = true; }
+  });
+})();
+</script>
+{% endif %}
+{% endmacro %}

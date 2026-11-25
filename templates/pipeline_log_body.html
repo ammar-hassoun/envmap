@@ -1,0 +1,60 @@
+{# The log itself. Its own fragment because fetching it is the slow part
+   and the page should be on screen before it arrives. #}
+{% if log.lines %}
+<div class="card">
+  <div class="card-h">
+    {{ log.job.name if log.job else 'Output' }}
+    <span class="hint">{{ log.lines|length }} lines{% if log.truncated %} ·
+      last {{ (max_bytes / 1000)|int }} kB shown{% endif %}</span>
+    <span style="flex:1"></span>
+    <input type="search" id="logfilter" placeholder="filter lines…"
+           autocomplete="off"
+           style="max-width:220px;padding:5px 10px;font-size:11.5px;">
+    {% if log.first_error >= 0 %}
+    <button class="btn-ghost" id="tofail"
+            style="padding:5px 12px;font-size:11px;">Jump to the failure</button>
+    {% endif %}
+    <button class="btn-ghost" id="stamps"
+            style="padding:5px 12px;font-size:11px;">Times</button>
+    <button class="btn-ghost" id="wrap"
+            style="padding:5px 12px;font-size:11px;">Wrap</button>
+    <a class="btn btn-ghost" download="{{ (log.job.name if log.job else 'log')|replace(' ','-') }}.log"
+       id="dl" href="#" style="padding:5px 12px;font-size:11px;">Download</a>
+  </div>
+  <div class="card-b">
+    {% if log.first_error >= 0 %}
+    <div class="dnote" style="margin-bottom:12px;">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="2" stroke-linecap="round"
+           aria-hidden="true"><circle cx="12" cy="12" r="9"/>
+        <path d="M12 11v5M12 7.6v.1"/></svg>
+      <span>Line {{ log.first_error + 1 }} looks like where it broke:
+        <code style="font-family:var(--mono);font-size:11px;"
+          >{{ log.lines[log.first_error][:160] }}</code></span>
+    </div>
+    {% endif %}
+    <div class="logbox" id="logbox">
+      <table class="logtbl">
+        <tbody>
+          {% for line in log.lines %}
+          <tr id="L{{ loop.index }}" class="{{ 'lfail' if loop.index0 == log.first_error }}"
+              data-t="{{ line|lower }}">
+            {# one gutter cell, not two: the line number is pinned while the
+               log scrolls sideways, and a separate timestamp cell slid under
+               it and lost its first character #}
+            <td class="lg"><span class="ln">{{ loop.index }}</span
+              ><span class="lts">{{ log.stamps[loop.index0] }}</span></td>
+            <td class="lx">{{ line }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% elif not log.note %}
+<div class="card"><div class="card-b">
+  <p class="sub" style="margin:0;">This job produced no output.</p>
+</div></div>
+{% endif %}
+

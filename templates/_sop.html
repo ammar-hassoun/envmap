@@ -1,0 +1,277 @@
+{#- An SOP, rendered: the same three pieces wherever one is shown — the SOP's
+    own page, the editor's preview, the side panel of the terminal.
+
+      styles()  the look of a rendered SOP and of its command blocks
+      doc(r)    the intro and the numbered steps, r = sops.steps(...)
+      script()  window.sopKit (pure helpers) and window.sopWire(root, opts),
+                which turns every command block into Copy / Paste into shell
+                and asks once for each {{NAME}} the commands contain.
+
+    Every piece of text in here came through the escape-first mdlite filter;
+    the script only ever reads it back with textContent and writes it with
+    text nodes, never as HTML. -#}
+
+{%- macro styles() -%}
+<style>
+  .sop-doc { font-size:13px; line-height:1.6; color:var(--text2); }
+  .sop-doc p { margin:0 0 9px; }
+  .sop-doc ul { margin:0 0 9px; padding-left:18px; }
+  .sop-doc h5 { margin:12px 0 6px; font-size:12px; color:var(--text); }
+  .sop-doc a { color:var(--accent-ink); }
+  .sop-doc code { font-family:var(--mono); font-size:11.5px; background:var(--overlay);
+    border:1px solid var(--line); border-radius:5px; padding:0 5px; }
+  .sop-intro { margin-bottom:14px; }
+  .sop-steps { list-style:none; margin:0; padding:0; }
+  .sop-step { position:relative; padding:0 0 14px 36px; }
+  /* the rail joining one step to the next */
+  .sop-step::before { content:""; position:absolute; left:12px; top:28px; bottom:2px;
+    width:1px; background:var(--line2); }
+  .sop-step:last-child::before { display:none; }
+  .sop-n { position:absolute; left:0; top:0; width:25px; height:25px; border-radius:50%;
+    display:flex; align-items:center; justify-content:center; font-size:11.5px;
+    font-weight:700; color:var(--accent-ink); background:var(--accent-wash);
+    border:1px solid color-mix(in srgb, var(--accent) 35%, transparent); }
+  .sop-step-h { color:var(--text); font-weight:600; font-size:13.5px; line-height:1.4;
+    padding-top:3px; margin-bottom:6px; }
+
+  /* A command: the terminal's own colours in either theme, so it reads as
+     the thing it will become. */
+  .sop-cmd { border:1px solid var(--line); border-radius:10px; background:var(--term);
+    margin:6px 0 10px; overflow:hidden; }
+  .sop-cmd-bar { display:flex; align-items:center; gap:6px; padding:5px 6px 5px 11px;
+    border-bottom:1px solid rgba(255,255,255,.07); }
+  .sop-kind { margin-right:auto; font-size:10.5px; letter-spacing:.06em;
+    text-transform:uppercase; color:var(--term-ts); }
+  /* the portal's own button, at the size of a bar; Copy is the ghost of it */
+  .sop-cmd-bar button { gap:5px; padding:3px 9px; border-radius:7px;
+    font-size:11.5px; line-height:1.5; box-shadow:none; }
+  .sop-cmd-bar .sop-copy { border:1px solid rgba(255,255,255,.14);
+    background:transparent; color:#c9d4e6; }
+  .sop-cmd-bar .sop-copy:hover { background:rgba(255,255,255,.07); filter:none; }
+  .sop-cmd-bar button[disabled] { opacity:.42; cursor:not-allowed; filter:none; }
+  .sop-cmd-bar button.done { border-color:rgba(110,231,168,.45); color:#8ff0bf;
+    background:rgba(110,231,168,.1); }
+  .sop-cmd pre { margin:0; border:0; border-radius:0; background:transparent;
+    color:#d7e2f0; padding:8px 12px 10px; font-size:12px; line-height:1.55;
+    white-space:pre-wrap; overflow-wrap:anywhere; }
+  /* each line hangs, so a line the panel wrapped is told apart from a real
+     second line of the command */
+  .sop-cmd pre .ln { display:block; padding-left:2ch; text-indent:-2ch; min-height:1.55em; }
+
+  /* a placeholder: amber until it is filled in, then the value itself */
+  .sop-ph { border-radius:4px; padding:0 3px; font-family:var(--mono);
+    color:var(--warn-ink); background:var(--warn-wash);
+    outline:1px dashed color-mix(in srgb, var(--warn) 60%, transparent); }
+  .sop-ph.set { color:var(--ok-ink); background:var(--ok-wash); outline:none; }
+  .sop-cmd .sop-ph { color:#febc2e; background:rgba(254,188,46,.14);
+    outline-color:rgba(254,188,46,.5); }
+  .sop-cmd .sop-ph.set { color:#8ff0bf; background:rgba(110,231,168,.12); }
+
+  .sop-fill { border:1px solid var(--line); border-radius:11px; background:var(--overlay);
+    padding:10px 12px 6px; margin:0 0 16px; }
+  .sop-fill .h { font-size:11.5px; color:var(--muted); margin:0 0 8px; }
+  .sop-fill label { display:grid; grid-template-columns:minmax(80px, 36%) 1fr; gap:8px;
+    align-items:center; margin:0 0 6px; }
+  .sop-fill label span { font-family:var(--mono); font-size:11px; color:var(--text2);
+    overflow-wrap:anywhere; }
+  .sop-fill input { width:100%; min-width:0; box-sizing:border-box; padding:5px 8px;
+    font-family:var(--mono); font-size:12px; }
+</style>
+{%- endmacro -%}
+
+{%- macro doc(r) -%}
+<div class="sop-doc">
+  {%- if r.intro %}<div class="sop-intro">{{ r.intro }}</div>{% endif %}
+  {%- if r.steps %}
+  <ol class="sop-steps">
+    {%- for st in r.steps %}
+    <li class="sop-step"><span class="sop-n">{{ loop.index }}</span>
+      <div class="sop-step-h">{{ st.title }}</div>
+      <div class="sop-step-b">{{ st.html }}</div></li>
+    {%- endfor %}
+  </ol>
+  {%- endif %}
+</div>
+{%- endmacro -%}
+
+{%- macro script() -%}
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  if (window.sopWire) return;
+  // A placeholder is an UPPER_CASE name in double braces -- upper case so a
+  // Go template's .Name or end, in a kubectl or docker command, is left alone.
+  const HOLE = /\{\{([A-Z][A-Z0-9_]{0,31})\}\}/g;
+  // The fence languages that are a command, as app/sops.py SHELLS has them.
+  const SHELLS = ['', 'sh', 'bash', 'shell', 'zsh'];
+  // What must never reach a prompt from a runbook, as app/sops.py _hidden()
+  // has it: every control but tab and newline, and every format character.
+  // tests/test_sop_js.py holds the two to the same code points.
+  const HIDDEN = /(?![\t\n])[\p{Cc}\p{Cf}]/gu;
+
+  const kit = {
+    holes(text) {
+      const out = [];
+      for (const m of String(text).matchAll(HOLE)) if (!out.includes(m[1])) out.push(m[1]);
+      return out;
+    },
+    fill(text, vals) {
+      return String(text).replace(HOLE, (m, k) => ((vals[k] || '').trim() || m));
+    },
+    missing(text, vals) {
+      return kit.holes(text).filter(k => !(vals[k] || '').trim());
+    },
+    // What goes to the prompt or the clipboard: no stray control character,
+    // and NO TRAILING NEWLINE -- nothing runs until the operator presses Enter.
+    clean(text) { return String(text).replace(HIDDEN, ''); },
+    forShell(text) {
+      return kit.clean(String(text).replace(/\r\n?/g, '\n'))
+        .replace(/^\n+/, '').replace(/\s+$/, '');
+    },
+    isCommand(lang) { return SHELLS.includes(String(lang || '').toLowerCase()); },
+  };
+  window.sopKit = kit;
+
+  // The clipboard API where the browser grants it, and the selection copy
+  // where it does not -- a policy that refuses the first must not leave the
+  // operator retyping a command by hand.
+  function copyText(text) {
+    const bySelection = () => new Promise((ok, no) => {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy') ? ok() : no(); } catch (e) { no(e); }
+      finally { ta.remove(); }
+    });
+    if (navigator.clipboard && window.isSecureContext)
+      return navigator.clipboard.writeText(text).catch(bySelection);
+    return bySelection();
+  }
+
+  function button(cls, label) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = cls;
+    const l = document.createElement('span'); l.textContent = label;
+    b.appendChild(l); b._label = l; b._text = label;
+    return b;
+  }
+  function flash(b, text) {
+    clearTimeout(b._t);
+    b.classList.add('done'); b._label.textContent = text;
+    b._t = setTimeout(() => { b.classList.remove('done'); b._label.textContent = b._text; }, 1600);
+  }
+
+  function painted(text, vals, into) {
+    let at = 0;
+    for (const m of String(text).matchAll(HOLE)) {
+      into.appendChild(document.createTextNode(text.slice(at, m.index)));
+      const v = (vals[m[1]] || '').trim();
+      const sp = document.createElement('span');
+      sp.className = 'sop-ph' + (v ? ' set' : '');
+      sp.textContent = v || m[1];
+      sp.title = v ? m[1] : 'fill in ' + m[1] + ' above';
+      into.appendChild(sp);
+      at = m.index + m[0].length;
+    }
+    into.appendChild(document.createTextNode(text.slice(at)));
+  }
+
+  /* Wire one rendered SOP. opts.paste(text) -> bool types a command at the
+     prompt (the terminal passes it; a page with no shell does not, and gets
+     Copy alone). opts.pasteWhy() -> '' or the reason Paste is unavailable
+     right now. Wired once per element: the values typed in live on it. */
+  window.sopWire = function (root, opts) {
+    if (root._sop) return root._sop;
+    opts = opts || {};
+    const vals = {};
+    const blocks = [...root.querySelectorAll('.sop-doc pre')].map(pre => {
+      const raw = pre.textContent, lang = pre.dataset.lang || '';
+      const box = document.createElement('div'); box.className = 'sop-cmd';
+      const bar = document.createElement('div'); bar.className = 'sop-cmd-bar';
+      const kind = document.createElement('span'); kind.className = 'sop-kind';
+      kind.textContent = kit.isCommand(lang) ? 'command' : lang || 'text';
+      const copy = button('sop-copy', 'Copy');
+      copy.title = 'copy it to the clipboard';
+      bar.append(kind, copy);
+      // Where there is a shell, EVERY block has Paste, so Copy never moves --
+      // on one that is not a command it is disabled and says why.
+      const b = {raw, pre, copy, paste: null,
+                 not: kit.isCommand(lang) ? '' : 'this is ' + (lang || 'text')
+                   + ', not a command — copy it instead'};
+      if (opts.paste) {
+        b.paste = button('sop-paste', 'Paste into shell');
+        bar.appendChild(b.paste);
+        b.paste.addEventListener('click', () => {
+          if (b.paste.disabled) return;
+          if (opts.paste(kit.forShell(kit.fill(raw, vals)))) flash(b.paste, 'Pasted — press Enter');
+        });
+      }
+      copy.addEventListener('click', () => copyText(kit.forShell(kit.fill(raw, vals)))
+        .then(() => flash(copy, 'Copied'), () => flash(copy, 'Copy failed')));
+      pre.replaceWith(box); box.append(bar, pre);
+      return b;
+    });
+
+    const prose = [];
+    const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    while (walk.nextNode()) {
+      const n = walk.currentNode;
+      if (n.parentElement.closest('pre, .sop-fill')) continue;
+      if (kit.holes(n.nodeValue).length) prose.push(n);
+    }
+    const marks = prose.map(n => {
+      const span = document.createElement('span');
+      span.dataset.raw = n.nodeValue;
+      n.replaceWith(span);
+      return span;
+    });
+
+    // One field for each name, in the order the SOP first uses them.
+    const names = [];
+    [...blocks.map(b => b.raw), ...marks.map(m => m.dataset.raw)]
+      .forEach(t => kit.holes(t).forEach(n => { if (!names.includes(n)) names.push(n); }));
+    if (names.length) {
+      const form = document.createElement('div'); form.className = 'sop-fill';
+      const h = document.createElement('div'); h.className = 'h';
+      h.textContent = 'Fill in once — every command below uses it';
+      form.appendChild(h);
+      const inputs = names.map(n => {
+        const lab = document.createElement('label');
+        const nm = document.createElement('span'); nm.textContent = n;
+        const inp = document.createElement('input');
+        inp.type = 'text'; inp.spellcheck = false; inp.autocomplete = 'off';
+        inp.setAttribute('autocapitalize', 'off'); inp.placeholder = n.toLowerCase().replace(/_/g, ' ');
+        inp.addEventListener('input', () => { vals[n] = inp.value; paint(); });
+        lab.append(nm, inp); form.appendChild(lab);
+        return inp;
+      });
+      inputs.forEach((inp, i) => inp.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.preventDefault(); (inputs[i + 1] || inp).focus(); }
+      }));
+      const doc = root.querySelector('.sop-doc');
+      doc.parentNode.insertBefore(form, doc);
+    }
+
+    function paint() {
+      blocks.forEach(b => {
+        b.pre.textContent = '';
+        b.raw.split('\n').forEach(line => {
+          const ln = document.createElement('span'); ln.className = 'ln';
+          painted(line, vals, ln); b.pre.appendChild(ln);
+        });
+        if (!b.paste) return;
+        const gap = kit.missing(b.raw, vals);
+        const why = b.not || (opts.pasteWhy && opts.pasteWhy())
+          || (gap.length ? 'fill in ' + gap.join(', ') + ' first' : '');
+        b.paste.disabled = !!why;
+        b.paste.title = why || 'types it at the prompt of the focused tab — '
+          + 'nothing runs until you press Enter';
+      });
+      marks.forEach(m => { m.textContent = ''; painted(m.dataset.raw, vals, m); });
+    }
+    paint();
+    return (root._sop = {refresh: paint});
+  };
+})();
+</script>
+{%- endmacro -%}

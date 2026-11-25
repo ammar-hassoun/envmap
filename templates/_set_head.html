@@ -1,0 +1,8 @@
+{% macro head(title, desc, msg, err) %}
+<p class="sub" style="margin:0 0 6px;">
+  <a href="/settings" style="color:var(--muted);">← Settings</a></p>
+<h1>{{ title }}</h1>
+<p class="sub">{{ desc }}</p>
+{% if msg %}<div class="flash">✓ {{ msg }}</div>{% endif %}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+{% endmacro %}

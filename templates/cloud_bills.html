@@ -1,0 +1,235 @@
+{% extends "base.html" %}
+{% from "_cloud_search.html" import searchbar %}
+{% block crumbs %}<a href="/clouds">Clouds</a> <span class="sep">/</span>
+  <a href="/clouds?account={{ sel.id }}">{{ sel.name }}</a>
+  <span class="sep">/</span> <b>Bills</b>{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>💳 Bills</h1>
+    <p class="sub">{{ sel.name }} · {{ bills.months|length }} month{{ 's' if bills.months|length != 1 }}
+      {% if bills.currency %} · {{ bills.currency }}{% endif %}
+      {% if bills.total %} · {{ bills.currency }} {{ bills.total }} over the period{% endif %}</p>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center;">
+    <form method="get" action="/clouds/bills" style="display:flex;gap:8px;align-items:center;">
+      <input type="hidden" name="account" value="{{ sel.id }}">
+      <input type="hidden" name="months" value="{{ months }}">
+      <select name="month" data-submit
+              style="padding:6px 11px;font-size:12.5px;">
+        {% for m in bills.months|reverse %}
+        <option value="{{ m.cycle }}" {% if m.cycle == shown %}selected{% endif %}>
+          {{ m.cycle }} — {{ bills.currency }} {{ m.total }}</option>
+        {% endfor %}
+      </select>
+    </form>
+    {% for n in (6, 12, 24) %}
+    <a class="btn btn-ghost" style="{{ 'border-color:var(--accent);' if months == n }}"
+       href="/clouds/bills?account={{ sel.id }}&months={{ n }}">{{ n }}m</a>
+    {% endfor %}
+    <a class="btn btn-ghost"
+       href="/clouds/export/{{ sel.id }}/bills.csv?months={{ months }}">⤓ CSV</a>
+  </div>
+</div>
+
+{{ searchbar(search_index) }}
+
+{# ── payments: what is owed, what has settled, and where the card lives ──
+   No provider exposes payment instruments through an API — not AWS, not Alibaba
+   — so this reads everything about money that is available and links to the
+   console for the rest. The portal will not type a card number on anyone's
+   behalf, which is a rule rather than a missing feature. #}
+<div class="card">
+  <div class="card-h">Payments
+    <span class="hint">{{ pay.month or '' }}{% if pay.currency %} · {{ pay.currency }}{% endif %}</span>
+  </div>
+  <div class="card-b">
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(190px,1fr));margin-bottom:14px;">
+      {% if pay.outstanding %}
+      <div><div class="stat" style="font-size:20px;color:var(--danger-ink);">
+        {{ pay.currency }} {{ pay.outstanding }}</div>
+        <div class="statsub">outstanding, not yet settled</div></div>
+      {% endif %}
+      {% if pay.settled %}
+      <div><div class="stat" style="font-size:20px;color:var(--ok-ink);">
+        {{ pay.currency }} {{ pay.settled }}</div>
+        <div class="statsub">settled this month</div></div>
+      {% endif %}
+      {% if pay.balance != '' %}
+      <div><div class="stat" style="font-size:20px;">{{ pay.currency }} {{ pay.balance }}</div>
+        <div class="statsub">🏦 available balance</div></div>
+      {% endif %}
+      {% if pay.credit and pay.credit != '0.00' %}
+      <div><div class="stat" style="font-size:20px;">{{ pay.currency }} {{ pay.credit }}</div>
+        <div class="statsub">credit limit</div></div>
+      {% endif %}
+    </div>
+
+    {% if pay.rows %}
+    <table class="jenkins">
+      <thead><tr><th style="min-width:220px;">product</th>
+        <th style="width:130px;">status</th><th style="width:110px;">paid</th>
+        <th style="width:120px;">outstanding</th>
+        <th style="width:140px;">paid at</th></tr></thead>
+      <tbody>
+      {% for r in pay.rows %}
+      <tr>
+        <td class="jname">{{ r.product }}</td>
+        <td><span style="{{ 'color:var(--warn-ink);' if 'Unsettle' in r.status else 'color:var(--ok-ink);' }}">{{ r.status }}</span></td>
+        <td style="font-family:var(--mono);">{{ r.currency }} {{ r.paid }}</td>
+        <td style="font-family:var(--mono);{{ 'color:var(--danger-ink);font-weight:600;' if r.outstanding }}">
+          {{ r.currency }} {{ r.outstanding }}</td>
+        <td class="hint">{{ r.when or '—' }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+
+    {% for n in pay.notes %}
+    <div class="sec-note" style="margin-top:10px;">{{ n }}</div>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-h">Payment methods
+    <span class="hint">managed in {{ provider.label if provider else sel.type }}</span>
+  </div>
+  <div class="card-b">
+    <p class="sub" style="margin:0 0 12px;">Cards and bank accounts are not
+      exposed through any cloud provider's API — there is no call to list one, add
+      one or remove one. They live in the provider's own billing console, behind
+      its own re-authentication, and that is where they are changed. The portal
+      does not handle card numbers itself, deliberately.</p>
+    {% for label, url, what in pay.consoles %}
+    <a class="btn btn-ghost" href="{{ url }}" target="_blank" rel="noopener"
+       title="{{ what }}">{{ label }} ↗</a>
+    {% endfor %}
+  </div>
+</div>
+
+{% if not bills.months %}
+<div class="card"><div class="card-b">
+  <p class="sub" style="margin:0;">No bills could be read.
+    {% for n in bills.notes %}<br>{{ n }}{% endfor %}</p></div></div>
+{% else %}
+
+{% set last = bills.months[-1] %}
+{% set prev = bills.months[-2] if bills.months|length > 1 else none %}
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(210px,1fr));margin-bottom:16px;">
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat">{{ bills.currency }} {{ last.total }}</div>
+    <div class="statsub">💳 {{ last.cycle }}</div></div></div>
+  {% if prev %}
+  {% set delta = (last.total - prev.total)|round(2) %}
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat" style="color:{{ 'var(--danger-ink)' if delta > 0 else 'var(--ok-ink)' }};">
+      {{ '+' if delta > 0 }}{{ delta }}</div>
+    <div class="statsub">↕ against {{ prev.cycle }}</div></div></div>
+  {% endif %}
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat">{{ bills.currency }} {{ (bills.total / bills.months|length)|round(2) }}</div>
+    <div class="statsub">⌀ monthly average</div></div></div>
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat">{{ bills.by_product|length }}</div>
+    <div class="statsub">{{ glyph("package", 14) }} products billed</div></div></div>
+</div>
+
+<div class="card">
+  <div class="card-h">Monthly total
+    <span class="hint">{{ bills.labels|first }} → {{ bills.labels|last }}</span></div>
+  <div class="card-b">
+    {{ sparkline(bills.series, height=90) }}
+    <div style="display:flex;justify-content:space-between;margin-top:6px;
+                font-size:10.5px;color:var(--muted);font-family:var(--mono);">
+      {% for m in bills.months %}<span>{{ m.cycle[-2:] }}</span>{% endfor %}
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-h">By product, whole period
+    <span class="hint">{{ bills.currency }}</span></div>
+  <div class="card-b">
+    <div class="hbars">
+      {% set top = bills.by_product[0].amount if bills.by_product else 1 %}
+      {% for r in bills.by_product %}
+      <div class="hbar">
+        <div class="hbar-l" title="{{ r.product }}">{{ r.product }}</div>
+        <div class="hbar-t"><span style="width:{{ (r.amount / top * 100)|round(1) }}%"></span></div>
+        <div class="hbar-v">{{ r.amount }}</div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
+{% if one %}
+<div class="card">
+  <div class="card-h">{{ one.cycle }} in full
+    <span class="hint">{{ bills.currency }} {{ one.total }} · {{ one.rows|length }} products</span>
+    <span style="flex:1"></span>
+    <a class="hint" href="/clouds/export/{{ sel.id }}/bills.csv?months={{ months }}">⤓ CSV</a>
+  </div>
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr><th style="min-width:240px;">product</th>
+        <th style="width:140px;">code</th><th style="width:140px;">subscription</th>
+        <th style="width:120px;">amount</th><th style="width:90px;">share</th></tr></thead>
+      <tbody>
+      {% for r in one.rows %}
+      <tr>
+        <td class="jname">{{ r.product }}</td>
+        <td class="hint" style="font-family:var(--mono);font-size:11.5px;">{{ r.code }}</td>
+        <td class="hint">{{ r.kind }}</td>
+        <td style="font-family:var(--mono);">{{ r.currency or bills.currency }} {{ r.amount }}</td>
+        <td class="hint">{{ ((r.amount / one.total * 100)|round(1)) if one.total else 0 }}%</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{# every month at a glance, so a jump in one of them is visible without
+   clicking through the dropdown twelve times #}
+<div class="card">
+  <div class="card-h">Every month
+    <span class="hint">click one to open it in full</span></div>
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    {% set peak = bills.series|max if bills.series else 1 %}
+    <table class="jenkins">
+      <thead><tr><th style="width:110px;">month</th><th style="width:130px;">total</th>
+        <th>relative</th><th style="width:120px;">change</th></tr></thead>
+      <tbody>
+      {% for m in bills.months|reverse %}
+      {% set idx = bills.months|length - loop.index %}
+      {% set before = bills.months[idx - 1].total if idx > 0 else none %}
+      <tr>
+        <td class="jname">
+          <a href="/clouds/bills?account={{ sel.id }}&months={{ months }}&month={{ m.cycle }}"
+             {% if m.cycle == shown %}style="font-weight:700;"{% endif %}>{{ m.cycle }}</a></td>
+        <td style="font-family:var(--mono);">{{ bills.currency }} {{ m.total }}</td>
+        <td><div class="hbar-t" style="max-width:340px;">
+          <span style="width:{{ (m.total / peak * 100)|round(1) if peak else 0 }}%"></span></div></td>
+        <td class="hint" style="font-family:var(--mono);">
+          {% if before %}{% set d = (m.total - before)|round(2) %}
+          <span style="color:{{ 'var(--danger-ink)' if d > 0 else 'var(--ok-ink)' }};">
+            {{ '+' if d > 0 }}{{ d }}</span>
+          {% else %}—{% endif %}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% if bills.notes %}
+<div class="card"><div class="card-b">
+  {% for n in bills.notes %}<div class="sec-note" style="margin-bottom:6px;">{{ n }}</div>{% endfor %}
+</div></div>
+{% endif %}
+{% endif %}
+{% endblock %}

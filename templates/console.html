@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Console · {{ name }}</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:#0a0e17; color:#cfe0f5;
+    font-family:system-ui, -apple-system, sans-serif; }
+  body { display:flex; flex-direction:column; }
+  #bar { display:flex; align-items:center; gap:12px; padding:8px 14px; background:#121826;
+    border-bottom:1px solid #202839; font-size:13px; flex:none; }
+  #bar b { font-size:14px; }
+  #bar .hint { color:#7f93b4; }
+  #cstate { font-family:ui-monospace, monospace; font-size:12px; color:#7f93b4; }
+  #bar button { background:#1b2436; color:#cfe0f5; border:1px solid #2a3550; border-radius:7px;
+    padding:5px 11px; font:inherit; font-size:12px; cursor:pointer; }
+  #bar button:hover { border-color:#3d68ff; }
+  #screen { flex:1 1 auto; min-height:0; overflow:hidden; display:flex;
+    align-items:center; justify-content:center; }
+  #screen canvas { display:block; }
+</style>
+</head>
+<body>
+  <div id="bar">
+    <b>{{ name }}</b><span class="hint">#{{ vmid }} · {{ node }}</span>
+    <span id="cstate">connecting…</span>
+    <span style="flex:1"></span>
+    <button id="cad" title="send Ctrl+Alt+Del to the guest">Ctrl+Alt+Del</button>
+    <button id="cfs">Fullscreen</button>
+    <button id="crc">Reconnect</button>
+  </div>
+  <div id="screen"></div>
+<script nonce="{{ csp_nonce() }}" type="module">
+  import RFB from '/static/novnc/core/rfb.js';
+  const conn = {{ connection|tojson }}, node = {{ node|tojson }}, vmid = {{ vmid|tojson }};
+  const st = document.getElementById('cstate');
+  const setState = t => { st.textContent = t; };
+  let rfb = null;
+
+  async function connect() {
+    if (rfb) { try { rfb.disconnect(); } catch (e) {} rfb = null; }
+    setState('connecting…');
+    let r;
+    try {
+      r = await (await fetch('/provision/vm/console-open?connection=' + encodeURIComponent(conn) +
+        '&node=' + encodeURIComponent(node) + '&vmid=' + encodeURIComponent(vmid))).json();
+    } catch (e) { setState('✕ ' + e); return; }
+    if (!r.ok) { setState('✕ ' + r.error); return; }
+    const wsUrl = (location.protocol === 'https:' ? 'wss' : 'ws') + '://' + location.host +
+      '/provision/vm/console.ws?session=' + encodeURIComponent(r.session);
+    rfb = new RFB(document.getElementById('screen'), wsUrl, { credentials: { password: r.ticket } });
+    rfb.scaleViewport = true;
+    rfb.background = '#0a0e17';
+    rfb.addEventListener('connect', () => setState('● connected'));
+    rfb.addEventListener('disconnect', e => setState((e.detail && e.detail.clean) ? '○ disconnected' : '✕ connection lost'));
+    rfb.addEventListener('securityfailure', () => setState('✕ authentication failed'));
+    rfb.addEventListener('credentialsrequired', () => rfb.sendCredentials({ password: r.ticket }));
+  }
+  document.getElementById('cad').onclick = () => { if (rfb) rfb.sendCtrlAltDel(); };
+  document.getElementById('cfs').onclick = () => {
+    const el = document.documentElement;
+    (el.requestFullscreen || el.webkitRequestFullscreen || (() => {})).call(el);
+  };
+  document.getElementById('crc').onclick = connect;
+  connect();
+</script>
+</body>
+</html>

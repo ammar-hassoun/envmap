@@ -1,0 +1,101 @@
+{# The running (or just-finished) sync. Replaced in place while it runs. #}
+{% if op_error %}
+<div class="flash err">⚠ could not read the operation: {{ op_error }}</div>
+{% elif op and op.phase %}
+<div class="card" id="opcard" data-running="{{ '1' if op.running else '' }}">
+  <div class="card-h">
+    {% if op.running %}
+    <span class="opspin" aria-hidden="true"></span>Syncing
+    {% elif op.ok %}
+    Sync finished
+    {% else %}
+    Sync {{ op.phase|lower }}
+    {% endif %}
+    <span class="hint">
+      {%- if op.dry_run %}dry run · {% endif -%}
+      {%- if op.revision %}{{ op.revision }} · {% endif -%}
+      {{ op.phase }}
+      {%- if op.started %} · started {{ op.started }}{% endif -%}
+      {%- if op.finished %} · finished {{ op.finished }}{% endif -%}
+      {%- if op.prune %} · pruning{% endif -%}
+    </span>
+    <span style="flex:1"></span>
+    <span class="sv {{ 'sv-ok' if op.ok else 'sv-high' if op.failed
+          else 'sv-medium' }}">{{ op.phase }}</span>
+  </div>
+  <div class="card-b">
+    {% if op.message %}
+    <div class="sec-note" style="margin:0 0 10px;color:{{ 'var(--danger-ink)'
+         if op.failed or not op.ok else 'var(--muted)' }};">{{ op.message }}</div>
+    {% endif %}
+
+    {% if op.counts %}
+    <div class="kv" style="gap:8px;margin-bottom:12px;">
+      {% for state, n in op.counts.items() %}
+      <span class="badge" style="{% if state in ('SyncFailed','Failed','Error',
+        'ServerError','Unknown') %}color:var(--danger-ink);
+        border-color:var(--danger-line);{% elif state == 'Synced' %}
+        color:var(--ok-ink);{% endif %}">{{ n }} {{ state }}</span>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if op.resources %}
+    <div style="max-height:44vh;overflow:auto;">
+      <table class="jenkins">
+        <thead><tr><th>kind</th><th>resource</th><th>namespace</th>
+          <th>phase</th><th>result</th>
+          <th class="actcol" style="width:196px;min-width:196px;"></th></tr></thead>
+        <tbody>
+          {% for r in op.resources %}
+          <tr>
+            <td><span class="badge">{{ r.kind }}</span></td>
+            <td><b>{{ r.name }}</b>
+              {% if r.message %}
+              <div class="sec-note" style="margin:2px 0 0;white-space:normal;
+                   color:{{ 'var(--danger-ink)' if r.status in
+                   ('SyncFailed','Failed','Error','ServerError')
+                   else 'var(--muted)' }};">{{ r.message }}</div>
+              {% endif %}
+            </td>
+            <td class="hint">{{ r.namespace or '—' }}</td>
+            <td class="hint">{{ r.phase or '—' }}</td>
+            <td><span class="sv {{ 'sv-ok' if r.status in ('Synced','Running')
+                  else 'sv-high' if r.status in ('SyncFailed','Failed','Error',
+                  'ServerError') else 'sv-medium' }}">{{ r.status or 'pending' }}</span></td>
+            <td class="actcol"><span class="actrow oneline">
+              {# every row keeps the same three, in the same places — the house
+                 rule. They open the resource panel at the matching view. #}
+              <button type="button" class="abtn resact" data-restab="edit"
+                      data-kind="{{ r.kind }}" data-rname="{{ r.name }}"
+                      data-ns="{{ r.namespace }}" data-group="{{ r.group }}"
+                      data-version="{{ r.version }}">edit</button>
+              <button type="button" class="abtn resact" data-restab="manifest"
+                      data-kind="{{ r.kind }}" data-rname="{{ r.name }}"
+                      data-ns="{{ r.namespace }}" data-group="{{ r.group }}"
+                      data-version="{{ r.version }}">yaml</button>
+              <button type="button" class="abtn resact" data-restab="changes"
+                      data-kind="{{ r.kind }}" data-rname="{{ r.name }}"
+                      data-ns="{{ r.namespace }}" data-group="{{ r.group }}"
+                      data-version="{{ r.version }}">diff</button>
+            </span></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% elif op.running %}
+    <p class="sub" style="margin:0;">The controller has taken the operation and
+      has not reported on any resource yet.</p>
+    {% endif %}
+
+    {% if not op.running %}
+    <div class="sec-note" style="margin-top:12px;">
+      The application is now <b>{{ op.sync }}</b> and <b>{{ op.health }}</b>.
+      Health settles after the sync does — a Deployment reports Progressing
+      until its pods are ready, so it is worth a moment before reading it as a
+      failure.</div>
+    {% endif %}
+  </div>
+</div>
+{% endif %}

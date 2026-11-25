@@ -1,0 +1,26 @@
+{# The counters. Its own fragment so Refresh does not reload the page, and so a
+   cluster that refuses one of these still renders the rest. #}
+<div class="kv" style="gap:10px;flex-wrap:wrap;margin-bottom:12px;">
+  {% set o = overview %}
+  <span class="badge">{{ buckets|length }} bucket{{ '' if buckets|length == 1 else 's' }}{%
+    if o and o.buckets_max %} of {{ o.buckets_max }}{% endif %}</span>
+  {% if o %}
+  <span class="badge">{{ o.nodes|length }} node{{ '' if o.nodes|length == 1 else 's' }}</span>
+  <span class="badge" title="data service quota across the cluster">
+    {{ human(o.ram.quota_used) }} / {{ human(o.ram.quota_total) }} quota used</span>
+  <span class="badge" title="documents in active vBuckets">
+    {{ '{:,}'.format(buckets|sum(attribute='docs')) }} items</span>
+  {% if o.rebalance and o.rebalance != 'none' %}
+  <span class="badge" style="color:var(--warn-ink);border-color:var(--warn-line);">
+    rebalance: {{ o.rebalance }}</span>
+  {% endif %}
+  {% endif %}
+  {% if version and version.text %}
+  <span class="badge" style="font-family:var(--mono);">{{ version.text }}</span>
+  {% endif %}
+  {# Stated rather than hidden: on 4.x these tabs exist and answer "not on this
+     version", and knowing why is the point. #}
+  {% if version and not version.has_collections %}
+  <span class="hint">flat buckets — no scopes or collections on this version</span>
+  {% endif %}
+</div>

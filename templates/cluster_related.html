@@ -1,0 +1,277 @@
+{% extends "base.html" %}
+{% import "_bits.html" as bits %}
+{% import "_cluster_actions.html" as acts with context %}
+{% block crumbs %}<a href="/clusters">Clusters</a> <span class="sep">/</span>
+  <a href="/clusters?project={{ pid }}&cluster={{ cid }}&tab=workloads">{{ sel.name if sel else cid }}</a>
+  <span class="sep">/</span> <b>{{ name }}</b>{% endblock %}
+{% block content %}
+{#- Everything in a namespace that belongs to one workload, INCLUDING its pods.
+
+    WHY THIS IS A PAGE AND NOT A WINDOW
+        The other three things a row can open — logs, describe, YAML — are one
+        object each, and a window over the list is right for those. This is a list
+        in its own right: a workload is five to fifteen objects across six kinds,
+        each with its own actions, and it is a thing somebody works from for a few
+        minutes rather than glances at.
+
+    WHY THE PODS ARE HERE RATHER THAN BEHIND A LINK
+        They are part of what the workload IS, and they are the half people
+        actually come for — the logs, the shell, the one that will not start.
+        Sending the reader to another page for that made this an index.
+
+    Every row carries the actions its own kind has: a pod can be shelled into and
+    deleted, a Deployment restarted and rolled back, and a ConfigMap can be read
+    and edited and nothing else. The action machinery — the confirm, the hidden
+    fields, the production lock — is _cluster_actions.html, the same one the
+    cluster page uses, so the lock cannot hold on one page and not the other.
+
+    The matching is svcview's, the same code the service page uses, so "which
+    ConfigMap belongs to bff-backoffice" has one answer in this product. -#}
+
+{% set back = '/clusters/related?project=' ~ pid ~ '&cluster=' ~ cid
+              ~ '&namespace=' ~ namespace|urlencode ~ '&name=' ~ name|urlencode
+              ~ '&kind=' ~ kind|urlencode %}
+
+<div class="page-head">
+  <div>
+    <h1>{{ name }}</h1>
+    <p class="sub">everything in <b>{{ namespace }}</b> that belongs to this
+      {{ kind }}{% if side and side.total %} · {{ side.total }} object{{ 's' if side.total != 1 }}
+      across {{ side.groups|length }} kind{{ 's' if side.groups|length != 1 }}
+      {%- if pods %} · {{ pods|length }} pod{{ 's' if pods|length != 1 }}{% endif %}{% endif %}</p>
+  </div>
+  <div style="display:flex;gap:9px;align-items:center;">
+    <a class="btn btn-ghost" href="{{ back }}&refresh=1">↻ Re-read</a>
+    <a class="btn btn-ghost"
+       href="/clusters?project={{ pid }}&cluster={{ cid }}&tab=workloads">← Workloads</a>
+  </div>
+</div>
+
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+{{ acts.act_banner() }}
+{{ acts.act_script() }}
+
+{% if side %}
+{# Kinds the credentials could not read. Named rather than folded into one
+   failure: "Services and ConfigMaps are here, Secrets are Forbidden" is
+   actionable and "could not read the namespace" is not. #}
+{% if side.refused %}
+<div class="flash">Some kinds could not be read with this cluster's credentials:
+  {% for r in side.refused %}<b>{{ r.kind }}</b> ({{ r.why|truncate(70) }}){{ ' · ' if not loop.last }}{% endfor %}</div>
+{% endif %}
+
+{# ── the pods, first: they are what people came for ── #}
+<div class="card">
+  <div class="card-h">{{ glyph('boxes', 17) }} Pods
+    <span class="hint">{{ pods|length }}{% if pods %} ·
+      {{ pods|rejectattr('healthy')|list|length }} not clean · problems first{% endif %}</span>
+  </div>
+  {% if pods %}
+  <div class="card-b" style="padding:0 0 6px;">
+    <table class="jenkins fixed-t">
+      <thead><tr><th style="width:30%;">Pod</th><th style="width:110px;">State</th>
+        <th style="width:80px;">Ready</th><th style="width:90px;">Restarts</th>
+        <th>Node</th>
+        {#- Sized from the CSS, not by eye: .abtn is min-width 54px with 0 11px
+            padding, .actrow's gap is 5px and a jenkins cell has 14px each side.
+            logs+desc+yaml+shell are 54 each and the iconed Delete is about 78,
+            so 4×54 + 78 + 4×5 + 28 = 342. It was 306 and the row wrapped onto
+            two lines. -#}
+        <th class="actcol" style="width:360px;">Actions</th></tr></thead>
+      <tbody>
+      {% for p in pods %}
+      <tr>
+        <td class="jname"><b>{{ p.name }}</b>
+          {% if p.problem %}<div class="sec-note wrp" style="margin:2px 0 0;color:var(--danger-ink);">
+            {{ p.problem }}</div>{% endif %}</td>
+        <td><span class="sv {{ 'sv-clean' if p.healthy else 'sv-high' }}">{{ p.phase }}</span></td>
+        <td>{{ p.ready }}</td>
+        <td>{% if p.restarts %}<span class="sv {{ 'sv-medium' if p.restarts > 5 else 'sv-info' }}"
+            >{{ p.restarts }}</span>{% else %}0{% endif %}</td>
+        <td><a class="wname"
+               href="/clusters?project={{ pid }}&cluster={{ cid }}&tab=pods&node={{ p.node|urlencode }}"
+               title="every pod on {{ p.node }}">{{ p.node }}</a></td>
+        <td class="mid actcol">
+          <div class="actrow oneline">
+            {# The same set the pods table offers, and for the same reasons: the
+               href is the server-rendered fallback, the data- attributes open the
+               live window over this page. #}
+            <a class="abtn" title="stream this pod's log"
+               href="/clusters?project={{ pid }}&cluster={{ cid }}&tab=pods&ns={{ namespace|urlencode }}&target={{ (p.namespace ~ '/' ~ p.name)|urlencode }}&inspect=logs"
+               {{ bits.cluster_podlog_attrs(pid, cid, p.namespace, p.name) }}>logs</a>
+            <a class="abtn" title="kubectl describe"
+               href="/clusters?project={{ pid }}&cluster={{ cid }}&tab=pods&ns={{ namespace|urlencode }}&target={{ (p.namespace ~ '/' ~ p.name)|urlencode }}&inspect=describe"
+               {{ bits.describe_attrs(pid, cid, p.namespace, p.name) }}>desc</a>
+            <button type="button" class="abtn"
+                    {{ bits.yaml_attrs(pid, cid, p.namespace, p.name, 'pod') }}
+                    >yaml</button>
+            {% if writable %}
+            <a class="abtn go" title="run a command inside this pod"
+               href="/clusters?project={{ pid }}&cluster={{ cid }}&tab=pods&ns={{ namespace|urlencode }}&target={{ (p.namespace ~ '/' ~ p.name)|urlencode }}&inspect=shell"
+               >shell</a>
+            {% endif %}
+            <form method="post" action="/clusters/action" style="display:inline;">
+              {{ acts.act_fields(back) }}
+              <input type="hidden" name="namespace" value="{{ p.namespace }}">
+              <input type="hidden" name="name" value="{{ p.name }}">
+              {{ acts.act_button('delete-pod', 'Delete', 'btn-danger',
+                                 'the controller recreates ' ~ p.name,
+                                 icon='trash-2') }}
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-b" style="color:var(--muted);font-size:13px;">
+    No pods belong to {{ name }} in {{ namespace }}. A workload with none is
+    either scaled to zero or its pods are owned by something this page could not
+    tie back to it.</div>
+  {% endif %}
+</div>
+
+{# ── everything else, a card per kind ── #}
+{% for g in side.groups %}
+<div class="card">
+  <div class="card-h">{{ glyph(g.icon, 17) }} {{ g.label }}
+    <span class="hint">{{ g.count }}{% if g.note %} · {{ g.note }}{% endif %}</span></div>
+  <div class="card-b" style="padding:0 0 6px;">
+    <table class="jenkins fixed-t">
+      <thead><tr><th style="width:26%;">Name</th><th>What it is</th>
+        <th style="width:110px;">Owner</th>
+        {#- Sized for the widest set this card can hold — logs, yaml, desc,
+            ↻ Restart and Roll back — because a fixed table does not grow a
+            column to fit it, and a row that needs more than its box paints over
+            the cell beside it.
+
+            Arithmetic rather than judgement, because the last pair of numbers
+            here was judgement and both were short: .abtn is min-width 54px with
+            0 11px padding, .actrow's gap is 5px, a jenkins cell has 14px of
+            padding each side. Three 54s plus ↻ Restart (~82) and Roll back
+            (~77), four gaps and the padding is 369 — it was 340. Two buttons is
+            54+54+5+28 = 141 — it was 140, short by a pixel, which is why even
+            yaml and desc were on separate lines. -#}
+        <th class="actcol" style="width:{{ 390
+             if g.kind in ('deployment', 'statefulset', 'daemonset') else 160 }}px;"
+          >Actions</th></tr></thead>
+      <tbody>
+      {% for r in g.rows %}
+      <tr>
+        <td class="jname"><b>{{ r.name }}</b>
+          {# Why this object was claimed for this workload. Shown because the
+             matching is by name, label and backend, and a reader has to be able
+             to disagree with it. #}
+          <div class="sec-note wrp" style="margin:1px 0 0;">{{ r.claim }}</div></td>
+        <td>
+          <div class="wrp">{% for f in r.facts %}{{ f }}{{ ' · ' if not loop.last }}{% endfor %}
+            {%- if not r.facts %}<span class="na">—</span>{% endif %}</div>
+          {% if r.data_keys %}
+          <div class="sec-note wrp" style="margin:3px 0 0;">
+            {{ r.data_keys|length }} key{{ 's' if r.data_keys|length != 1 }}:
+            {{ r.data_keys|join(', ')|truncate(90) }}</div>
+          {% endif %}
+        </td>
+        <td>{% if r.owner %}<span class="badge" title="{{ r.owner }} owns this — a
+              change here is undone at its next sync">{{ r.owner }}</span>
+            {% else %}<span class="na">—</span>{% endif %}</td>
+        <td class="mid actcol">
+          <div class="actrow oneline">
+            {# Each kind gets the actions it HAS. A ConfigMap cannot be restarted
+               and a Service has nothing to roll back, so offering those would be
+               buttons that exist to be refused. #}
+            {% if r.k8s_kind|lower in ('deployment', 'statefulset', 'daemonset') %}
+            <button type="button" class="abtn"
+                    {{ bits.cluster_podlog_attrs(pid, cid, r.namespace,
+                         r.k8s_kind|lower ~ '/' ~ r.name) }}>logs</button>
+            {% endif %}
+            <button type="button" class="abtn"
+                    {{ bits.yaml_attrs(pid, cid, r.namespace, r.name,
+                                       r.k8s_kind|lower) }}>yaml</button>
+            <button type="button" class="abtn"
+                    {{ bits.describe_attrs(pid, cid, r.namespace, r.name,
+                                           r.k8s_kind|lower) }}>desc</button>
+            {% if r.k8s_kind|lower in ('deployment', 'statefulset', 'daemonset') %}
+            <form method="post" action="/clusters/action" style="display:inline;">
+              {{ acts.act_fields(back) }}
+              <input type="hidden" name="kind" value="{{ r.k8s_kind|lower }}">
+              <input type="hidden" name="namespace" value="{{ r.namespace }}">
+              <input type="hidden" name="name" value="{{ r.name }}">
+              {{ acts.act_button('restart', '↻ Restart') }}
+              {{ acts.act_button('undo', 'Roll back', 'btn-danger',
+                                 'this returns ' ~ r.name ~ ' to its previous revision') }}
+            </form>
+            {% endif %}
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endfor %}
+
+{% if not side.groups %}
+<div class="card">
+  <div class="card-h">Nothing else matched</div>
+  <div class="card-b" style="color:var(--muted);font-size:13px;">
+    {% if side.why %}{{ side.why }}.
+    {% else %}Nothing in <b>{{ namespace }}</b> carries a name, a label or a
+    backend that ties it to <b>{{ name }}</b>. That is not proof there is nothing
+    — the matching is by name, by label and by what an ingress routes to, so a
+    ConfigMap called something unrelated belongs to it as far as Kubernetes is
+    concerned and not as far as this page can tell.{% endif %}
+  </div>
+</div>
+{% endif %}
+
+{# What is in the namespace and did NOT match. Offered, not hidden: the reason
+   somebody opens this page is often that something is missing, and "these are
+   here but I could not tie them to it" is the useful half of that answer. #}
+{% if side.unclaimed %}
+<div class="card">
+  <div class="card-h">Also in {{ namespace }}
+    <span class="hint">{{ side.unclaimed|length }} object(s) that did not match
+      this {{ kind }}</span></div>
+  <div class="card-b" style="padding:0 0 6px;">
+    <table class="jenkins fixed-t">
+      <thead><tr><th style="width:26%;">Name</th><th style="width:150px;">Kind</th>
+        <th>What it is</th>
+        {#- yaml + desc = 54+54+5+28 = 141. It was 130. -#}
+        <th class="actcol" style="width:160px;">Actions</th></tr></thead>
+      <tbody>
+      {% for r in side.unclaimed %}
+      <tr>
+        <td class="jname"><b>{{ r.name }}</b></td>
+        <td>{{ r.k8s_kind }}</td>
+        <td><div class="wrp">{% for f in r.facts %}{{ f }}{{ ' · ' if not loop.last }}{% endfor %}</div></td>
+        <td class="mid actcol">
+          <div class="actrow oneline">
+            <button type="button" class="abtn"
+                    {{ bits.yaml_attrs(pid, cid, r.namespace, r.name,
+                                       r.k8s_kind|lower) }}>yaml</button>
+            <button type="button" class="abtn"
+                    {{ bits.describe_attrs(pid, cid, r.namespace, r.name,
+                                           r.k8s_kind|lower) }}>desc</button>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+{% endif %}
+
+<p class="sec-note" style="margin-top:14px;">
+  Read live with kubectl using this cluster's stored kubeconfig. The buttons that
+  change something say so before they do it, and every one of them is audited.</p>
+
+{% include "_describe_dialog.html" %}
+{% include "_yaml_dialog.html" %}
+{% include "_logs_dialog.html" %}
+{% endblock %}

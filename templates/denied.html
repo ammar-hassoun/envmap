@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block crumbs %}<b>Not permitted</b>{% endblock %}
+{% block content %}
+<div class="empty">
+  <div class="big">{{ glyph("lock", 40) }}</div>
+  {#- `scope` is a role that opens the area and not this one thing in it: a
+      different sentence, because "ask for the area" would send somebody to
+      request what they already hold. The thing is not named — the person
+      may have typed an id they were never given. -#}
+  {% if offered is defined and not offered %}
+  <h2>{{ area }} is not part of this installation</h2>
+  <p>This installation is Privileged Access only, so <b>{{ area }}</b> is not
+     here for anybody, administrators included. No role can grant it.</p>
+  {% elif scope %}
+  <h2>That {{ scope }} is outside your roles</h2>
+  <p>Your account ({{ me.email if me else 'unknown' }}) may open
+     <b>{{ area }}</b>, but none of its roles covers this {{ scope }}. An
+     administrator can widen a role under Administration → Roles.</p>
+  {% else %}
+  <h2>{{ area ~ ' is not in your roles' if area else 'Administrators only' }}</h2>
+  <p>{% if area %}Your account ({{ me.email if me else 'unknown' }}) holds no role
+     granting <b>{{ area }}</b>. An administrator can add one under
+     Administration → Roles.
+     {% else %}Your account ({{ me.email if me else 'unknown' }}) does not have
+     admin access. Ask an administrator if you need it.{% endif %}</p>
+  {% endif %}
+  {% if pam_only() %}
+  <a class="btn btn-ghost" href="/pam">← Back to Privileged Access</a>
+  {% else %}
+  <a class="btn btn-ghost" href="/">← Back to overview</a>
+  {% endif %}
+</div>
+{% endblock %}

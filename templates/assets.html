@@ -1,0 +1,283 @@
+{% extends "base.html" %}
+{% block crumbs %}<b>Server Assets</b>{% endblock %}
+{% block content %}
+{% set here = request.url.path ~ ('?' ~ request.url.query if request.url.query else '') %}
+
+{% macro qs(over={}) %}
+{%- set merged = dict(active, **over) -%}
+{%- set parts = [] -%}
+{%- if q and 'q' not in over %}{% set _ = parts.append('q=' ~ q|urlencode) %}{% endif -%}
+{%- for k, v in merged.items() %}{% if v %}{% set _ = parts.append(k ~ '=' ~ v|urlencode) %}{% endif %}{% endfor -%}
+{%- if sort != 'hostname' %}{% set _ = parts.append('sort=' ~ sort) %}{% endif -%}
+{%- if desc %}{% set _ = parts.append('desc=1') %}{% endif -%}
+/assets{{ '?' ~ parts|join('&') if parts else '' }}
+{%- endmacro %}
+
+<div class="page-head">
+  <div>
+    <h1>Server Assets</h1>
+    <p class="sub">{{ "{:,}".format(stats.total) }} asset{{ 's' if stats.total != 1 }} ·
+      on-premises and cloud · added and maintained here</p>
+  </div>
+  <div style="display:flex;gap:9px;">
+    {# the export carries the current filters, so the file matches the screen #}
+    <a class="btn btn-ghost"
+       href="/assets/export.csv{{ '?' ~ request.url.query if request.url.query }}">
+      ↓ Export {{ 'filtered' if q or active else 'CSV' }}</a>
+    <a class="btn" href="/assets/new">＋ Add server</a>
+  </div>
+</div>
+
+{% if msg %}<div class="flash">✓ {{ msg }}</div>{% endif %}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+
+{% if stats.total %}
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:18px;">
+  <a class="sevtile t-all {% if not active %}on{% endif %}" href="/assets">
+    <div class="n">{{ stats.total }}</div><div class="l">assets</div></a>
+  {# physical and virtual are told apart by what is written in `kind`, so these
+     two tiles count and filter the same way #}
+  <a class="sevtile t-low {% if active.get('class') == 'physical' %}on{% endif %}
+            {% if not stats.classes.physical %}static{% endif %}"
+     href="{{ qs({'class': '' if active.get('class') == 'physical' else 'physical'}) }}">
+    <div class="n">{{ stats.classes.physical }}</div>
+    <div class="l">physical</div></a>
+  <a class="sevtile t-info {% if active.get('class') == 'virtual' %}on{% endif %}
+            {% if not stats.classes.virtual %}static{% endif %}"
+     href="{{ qs({'class': '' if active.get('class') == 'virtual' else 'virtual'}) }}">
+    <div class="n">{{ stats.classes.virtual }}</div>
+    <div class="l">virtual machines</div></a>
+  <div class="sevtile"><div class="n">{{ stats.cpu or '—' }}</div>
+    <div class="l">cpu cores</div></div>
+  <div class="sevtile"><div class="n">{{ (stats.ram / 1024)|round(1) if stats.ram else '—' }}</div>
+    <div class="l">TB memory</div></div>
+  <div class="sevtile"><div class="n">{{ (stats.disk / 1024)|round(1) if stats.disk else '—' }}</div>
+    <div class="l">TB disk</div></div>
+  <a class="sevtile t-medium {% if not stats.warranty_soon %}static{% endif %}"
+     href="/assets?sort=warranty_until">
+    <div class="n">{{ stats.warranty_soon }}</div>
+    <div class="l">warranty ≤30d</div></a>
+  <a class="sevtile t-critical {% if not stats.warranty_expired %}static{% endif %}"
+     href="/assets?sort=warranty_until">
+    <div class="n">{{ stats.warranty_expired }}</div>
+    <div class="l">warranty expired</div></a>
+</div>
+{% endif %}
+
+{# filters: every value here came from the data, so the list grows with use #}
+<form method="get" action="/assets" class="pipefilters">
+  <input type="search" name="q" value="{{ q }}" style="width:250px;"
+         placeholder="hostname, serial, IP, model, anything…">
+  {% for f in facets %}
+  <select name="{{ f.col }}" data-submit>
+    <option value="">any {{ f.label }}</option>
+    {% for value, label in f.options %}
+    <option value="{{ value }}" {% if active.get(f.col) == value %}selected{% endif %}>{{ label }}</option>
+    {% endfor %}
+  </select>
+  {% endfor %}
+  <button type="submit" class="btn-ghost" style="padding:8px 16px;">Apply</button>
+  {% if q or active %}<a class="btn btn-ghost" href="/assets"
+     style="padding:8px 14px;font-size:12.5px;">Clear</a>{% endif %}
+</form>
+
+<div class="card">
+  <div class="card-h" style="flex-wrap:wrap;">
+    <b style="font-size:14.5px;">Inventory</b>
+    {% for k, v in active.items() %}
+    <a class="badge" href="{{ qs({k: ''}) }}" title="remove this filter">
+      {{ 'project' if k == 'pid' else ('type' if k == 'class' else k) }}:
+      {{ project_names.get(v, v) if k == 'pid' else v }} ✕</a>
+    {% endfor %}
+    <span style="flex:1"></span>
+    <span class="hint">
+      {% if res.total %}{{ res.offset + 1 }}–{{ res.offset + res.rows|length }}
+        of {{ "{:,}".format(res.total) }}{% else %}none{% endif %}</span>
+  </div>
+
+  {% if res.rows %}
+  {# the table is a form: tick rows, then act on them. Removing several entries
+     one page at a time is the common case after a bad import. #}
+  {# removal is auto-gated by the house typed-"Delete" dialog (base.html), which
+     keys off this /assets/delete action; the Export button below overrides it
+     with formaction, so it is not treated as a delete. #}
+  <form method="post" action="/assets/delete" id="bulk">
+  <input type="hidden" name="back" value="{{ here }}">
+  <div class="card-b" id="bulkbar"
+       style="display:none;gap:12px;align-items:center;background:var(--well);
+              border-bottom:1px solid var(--line);">
+    <b style="font-size:13px;"><span id="bulkn">0</span> selected</b>
+    <button type="submit" formaction="/assets/export.csv" formnovalidate
+            class="btn-ghost" style="padding:7px 15px;font-size:12.5px;">↓ Export selected</button>
+    <button type="submit" class="btn-danger" style="padding:7px 15px;font-size:12.5px;">
+      🗑 Remove selected</button>
+    <a class="btn btn-ghost" href="#" data-call="clearSel" data-noop
+       style="padding:7px 13px;font-size:12.5px;">Clear selection</a>
+  </div>
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    {% macro th(col, label, width='') %}
+    <th {% if width %}style="width:{{ width }};"{% endif %}>
+      <a href="{{ qs({}) }}{{ '&' if '?' in qs({}) else '?' }}sort={{ col }}{{ '&desc=1' if sort == col and not desc else '' }}"
+         style="color:inherit;">{{ label }}{% if sort == col %} {{ '▾' if desc else '▴' }}{% endif %}</a></th>
+    {% endmacro %}
+    <table class="jenkins">
+      <thead><tr>
+        <th style="width:34px;text-align:center;">
+          <input type="checkbox" id="all" data-call="toggleAll" data-arg-self
+                 title="select every row on this page" style="width:auto;margin:0;"></th>
+        {{ th('hostname', 'Hostname', '190px') }}
+        {{ th('ip', 'Server IP', '125px') }}
+        {{ th('mgmt_ip', 'iDRAC IP', '125px') }}
+        {{ th('env', 'Project / env', '170px') }}
+        {{ th('placement', 'Placement', '120px') }}
+        {{ th('model', 'Model', '170px') }}
+        {{ th('serial', 'Service tag', '120px') }}
+        <th style="width:110px;">Resources</th>
+        {{ th('location', 'Location', '140px') }}
+        {{ th('warranty_until', 'Warranty', '115px') }}
+        {{ th('status', 'Status', '100px') }}
+      </tr></thead>
+      <tbody>
+      {% for a in res.rows %}
+      <tr>
+        <td style="text-align:center;">
+          <input type="checkbox" class="pick" name="ids" value="{{ a.id }}"
+                 data-call="sync" style="width:auto;margin:0;"
+                 aria-label="select {{ a.hostname }}"></td>
+        {# the link carries this exact view, so saving comes back to it #}
+        <td class="jname"><a href="/assets/{{ a.id }}?back={{ here|urlencode }}">{{ a.hostname }}</a></td>
+        {# the two addresses get their own columns: one is how you reach the
+           operating system, the other is how you reach the machine when the
+           operating system is the problem #}
+        <td style="font-family:var(--mono);font-size:11.5px;">
+          {% if a.ip %}{{ a.ip }}{% else %}<span class="na">—</span>{% endif %}</td>
+        <td style="font-family:var(--mono);font-size:11.5px;">
+          {% if a.mgmt_ip %}{{ a.mgmt_ip }}{% else %}<span class="na">—</span>{% endif %}</td>
+        <td>{{ project_names.get(a.pid, '—') if a.pid else '—' }}
+          {% if a.region or a.env %}
+          <div class="sec-note" style="margin:1px 0 0;">
+            {{ a.region or '' }}{% if a.region and a.env %} / {% endif %}{{ a.env or '' }}</div>
+          {% endif %}</td>
+        <td>{{ a.placement or '—' }}
+          {% if a.provider %}<div class="sec-note" style="margin:1px 0 0;">{{ a.provider }}</div>{% endif %}</td>
+        <td>{{ a.model or '—' }}
+          {% if a.kind %}<div class="sec-note" style="margin:1px 0 0;">{{ a.kind }}</div>{% endif %}</td>
+        <td style="font-family:var(--mono);font-size:11.5px;">{{ a.serial or '—' }}</td>
+        <td style="font-family:var(--mono);font-size:11px;">
+          {% if a.cpu or a.ram_gb or a.disk_gb %}
+            {{ a.cpu ~ 'c' if a.cpu else '' }}{{ ' · ' if a.cpu and a.ram_gb }}{{ a.ram_gb|round|int ~ 'G' if a.ram_gb else '' }}
+            {% if a.disk_gb %}<div class="sec-note" style="margin:0;">{{ a.disk_gb|round|int }}G disk</div>{% endif %}
+          {% else %}—{% endif %}</td>
+        <td>{{ a.location or '—' }}</td>
+        <td>{% if a.warranty.state %}
+            <span class="sv sv-{{ {'expired':'critical','soon':'high','watch':'medium','ok':'clean'}[a.warranty.state] }}"
+                  title="{{ a.warranty_until }}">{{ a.warranty.label }}</span>
+            {% else %}<span class="na">—</span>{% endif %}</td>
+        <td>{{ a.status or '—' }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  </form>
+  {% if res.total > res.limit %}
+  <div class="card-b" style="display:flex;gap:9px;align-items:center;">
+    {% if page > 1 %}<a class="btn btn-ghost" style="padding:6px 15px;font-size:12px;"
+       href="{{ qs({}) }}{{ '&' if '?' in qs({}) else '?' }}page={{ page - 1 }}">← Previous</a>{% endif %}
+    {% if res.offset + res.rows|length < res.total %}
+    <a class="btn btn-ghost" style="padding:6px 15px;font-size:12px;"
+       href="{{ qs({}) }}{{ '&' if '?' in qs({}) else '?' }}page={{ page + 1 }}">Next →</a>{% endif %}
+    <span class="hint">page {{ page }}</span>
+  </div>
+  {% endif %}
+
+  {% elif q or active %}
+  <div class="card-b" style="color:var(--muted);font-size:13px;">
+    Nothing matches those filters. <a href="/assets">Clear them</a>.</div>
+  {% else %}
+  <div class="card-b" style="text-align:center;padding:34px 20px;">
+    <div>{{ glyph("server", 40) }}</div>
+    <h2 style="font-size:19px;margin:12px 0 8px;">No servers recorded yet</h2>
+    <p class="sub" style="max-width:520px;margin:0 auto 20px;">
+      Add them one at a time, or paste a spreadsheet in as CSV. Nothing is
+      pre-defined: placement, provider, model and status are free text, and the
+      pickers fill themselves in from whatever you enter.</p>
+    <a class="btn" href="/assets/new">＋ Add the first server</a>
+  </div>
+  {% endif %}
+</div>
+
+{# ── breakdowns straight from the database ── #}
+{% if stats.total %}
+<div class="card">
+  <div class="card-h">Breakdown <span class="hint">click a value to filter</span></div>
+  <div class="card-b">
+    <div class="facets">
+      {% for col, rows in stats.by.items() %}
+      {% if rows and rows|length > 1 %}
+      <div class="facet">
+        <div class="fname">{{ 'project' if col == 'pid' else col }}</div>
+        {% for row in rows %}
+        <a class="fval" href="{{ qs({col: row.v if row.v != 'unset' else ''}) }}">
+          <span class="bar" style="width:{{ (row.n / stats.total * 100)|round }}%"></span>
+          <span class="t">
+            <span class="v">{{ project_names.get(row.v, row.v) if col == 'pid' else row.v }}</span>
+            <span class="n">{{ row.n }}</span></span>
+        </a>
+        {% endfor %}
+      </div>
+      {% endif %}
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{% if res.rows %}
+<script nonce="{{ csp_nonce() }}">
+// Selection lives in the page, not in the URL: the checkboxes post as `ids`,
+// so what you see ticked is exactly what the form sends.
+const picks = () => Array.from(document.querySelectorAll('.pick'));
+function sync() {
+  const on = picks().filter(c => c.checked);
+  document.getElementById('bulkn').textContent = on.length;
+  document.getElementById('bulkbar').style.display = on.length ? 'flex' : 'none';
+  const all = document.getElementById('all');
+  all.checked = on.length === picks().length && on.length > 0;
+  all.indeterminate = on.length > 0 && on.length < picks().length;
+}
+function toggleAll(box) { picks().forEach(c => { c.checked = box.checked; }); sync(); }
+function clearSel() { picks().forEach(c => { c.checked = false; }); sync(); }
+// shift-click ticks a range, which is the whole point of a list this long
+let last = null;
+picks().forEach((c, i) => c.addEventListener('click', e => {
+  if (e.shiftKey && last !== null) {
+    const [a, b] = [Math.min(last, i), Math.max(last, i)];
+    picks().slice(a, b + 1).forEach(x => { x.checked = c.checked; });
+    sync();
+  }
+  last = i;
+}));
+sync();
+</script>
+{% endif %}
+
+<div class="card">
+  <div class="card-h">Import from CSV</div>
+  <div class="card-b">
+    <p class="sub" style="margin:0 0 12px;">Column names match the export, so the
+      quickest start is to export, fill in a spreadsheet and upload it. Rows are
+      matched on <b>serial</b> first and <b>hostname</b> second, so re-uploading
+      the same file updates rather than duplicates — a serial survives a rename,
+      which makes it the more stable identity. Any column named
+      <code>attr_something</code> becomes a custom field.</p>
+    <form method="post" action="/assets/import" enctype="multipart/form-data"
+          style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+      <input type="file" name="file" accept=".csv,text/csv" required
+             style="width:auto;padding:7px 10px;">
+      <button type="submit" class="btn-ghost" style="padding:7px 16px;font-size:12.5px;">
+        Upload</button>
+    </form>
+  </div>
+</div>
+{% endblock %}

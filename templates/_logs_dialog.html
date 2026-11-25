@@ -1,0 +1,487 @@
+{#- The live pod-log window, as one component.
+
+    WHY IT IS AN INCLUDE AND NOT A PAGE
+        Pod logs are reached from three places — the cluster page's pod list,
+        the environment's pod table, and a direct link. Each had its own idea of
+        what "logs" meant: one showed four hundred frozen lines with a button
+        that navigated somewhere else to stream them, and streaming was
+        something you had to ask for after arriving. Now every one of them opens
+        this, already live.
+
+    WHY IT RENDERS THE WAY IT DOES
+        The old view rebuilt every line of its innerHTML on every arriving line.
+        At a thousand buffered lines that is a thousand string concatenations
+        and a full re-parse per line, and it is the whole reason the window felt
+        slow. Nothing here re-renders: lines are appended to a fragment, the
+        fragment is flushed once per animation frame no matter how many arrived,
+        and the oldest nodes are dropped in bulk once the view is full.
+
+        The result is that throughput costs frames, not squares: two thousand
+        lines in a burst is still one flush.
+-#}
+<dialog id="lgDlg" class="psh lgwin">
+  <div class="psh-bar">
+    <span class="psh-dots"><b title="close" data-lgdot="close">✕</b><b
+      title="minimise" data-lgdot="mini">–</b><b title="maximise" data-lgdot="maxi">+</b></span>
+    <b>logs</b>
+    <span class="psh-ns" id="lgPod"></span>
+    <select class="psh-pick" id="lgContainer" title="container" hidden></select>
+    <span style="flex:1"></span>
+    <span class="lgdot" id="lgDot"></span>
+    <span class="psh-state" id="lgState">connecting…</span>
+    <button type="button" class="psh-x" id="lgClose">close</button>
+  </div>
+  <div class="lgbar">
+    <button type="button" class="psh-x on" id="lgFollow"
+            title="jump to the newest line and keep up with it (End)">↓ follow</button>
+    <button type="button" class="psh-x" id="lgPause" title="space">⏸ pause</button>
+    <button type="button" class="psh-x" id="lgWrap" title="wrap long lines">wrap</button>
+    <button type="button" class="psh-x" id="lgCopy">copy</button>
+    <button type="button" class="psh-x" id="lgDownload">download</button>
+    <button type="button" class="psh-x" id="lgClear">clear</button>
+    <select class="psh-pick" id="lgTail" title="how much history to load first">
+      <option value="200">last 200</option>
+      <option value="1000">last 1000</option>
+      <option value="5000">last 5000</option>
+    </select>
+    <input type="search" id="lgFilter" placeholder="filter… (ERROR, timeout)"
+           autocomplete="off">
+    <span class="lgcount" id="lgCount">0 lines</span>
+  </div>
+  <pre class="lgv" id="lgView" tabindex="0"></pre>
+</dialog>
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  const dlg = document.getElementById('lgDlg');
+  if (!dlg) return;
+  const view = document.getElementById('lgView');
+  const dot = document.getElementById('lgDot');
+  const state = document.getElementById('lgState');
+  const countEl = document.getElementById('lgCount');
+  const filterEl = document.getElementById('lgFilter');
+  const tailEl = document.getElementById('lgTail');
+  const containerEl = document.getElementById('lgContainer');
+  const pauseBtn = document.getElementById('lgPause');
+
+  // How many lines the view holds. Past this the oldest are dropped: a log tail
+  // is not an archive, and an unbounded view is a tab that eventually dies.
+  const KEEP = 5000;
+
+  let es = null;            // the EventSource, when live
+  let where = null;         // {base, namespace, pod, container}
+  let all = [];             // every line held, for copy/download/refilter
+  let pending = [];         // arrived but not yet in the DOM
+  let paused = false, missed = 0, frame = 0, pinned = true;
+  // Where the view was last put, so a scroll event caused by our own
+  // scroll-to-bottom is not mistaken for the reader moving. Declared here with
+  // the rest of the state rather than beside its listener: `toBottom` reads it
+  // and is called from repaint(), which runs before that listener's line.
+  let lastTop = 0;
+  let stale = false;        // lines arrived while the tab was hidden
+  let behind = 0;           // lines appended since the reader scrolled away
+  let retries = 0;          // reconnects since the last good frame
+
+  const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;');
+  const tone = l => /\b(ERROR|FATAL|SEVERE|Exception|panic)\b/i.test(l) ? 'err'
+                  : /\bWARN(ING)?\b/i.test(l) ? 'warn' : '';
+
+  function nodeFor(line, needle) {
+    const el = document.createElement('span');
+    // kubectl --timestamps puts an RFC3339 stamp first; showing the time only
+    // keeps the useful part without spending a third of the width on the date.
+    const m = line.match(/^(\S+Z)\s?([\s\S]*)$/);
+    const body = m ? m[2] : line;
+    el.className = 'l ' + tone(body);
+    let html = esc(body);
+    if (needle) {
+      // Marking the match is what makes a filter readable when the line is
+      // long: "it is in here somewhere" is not an answer.
+      const i = body.toLowerCase().indexOf(needle);
+      if (i >= 0) html = esc(body.slice(0, i)) + '<span class="hit">'
+        + esc(body.slice(i, i + needle.length)) + '</span>'
+        + esc(body.slice(i + needle.length));
+    }
+    el.innerHTML = (m ? '<span class="ts">' + esc(m[1].slice(11, 23)) + '</span> ' : '')
+                 + html;
+    return el;
+  }
+
+  function matches(line, needle) {
+    return !needle || line.toLowerCase().includes(needle);
+  }
+
+  // One flush per frame regardless of how many lines arrived in it. This is the
+  // difference between smooth and unusable on a chatty pod.
+  function schedule() {
+    if (frame) return;
+    frame = requestAnimationFrame(() => {
+      frame = 0;
+      if (paused || !pending.length) { pending = []; return; }
+      const needle = filterEl.value.trim().toLowerCase();
+      const frag = document.createDocumentFragment();
+      let added = 0;
+      for (const line of pending) {
+        if (!matches(line, needle)) continue;
+        frag.appendChild(nodeFor(line, needle));
+        added++;
+      }
+      pending = [];
+      if (added) {
+        view.appendChild(frag);
+        // Trim in one pass rather than one removeChild per line over the cap.
+        const over = view.childElementCount - KEEP;
+        if (over > 0) {
+          const r = document.createRange();
+          r.setStart(view, 0);
+          r.setEnd(view, over);
+          r.deleteContents();
+        }
+        if (pinned) { view.scrollTop = view.scrollHeight; lastTop = view.scrollTop; }
+        else behind += added;
+        showFollow();
+      }
+      countEl.textContent = all.length.toLocaleString() + ' lines';
+    });
+  }
+
+  function repaint() {
+    // Only on a filter change or a clear — never on arrival.
+    const needle = filterEl.value.trim().toLowerCase();
+    const frag = document.createDocumentFragment();
+    const shown = needle ? all.filter(l => matches(l, needle)) : all;
+    for (const line of shown.slice(-KEEP)) frag.appendChild(nodeFor(line, needle));
+    view.replaceChildren(frag);
+    toBottom();
+    countEl.textContent = all.length.toLocaleString() + ' lines'
+      + (needle ? ' · ' + shown.length.toLocaleString() + ' shown' : '');
+  }
+
+  function take(lines) {
+    for (const l of lines) all.push(l);
+    if (all.length > KEEP * 2) all = all.slice(-KEEP * 2);
+    if (paused) { missed += lines.length; setState(); return; }
+    // A hidden tab gets no animation frames at all, so queueing DOM work for
+    // one means the queue grows for as long as the tab is in the background and
+    // then lands as a single enormous flush when it comes back. The lines are
+    // already kept in `all`; the view is rebuilt from that on return instead.
+    if (document.hidden) { stale = true; return; }
+    pending.push(...lines);
+    // Belt and braces: if a frame is somehow never delivered, this stops the
+    // buffer becoming the memory leak the view was designed not to be.
+    if (pending.length > KEEP * 2) pending = pending.slice(-KEEP);
+    schedule();
+  }
+
+  function setState(text, dead) {
+    if (text) {
+      state.textContent = text;
+      // The dot is the thing read from across a desk. Leaving it green beside
+      // the word "disconnected" is the one combination that must not happen.
+      state.className = 'psh-state' + (dead ? ' lgdead'
+                                            : es ? '' : ' lgpaused');
+      dot.className = 'lgdot' + (es ? '' : ' off');
+      return;
+    }
+    if (paused) {
+      state.textContent = 'paused' + (missed ? ' · ' + missed + ' new' : '');
+      state.className = 'psh-state lgpaused';
+      dot.className = 'lgdot off';
+    } else {
+      state.textContent = es ? 'live' : 'not streaming';
+      state.className = 'psh-state';
+      dot.className = 'lgdot' + (es ? '' : ' off');
+    }
+  }
+
+  function showFollow() {
+    const b = document.getElementById('lgFollow');
+    b.classList.toggle('on', pinned);
+    b.classList.toggle('behind', !pinned && behind > 0);
+    b.textContent = pinned ? '↓ following'
+      : behind ? '↓ ' + behind.toLocaleString() + ' new' : '↓ follow';
+  }
+
+  function toBottom() {
+    view.scrollTop = view.scrollHeight;
+    // Recorded so the scroll event this causes is not read as the reader having
+    // moved: it compares against where we last put the view, not against 0.
+    lastTop = view.scrollTop;
+    pinned = true; behind = 0;
+    showFollow();
+  }
+
+  // Throw away what is on screen and read again from the top. Every control
+  // that changes WHAT is being read does this — the tail length, the container,
+  // the previous-instance button, and the picker when it discovers a pod has
+  // more than one container. It was written out four times, and one of the four
+  // is how a stale line survives a container switch.
+  function restart(why) {
+    all = []; pending = []; missed = 0;
+    view.replaceChildren();
+    if (why) note(why, 'dim');
+    countEl.textContent = '0 lines';
+    toBottom();
+    start();
+  }
+
+  // The container picker, filled from a list. Written twice — once from what
+  // the page already knew and once from what /containers.json answered — and
+  // the two had already drifted apart on whether to unhide the control.
+  function fillContainers(list) {
+    containerEl.innerHTML = '';
+    for (const c of list) {
+      const o = document.createElement('option');
+      o.value = c; o.textContent = c;
+      if (c === where.container) o.selected = true;
+      containerEl.appendChild(o);
+    }
+    containerEl.hidden = list.length < 2;
+  }
+
+  function note(text, kind) {
+    // Not appended as a log line: it did not come from the pod, and a failure
+    // dressed as output is exactly what made the last one confusing.
+    const el = document.createElement('span');
+    el.className = 'l lgnote ' + (kind || '');
+    el.textContent = '— ' + text;
+    view.appendChild(el);
+    if (pinned) { view.scrollTop = view.scrollHeight; lastTop = view.scrollTop; }
+  }
+
+  function offerPrevious() {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'psh-x lgretry';
+    b.textContent = 'try the previous instance';
+    b.addEventListener('click', () => {
+      where.previous = true;
+      restart('reading the container instance before the last restart');
+    });
+    const wrap = document.createElement('span');
+    wrap.className = 'l';
+    wrap.appendChild(b);
+    view.appendChild(wrap);
+    if (pinned) { view.scrollTop = view.scrollHeight; lastTop = view.scrollTop; }
+  }
+
+  function stop() {
+    if (es) { es.close(); es = null; }
+  }
+
+  function start() {
+    stop();
+    // `stream` already identifies the pod — the cluster page addresses it by
+    // cluster and the environment page by environment, and the window does not
+    // need to know which. It only adds what it owns.
+    const sep = where.stream.includes('?') ? '&' : '?';
+    es = new EventSource(where.stream + sep + new URLSearchParams({
+      container: where.container || '', tail: tailEl.value,
+      previous: where.previous ? '1' : ''}));
+    setState('connecting…');
+    es.addEventListener('log', e => {
+      retries = 0;               // a frame arrived, so the link is healthy
+      if (state.textContent === 'connecting…') setState();
+      // The server sends a batch per frame; an older one sent a bare string.
+      const d = JSON.parse(e.data);
+      take(Array.isArray(d) ? d : [d]);
+    });
+    // Said by the server when kubectl could not produce a log at all: a
+    // finished Job whose container has been reaped, a bad container name, no
+    // permission. Retrying cannot fix any of those, and EventSource retries
+    // by default — which is how one dead pod turned into a kubectl run every
+    // few seconds and the same error line stacking up in the window.
+    es.addEventListener('fatal', e => {
+      const why = JSON.parse(e.data);
+      stop();
+      note(why, 'err');
+      // Its logs may still exist for the instance BEFORE the last restart, and
+      // that is usually the one worth reading when something crash-looped.
+      if (!where.previous) offerPrevious();
+      setState('cannot stream', true);
+    });
+    es.addEventListener('end', e => {
+      stop();
+      note(JSON.parse(e.data), 'dim');
+      setState('ended');
+    });
+    es.addEventListener('error', () => {
+      // A dropped connection, as opposed to a refusal. EventSource will retry
+      // on its own, but not for ever: a server that is down should not be
+      // polled by every open log window until somebody notices.
+      //
+      // The guard matters — more than one error can land before the close
+      // settles, and without it the window said "gave up reconnecting" once
+      // per event instead of once per giving up.
+      if (!es) return;
+      if (++retries > 5) {
+        stop();
+        note('gave up reconnecting', 'err');
+        setState('disconnected', true);
+        return;
+      }
+      setState('reconnecting…');
+    });
+    setState();
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && stale) { stale = false; repaint(); }
+  });
+  // Following is a DECISION, not a position — and that distinction is the whole
+  // bug this replaced. It used to recompute `pinned` from the scroll position on
+  // every scroll event: at the bottom means following, anything else means not.
+  //
+  // On a pod writing thousands of lines a second that reads as "follow does not
+  // work". Pressing follow scrolls to the bottom and sets pinned; the scroll
+  // event it causes is delivered a frame later; by then another flush has already
+  // appended lines, so scrollHeight has grown, the view is no longer AT the
+  // bottom, and the handler helpfully turned following back off. Every time,
+  // instantly, on exactly the pods somebody needs to tail.
+  //
+  // So: only two things change the decision. Reaching the bottom turns it on,
+  // and scrolling UP turns it off. Content growing underneath a pinned view is
+  // neither — it does not move scrollTop, so it cannot look like either one.
+  view.addEventListener('scroll', () => {
+    const top = view.scrollTop;
+    const atBottom = top + view.clientHeight >= view.scrollHeight - 24;
+    const movedUp = top < lastTop - 2;      // 2px of slack for fractional zoom
+    lastTop = top;
+    const wasPinned = pinned;
+    if (atBottom) {
+      // Scrolling back down by hand resumes following, so the button never
+      // disagrees with what the view is actually doing.
+      pinned = true;
+      behind = 0;
+    } else if (movedUp) {
+      pinned = false;
+    }
+    if (pinned !== wasPinned) showFollow();
+  });
+  document.getElementById('lgFollow').addEventListener('click', toBottom);
+  filterEl.addEventListener('input', repaint);
+  tailEl.addEventListener('change', () => restart(''));
+  containerEl.addEventListener('change', () => {
+    where.container = containerEl.value;
+    restart('');
+  });
+
+  pauseBtn.addEventListener('click', () => {
+    paused = !paused;
+    pauseBtn.textContent = paused ? '▶ resume' : '⏸ pause';
+    if (!paused) {
+      // Catching up means everything received while stopped, in order.
+      missed = 0;
+      repaint();
+    }
+    setState();
+  });
+  document.getElementById('lgWrap').addEventListener('click', () => {
+    view.classList.toggle('nowrap');
+    document.getElementById('lgWrap').textContent =
+      view.classList.contains('nowrap') ? 'no wrap' : 'wrap';
+  });
+  document.getElementById('lgCopy').addEventListener('click', async () => {
+    const btn = document.getElementById('lgCopy');
+    try {
+      await navigator.clipboard.writeText(all.join('\n'));
+      btn.textContent = 'copied';
+    } catch (err) {
+      btn.textContent = 'press ⌘C';
+      // Clipboard access can be refused; leaving the text selected means the
+      // keyboard still works rather than the button simply failing.
+      const r = document.createRange();
+      r.selectNodeContents(view);
+      const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+    }
+    setTimeout(() => { btn.textContent = 'copy'; }, 1600);
+  });
+  document.getElementById('lgDownload').addEventListener('click', () => {
+    const blob = new Blob([all.join('\n')], {type: 'text/plain'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = where.pod + '.log';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  });
+  document.getElementById('lgClear').addEventListener('click', () => {
+    all = []; pending = []; missed = 0; repaint();
+  });
+
+  function shut() {
+    stop();
+    if (dlg.open) dlg.close();
+  }
+  document.getElementById('lgClose').addEventListener('click', shut);
+  dlg.querySelector('[data-lgdot="close"]').addEventListener('click', shut);
+  dlg.querySelector('[data-lgdot="maxi"]').addEventListener('click', () => {
+    dlg.style.width = dlg.style.width === '98vw' ? '' : '98vw';
+    dlg.style.height = dlg.style.height === '94vh' ? '' : '94vh';
+  });
+  dlg.querySelector('[data-lgdot="mini"]').addEventListener('click', shut);
+  // A dialog closed with Escape must stop the stream too, or kubectl keeps
+  // following a pod for a window nobody can see.
+  dlg.addEventListener('close', stop);
+  dlg.addEventListener('keydown', e => {
+    if (e.key === ' ' && e.target !== filterEl) { e.preventDefault(); pauseBtn.click(); }
+    if (e.key === 'End' && e.target !== filterEl) { e.preventDefault(); toBottom(); }
+  });
+
+  // Delegated, so a pod row anywhere on any page opens the window by carrying
+  // data- attributes and nothing else — no inline handler, and rows added by a
+  // later render are picked up without rewiring.
+  document.addEventListener('click', e => {
+    const a = e.target.closest && e.target.closest('[data-podlog]');
+    if (!a || e.metaKey || e.ctrlKey || e.shiftKey || e.button) return;
+    e.preventDefault();
+    // A row carries the four identifiers; the URL is built here so it is
+    // not stamped into every row of an 800-row table. A caller may still
+    // pass data-stream/data-meta outright for a different endpoint.
+    const q = a.dataset.pid ? '?project=' + encodeURIComponent(a.dataset.pid)
+              + '&cluster=' + encodeURIComponent(a.dataset.cid || '')
+              + '&namespace=' + encodeURIComponent(a.dataset.ns || '')
+              + '&pod=' + encodeURIComponent(a.dataset.pod || '') : '';
+    openPodLogs({stream: a.dataset.stream || ('/clusters/logstream' + q),
+                 meta: a.dataset.meta || ('/clusters/containers.json' + q),
+                 namespace: a.dataset.ns, pod: a.dataset.pod,
+                 container: a.dataset.container || ''});
+  });
+
+  window.openPodLogs = function (opts) {
+    where = {stream: opts.stream, meta: opts.meta || '',
+             namespace: opts.namespace, pod: opts.pod,
+             container: opts.container || '', previous: false};
+    retries = 0;
+    paused = false;
+    pauseBtn.textContent = '⏸ pause';
+    filterEl.value = '';
+    document.getElementById('lgPod').textContent =
+      opts.namespace + '/' + opts.pod;
+    const cs = opts.containers || [];
+    fillContainers(cs);
+    if (!dlg.open) dlg.showModal();
+    // Opening on a new pod is the same act as switching container on the old
+    // one: empty everything, follow, connect. Only what a re-read does NOT
+    // touch — the pause button, the filter, the title — is set above.
+    restart('');
+    // The picker is filled in behind the stream rather than before it. Asking
+    // the API server what containers a pod has costs a round trip over a VPN,
+    // and spending it before the first line means staring at an empty window
+    // for a second on every single-container pod — which is nearly all of them.
+    if (where.meta && cs.length < 2) {
+      fetch(where.meta).then(r => r.json()).then(j => {
+        const list = j.containers || [];
+        if (list.length < 2) return;
+        fillContainers(list);
+        // kubectl refuses a multi-container pod with no container named, so
+        // the stream that is already running has nothing to show. Name one.
+        if (!where.container) {
+          where.container = list[0];
+          containerEl.value = list[0];
+          restart('');
+        }
+      }).catch(() => {});
+    }
+  };
+})();
+</script>

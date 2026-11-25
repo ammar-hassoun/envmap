@@ -1,0 +1,520 @@
+{% extends "base.html" %}
+{% block crumbs %}{% if sel %}<a href="/edge">Edge &amp; DNS</a>
+  <span class="sep">/</span> <b>{{ sel.name }}</b>
+  {% else %}<b>Edge &amp; DNS</b>{% endif %}{% endblock %}
+{% block content %}
+
+{% if not sel %}
+{# ── what is connected ── #}
+<div class="page-head">
+  <div>
+    <h1>🌍 Edge &amp; DNS</h1>
+    <p class="sub">The layer every request passes through before it reaches
+      anything else — {{ conns|length }} provider{{ 's' if conns|length != 1 }}
+      connected.</p>
+  </div>
+  <a class="btn btn-ghost" href="/settings/conns/edge">⚙ Settings</a>
+</div>
+
+{% if not conns %}
+<div class="card"><div class="card-b">
+  <p class="sub" style="margin:0;">Nothing connected yet. Cloudflare, Fastly,
+    Bunny and NS1 are supported — add one in
+    <a href="/settings/conns/edge">Settings → Edge &amp; DNS</a>.</p>
+</div></div>
+{% else %}
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(280px,1fr));">
+  {% for c in conns %}
+  <a class="card tile-link" style="margin:0;text-decoration:none;"
+     href="/edge?conn={{ c.id }}"><div class="card-b">
+    <div class="kv">
+      {{ logo(c.type, c.name, 20) }}
+      <b style="font-size:14.5px;">{{ c.name }}</b>
+      <span class="badge">{{ providers[c.type].label if c.type in providers else c.type }}</span>
+    </div>
+    <div class="statsub" style="margin-top:8px;">
+      {{ scope[c.pid] if c.pid else 'all projects' }}</div>
+    {% if c.status %}
+    <div class="sec-note" style="margin-top:6px;color:{{ 'var(--ok-ink)' if c.status.startswith('ok') or 'active' in c.status or 'accepted' in c.status or 'zone' in c.status else 'var(--danger-ink)' }};">
+      {{ c.status }}</div>
+    {% endif %}
+  </div></a>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% else %}
+{# ── one provider, in depth ── #}
+<div class="page-head">
+  <div>
+    <h1 class="withico">{{ logo(sel.type, sel.name, 26) }} {{ sel.name }}</h1>
+    <p class="sub">{{ providers[sel.type].label if sel.type in providers else sel.type }}
+      {% if inv.total %} · {{ inv.total }} rows{% endif %}
+      {% if inv.zones %} · {{ inv.zones|length }} zone{{ 's' if inv.zones|length != 1 }}{% endif %}</p>
+  </div>
+  <div style="display:flex;gap:10px;">
+    {% if shown %}
+    <a class="btn btn-ghost" href="/edge/export/{{ sel.id }}/{{ shown.key }}.csv">⤓ CSV</a>
+    {% endif %}
+    <a class="btn btn-ghost" href="/edge?conn={{ sel.id }}&group={{ shown.key if shown else '' }}&refresh=1">↻ Refresh</a>
+    <a class="btn btn-ghost" href="/settings/conns/edge#{{ sel.id }}">⚙ Edit</a>
+    <a class="btn btn-ghost" href="/edge">← All providers</a>
+  </div>
+</div>
+
+{% if msg %}<div class="flash">✓ {{ msg }}</div>{% endif %}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+{% if inv.error %}<div class="flash err">⚠ {{ inv.error }}</div>{% endif %}
+
+{% if inv.tls %}
+{# the TLS and cache position per zone: the answers to "why is it not doing
+   what I expect", in one table rather than four settings pages #}
+<div class="card">
+  <div class="card-h">TLS and cache, per zone</div>
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr><th>zone</th><th>TLS mode</th><th>min version</th>
+        <th>always HTTPS</th><th>cache</th><th>development mode</th>
+        <th>security</th></tr></thead>
+      <tbody>
+      {% for t in inv.tls %}
+      <tr>
+        <td class="jname">{{ t.zone }}</td>
+        <td><span style="{{ 'color:var(--danger-ink);font-weight:600;' if t.ssl in ('off','flexible') }}">{{ t.ssl or '—' }}</span></td>
+        <td class="hint">{{ t.min_tls or '—' }}</td>
+        <td class="hint">{{ t.https or '—' }}</td>
+        <td class="hint">{{ t.cache or '—' }}</td>
+        <td><span style="{{ 'color:var(--warn-ink);font-weight:600;' if t.dev_mode == 'on' }}">{{ t.dev_mode or '—' }}</span></td>
+        <td class="hint">{{ t.under_attack or '—' }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{% if inv.groups %}
+<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;">
+  {% for g in inv.groups %}
+  <a class="btn btn-ghost" style="{{ 'border-color:var(--accent);' if shown and g.key == shown.key }}"
+     href="/edge?conn={{ sel.id }}&group={{ g.key }}">{{ g.icon }} {{ g.label }}
+    <span class="badge">{{ g.rows|length }}</span></a>
+  {% endfor %}
+</div>
+
+{% if shown %}
+<form method="get" action="/edge" style="display:flex;gap:8px;margin-bottom:12px;">
+  <input type="hidden" name="conn" value="{{ sel.id }}">
+  <input type="hidden" name="group" value="{{ shown.key }}">
+  <input type="search" name="q" value="{{ q }}" placeholder="filter {{ shown.label|lower }}…"
+         style="max-width:280px;padding:6px 12px;font-size:12.5px;">
+  <button class="btn-ghost" type="submit">Filter</button>
+  {% if q %}<a class="btn btn-ghost" style="padding:6px 13px;"
+     href="/edge?conn={{ sel.id }}&group={{ shown.key }}">Clear</a>{% endif %}
+</form>
+
+{% if shown.key == 'dns' %}
+{# ── DNS as something to manage, not a table to read ──────────────────────
+   Grouped by zone, one line per record, and edit and delete on the line itself.
+   The zone id and record id travel in hidden fields, because looking those up by
+   hand for every change is what made fifty-seven records unmanageable. #}
+{% for zone in by_zone %}
+<div class="card dnscard">
+  <div class="card-h">
+    <span>🌍</span> <b>{{ zone.zone }}</b>
+    <span class="hint">{{ zone.rows|length }} record{{ 's' if zone.rows|length != 1 }}</span>
+    <span style="flex:1"></span>
+    <button type="button" class="btn-ghost dns-add-open"
+            data-zone="{{ zone.zone_id }}" data-name="{{ zone.zone }}"
+            style="padding:5px 13px;font-size:11.5px;">＋ Add record</button>
+  </div>
+  <div class="card-b" style="padding:0;">
+    <div class="dns">
+      <div class="dns-head">
+        <span>type</span><span>name</span><span>value</span>
+        <span>proxy</span><span>TTL</span><span></span>
+      </div>
+      {% for r in zone.rows %}
+      <div class="dns-row" id="rec-{{ r.id }}">
+        <span class="dns-type">{{ r.type or r.kind }}</span>
+        <span class="dns-name" title="{{ r.name }}">{{ r.short or r.name }}</span>
+        <span class="dns-val" title="{{ r.content or r.extra }}">{{ r.content or r.extra }}</span>
+        <span>{% if r.proxied %}<span class="dns-proxy on" title="through Cloudflare">proxied</span>
+              {% else %}<span class="dns-proxy off" title="straight to the origin — the address is public">dns only</span>{% endif %}</span>
+        <span class="dns-ttl">{{ 'auto' if r.ttl == 1 else r.ttl }}</span>
+        <span class="dns-act">
+          {# drawn rather than typed: ✎ and 🗑 are font characters, so they land
+             at whatever weight and baseline the interface font happens to give
+             them, which is why they looked out of place next to everything
+             else #}
+          <button type="button" class="dns-edit" title="Edit this record"
+                  aria-label="Edit {{ r.name }}" data-rec="{{ r.id }}">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path
+              d="M10.6 2.6a1.4 1.4 0 0 1 2 2l-7 7-2.9.9.9-2.9z"/><path
+              d="M9.5 3.7l2.8 2.8"/></svg></button>
+          <button type="button" class="dns-del" title="Delete this record"
+                  aria-label="Delete {{ r.name }}"
+                  data-rec="{{ r.id }}" data-zone="{{ r.zone_id }}"
+                  data-name="{{ r.name }}" data-type="{{ r.type or r.kind }}"
+                  data-value="{{ r.content or r.extra }}">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path
+              d="M2.8 4.6h10.4"/><path d="M6.3 4.6V3.1h3.4v1.5"/><path
+              d="M4.2 4.6l.6 8.3h6.4l.6-8.3"/><path
+              d="M6.6 7v3.6M9.4 7v3.6"/></svg></button>
+        </span>
+      </div>
+
+      {# the edit form for this record, folded away until the pencil is used #}
+      <form method="post" action="/edge/action" class="dns-form" id="edit-{{ r.id }}"
+            hidden>
+        <input type="hidden" name="conn" value="{{ sel.id }}">
+        <input type="hidden" name="group" value="dns">
+        <input type="hidden" name="action" value="cf.record_update">
+        <input type="hidden" name="zone" value="{{ r.zone_id }}">
+        <input type="hidden" name="record" value="{{ r.id }}">
+        <div class="dns-edit-grid">
+          <label>type
+            <select name="type">
+              {% for t in ('A','AAAA','CNAME','TXT','MX','NS','SRV','CAA') %}
+              <option value="{{ t }}" {% if (r.type or r.kind) == t %}selected{% endif %}>{{ t }}</option>
+              {% endfor %}
+            </select></label>
+          <label>name
+            <input type="text" name="name" value="{{ r.name }}" required></label>
+          <label>value
+            <input type="text" name="content" value="{{ r.content or r.extra }}" required></label>
+          <label>TTL
+            <input type="text" name="ttl" value="{{ r.ttl or 1 }}"
+                   title="1 means automatic"></label>
+          <label>proxy
+            <select name="proxied" {% if not r.proxiable %}disabled title="this type cannot be proxied"{% endif %}>
+              <option value="false" {% if not r.proxied %}selected{% endif %}>dns only</option>
+              <option value="true" {% if r.proxied %}selected{% endif %}>proxied</option>
+            </select></label>
+          <label>type CONFIRM
+            <input type="text" name="confirm" placeholder="CONFIRM" required
+                   autocomplete="off"></label>
+        </div>
+        <div class="dns-form-act">
+          <span class="sec-note" style="margin:0;flex:1;">DNS changes take effect
+            in seconds. A proxied record hides the origin address; an unproxied one
+            publishes it.</span>
+          <button type="button" class="btn-ghost dns-cancel" data-rec="{{ r.id }}">Cancel</button>
+          <button type="submit">Save record</button>
+        </div>
+      </form>
+      {% endfor %}
+      {% if not zone.rows %}
+      <div class="dns-none">No records{% if q %} match that filter{% endif %}.</div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endfor %}
+
+{# add, and delete, as dialogs so a mis-click cannot do either #}
+<div class="modal-backdrop" id="dnsAdd">
+  <div class="modal" style="max-width:560px;">
+    <div class="card-h" style="border-radius:14px 14px 0 0;">＋ Add a DNS record
+      <span class="hint" id="addZoneName"></span>
+      <span style="flex:1"></span>
+      <button type="button" class="btn-ghost dns-add-close"
+              style="padding:3px 12px;font-size:12px;">✕</button></div>
+    <form method="post" action="/edge/action">
+      <input type="hidden" name="conn" value="{{ sel.id }}">
+      <input type="hidden" name="group" value="dns">
+      <input type="hidden" name="action" value="cf.record_create">
+      <input type="hidden" name="zone" id="addZoneId">
+      <div class="card-b">
+        <div class="field-row"><label>type</label>
+          <select name="type">
+            {% for t in ('A','AAAA','CNAME','TXT','MX','NS','SRV','CAA') %}
+            <option value="{{ t }}">{{ t }}</option>{% endfor %}
+          </select></div>
+        <div class="field-row"><label>name</label>
+          <input type="text" name="name" required placeholder="api, or @ for the domain itself"></div>
+        <div class="field-row"><label>value</label>
+          <input type="text" name="content" required placeholder="an address, a hostname, or text"></div>
+        <div class="field-row"><label>TTL</label>
+          <input type="text" name="ttl" value="1" title="1 means automatic"></div>
+        <div class="field-row"><label>proxy</label>
+          <select name="proxied">
+            <option value="false">dns only</option>
+            <option value="true">proxied</option>
+          </select></div>
+        <div class="field-row"><label>why (optional)</label>
+          <input type="text" name="comment" placeholder="the next person will want to know"></div>
+        <div class="field-row"><label>type CONFIRM</label>
+          <input type="text" name="confirm" required autocomplete="off" placeholder="CONFIRM"></div>
+      </div>
+      <div class="card-b" style="border-top:1px solid var(--line);text-align:right;">
+        <button type="button" class="btn-ghost dns-add-close">Cancel</button>
+        <button type="submit">Add record</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="dnsDel">
+  <div class="modal" style="max-width:520px;">
+    <div class="card-h" style="border-radius:14px 14px 0 0;">Delete a DNS record
+      <span style="flex:1"></span>
+      <button type="button" class="btn-ghost dns-del-close"
+              style="padding:3px 12px;font-size:12px;">✕</button></div>
+    <form method="post" action="/edge/action">
+      <input type="hidden" name="conn" value="{{ sel.id }}">
+      <input type="hidden" name="group" value="dns">
+      <input type="hidden" name="action" value="cf.record_delete">
+      <input type="hidden" name="zone" id="delZone">
+      <input type="hidden" name="record" id="delRecord">
+      <input type="hidden" name="name" id="delNameField">
+      <div class="card-b">
+        <p class="sub" style="margin:0 0 6px;">This removes</p>
+        <div class="dns-del-what">
+          <span id="delType"></span>
+          <b id="delName"></b>
+          <span id="delValue"></span>
+        </div>
+        <p class="sub" style="margin:12px 0;">Whatever resolves through it stops
+          resolving immediately, and it cannot be undone from here.</p>
+        <div class="field-row"><label>type Delete</label>
+          <input type="text" name="confirm" required autocomplete="off"
+                 placeholder="Delete"></div>
+      </div>
+      <div class="card-b" style="border-top:1px solid var(--line);text-align:right;">
+        <button type="button" class="btn-ghost dns-del-close">Cancel</button>
+        <button type="submit" class="btn-danger">Delete record</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<style>
+  .dnscard .card-h { gap:9px; }
+  .dns { display:flex; flex-direction:column; }
+  .dns-head, .dns-row {
+    display:grid; grid-template-columns:64px minmax(140px,1.1fr) minmax(160px,1.6fr)
+                                       92px 56px 62px;
+    align-items:center; gap:10px; padding:0 14px; }
+  .dns-head { height:30px; font-size:10px; text-transform:uppercase;
+              letter-spacing:.9px; color:var(--muted);
+              border-bottom:1px solid var(--line); }
+  .dns-row { min-height:36px;
+             border-bottom:1px solid color-mix(in srgb, var(--line) 50%, transparent); }
+  .dns-row:hover { background:color-mix(in srgb, var(--text) 4%, transparent); }
+  .dns-type { font-family:var(--mono); font-size:10.5px; color:var(--muted);
+              border:1px solid var(--line); border-radius:5px; padding:1px 0;
+              text-align:center; }
+  .dns-name { font-weight:600; font-size:12.5px; overflow:hidden;
+              text-overflow:ellipsis; white-space:nowrap; }
+  .dns-val { font-family:var(--mono); font-size:11.5px; color:var(--muted);
+             overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .dns-proxy { font-size:10px; border-radius:5px; padding:1px 7px; }
+  .dns-proxy.on { color:var(--warn-ink);
+                  border:1px solid color-mix(in srgb, var(--warn-ink) 45%, transparent); }
+  .dns-proxy.off { color:var(--muted); border:1px solid var(--line); }
+  .dns-ttl { font-family:var(--mono); font-size:11px; color:var(--muted); }
+  .dns-act { display:flex; gap:3px; justify-content:flex-end; }
+  .dns-act button {
+    width:27px; height:27px; padding:0; display:grid; place-items:center;
+    border:1px solid transparent; border-radius:8px; background:transparent;
+    color:var(--muted); cursor:pointer; opacity:0;
+    transition:opacity .12s ease, color .12s ease, border-color .12s ease,
+               background .12s ease; }
+  .dns-act svg { width:15px; height:15px; fill:none; stroke:currentColor;
+                 stroke-width:1.4; stroke-linecap:round; stroke-linejoin:round; }
+  .dns-row:hover .dns-act button, .dns-act button:focus-visible { opacity:1; }
+  .dns-act button:hover { color:var(--text); border-color:var(--line);
+                          background:var(--well); }
+  .dns-act .dns-del:hover { color:var(--danger-ink);
+                            border-color:color-mix(in srgb, var(--danger-ink) 40%, transparent);
+                            background:var(--danger-on-wash); }
+  .dns-act button:focus-visible { outline:none; border-color:var(--accent); }
+  .dns-form { padding:12px 14px 14px;
+              background:color-mix(in srgb, var(--text) 4%, transparent);
+              border-bottom:1px solid var(--line); }
+  .dns-edit-grid { display:grid;
+                   grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+                   gap:10px; }
+  .dns-edit-grid label { display:flex; flex-direction:column; gap:4px;
+                         font-size:10px; text-transform:uppercase;
+                         letter-spacing:.8px; color:var(--muted); }
+  .dns-edit-grid input, .dns-edit-grid select {
+    font-family:var(--mono); font-size:12px; padding:5px 9px; }
+  .dns-form-act { display:flex; align-items:center; gap:10px; margin-top:12px; }
+  .dns-none { padding:16px; font-size:12px; color:var(--muted); }
+  .dns-del-what { display:flex; align-items:center; gap:10px; padding:10px 12px;
+                  border:1px solid var(--line); border-radius:10px;
+                  background:var(--well); font-family:var(--mono);
+                  font-size:12px; flex-wrap:wrap; }
+  .dns-del-what b { font-size:13px; font-family:var(--mono); }
+  .dns-del-what span { color:var(--muted); }
+</style>
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  const on = (sel, ev, fn) =>
+    document.querySelectorAll(sel).forEach(el => el.addEventListener(ev, fn));
+
+  // edit in place: one form open at a time, so the page never asks which record
+  // you meant
+  function closeAll() {
+    document.querySelectorAll('.dns-form').forEach(f => { f.hidden = true; });
+  }
+  on('.dns-edit', 'click', e => {
+    const id = e.currentTarget.dataset.rec;
+    const form = document.getElementById('edit-' + id);
+    const wasOpen = !form.hidden;
+    closeAll();
+    form.hidden = wasOpen;
+    if (!wasOpen) form.querySelector('input[name=name]').focus();
+  });
+  on('.dns-cancel', 'click', e => {
+    document.getElementById('edit-' + e.currentTarget.dataset.rec).hidden = true;
+  });
+
+  const add = document.getElementById('dnsAdd');
+  on('.dns-add-open', 'click', e => {
+    document.getElementById('addZoneId').value = e.currentTarget.dataset.zone;
+    document.getElementById('addZoneName').textContent = e.currentTarget.dataset.name;
+    add.classList.add('open');
+    add.querySelector('input[name=name]').focus();
+  });
+  on('.dns-add-close', 'click', () => add.classList.remove('open'));
+
+  const del = document.getElementById('dnsDel');
+  on('.dns-del', 'click', e => {
+    const b = e.currentTarget;
+    document.getElementById('delZone').value = b.dataset.zone;
+    document.getElementById('delRecord').value = b.dataset.rec;
+    document.getElementById('delNameField').value = b.dataset.name;
+    document.getElementById('delName').textContent = b.dataset.name;
+    document.getElementById('delType').textContent = b.dataset.type || '';
+    document.getElementById('delValue').textContent = b.dataset.value || '';
+    del.classList.add('open');
+    del.querySelector('input[name=confirm]').focus();
+  });
+  on('.dns-del-close', 'click', () => del.classList.remove('open'));
+
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Escape') return;
+    add.classList.remove('open');
+    del.classList.remove('open');
+    closeAll();
+  });
+})();
+</script>
+
+{% else %}
+<div class="card">
+  <div class="card-h">{{ shown.icon }} {{ shown.label }}
+    <span class="hint">{{ rows|length }}{% if q %} of {{ shown.rows|length }}{% endif %}</span></div>
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    {% set cols = shown.columns or ['Name', 'Type', 'State', 'Detail', 'Zone'] %}
+    <table class="jenkins">
+      <thead><tr>
+        <th style="min-width:220px;">{{ cols[0] }}</th>
+        <th style="min-width:130px;">{{ cols[1] }}</th>
+        <th style="width:110px;">{{ cols[2] }}</th>
+        <th style="min-width:180px;">{{ cols[3] }}</th>
+        <th style="width:150px;">{{ cols[4] }}</th>
+      </tr></thead>
+      <tbody>
+      {% for r in rows %}
+      <tr>
+        <td class="jname"><b>{{ r.name }}</b>
+          {% if r.id and r.id != r.name %}
+          <span class="hint" style="font-family:var(--mono);font-size:10.5px;"> {{ r.id }}</span>{% endif %}</td>
+        <td>{{ r.kind }}</td>
+        <td>{% if r.state %}<span style="{{ 'color:var(--ok-ink);' if r.state in ('active','proxied','enabled','healthy') else ('color:var(--warn-ink);' if r.state in ('paused','pending','disabled','dns only') else '') }}">{{ r.state }}</span>{% else %}—{% endif %}</td>
+        <td class="hint" style="font-family:var(--mono);font-size:11.5px;">{{ r.extra }}</td>
+        <td class="hint">{{ r.zone }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" class="hint" style="padding:16px;">
+        {% if q %}Nothing matches that filter.{% else %}None here.{% endif %}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+{% endif %}
+{% endif %}
+
+{% if actions %}
+<div class="card">
+  <div class="card-h">Actions
+    <span class="hint">each one confirmed, and recorded in the audit log</span></div>
+  <div class="card-b">
+    {% for a in actions %}
+    <details class="adv">
+      <summary>{{ a.icon }} {{ a.label }}
+        {% if a.danger == 'removal' %}<span class="act-tag danger">irreversible</span>
+        {% elif a.danger == 'care' %}<span class="act-tag warn">changes live traffic</span>{% endif %}
+      </summary>
+      <form method="post" action="/edge/action" style="margin-top:10px;">
+        <input type="hidden" name="conn" value="{{ sel.id }}">
+        <input type="hidden" name="group" value="{{ shown.key if shown else '' }}">
+        <input type="hidden" name="action" value="{{ a.key }}">
+        <p class="sub" style="margin:0 0 12px;">{{ a.note }}</p>
+        {% for p in a.params %}
+        <div class="field-row">
+          <label>{{ p.label }}{% if not p.required %} <span
+            style="text-transform:none;letter-spacing:0;">(optional)</span>{% endif %}</label>
+          {% if p.kind == 'select' %}
+          <select name="{{ p.name }}">
+            {% if not p.required %}<option value="">—</option>{% endif %}
+            {% for o in p.options %}<option value="{{ o }}">{{ o }}</option>{% endfor %}
+          </select>
+          {% elif p.name == 'zone' and inv.zones %}
+          <select name="zone">
+            {% for z in inv.zones %}
+            <option value="{{ z.id }}">{{ z.name }} — {{ z.id }}</option>
+            {% endfor %}
+          </select>
+          {% else %}
+          <input type="text" name="{{ p.name }}" placeholder="{{ p.hint }}"
+                 {% if p.required %}required{% endif %} autocomplete="off"
+                 style="font-family:var(--mono);font-size:12px;">
+          {% endif %}
+        </div>
+        {% if p.hint and p.kind != 'select' and p.name != 'zone' %}
+        <div class="sec-note" style="margin:-6px 0 10px;">{{ p.hint }}</div>
+        {% endif %}
+        {% endfor %}
+        <div class="field-row">
+          <label>type {% if a.danger == 'removal' %}the id{% else %}CONFIRM{% endif %}</label>
+          <input type="text" name="confirm" required autocomplete="off"
+                 placeholder="{% if a.danger == 'removal' %}the record's own id{% else %}CONFIRM{% endif %}"></div>
+        <div class="actions"><button type="submit"
+                class="{{ 'btn-danger' if a.danger == 'removal' }}">{{ a.label }}</button></div>
+      </form>
+    </details>
+    {% endfor %}
+  </div>
+</div>
+<style>
+  .act-tag { font-size:9.5px; text-transform:uppercase; letter-spacing:.7px;
+             border-radius:5px; padding:1px 6px; margin-left:8px; }
+  .act-tag.danger { color:var(--danger-ink);
+                    border:1px solid color-mix(in srgb, var(--danger-ink) 40%, transparent); }
+  .act-tag.warn { color:var(--warn-ink);
+                  border:1px solid color-mix(in srgb, var(--warn-ink) 40%, transparent); }
+  .tile-link { display:block; transition:border-color .12s ease; }
+  .tile-link:hover { border-color:var(--accent); }
+</style>
+{% endif %}
+
+{% if inv.notes %}
+<div class="card">
+  <div class="card-h">What is and is not read here</div>
+  <div class="card-b">
+    {% for n in inv.notes %}
+    <div class="sec-note" style="margin-bottom:8px;">{{ n }}</div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+{% endif %}
+{% endblock %}

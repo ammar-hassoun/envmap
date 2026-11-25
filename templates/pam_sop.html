@@ -1,0 +1,177 @@
+{% extends "base.html" %}
+{% import "_sop.html" as sop %}
+{#- A refused save re-renders with the SUBMISSION, which has no id unless the
+    SOP it was editing still exists -- so "saved" is the id, never `s`. -#}
+{% set saved = s and s.id %}
+{% block crumbs %}<a href="/pam">Privileged Access</a> <span class="sep">/</span>
+  <a href="/pam?sec=sops">SOPs</a> <span class="sep">/</span>
+  {% if not editing %}<b>{{ s.title }}</b>
+  {% elif saved %}<a href="/pam/sops/{{ s.id }}">{{ s.title }}</a> <span class="sep">/</span> <b>Edit</b>
+  {% else %}<b>New SOP</b>{% endif %}{% endblock %}
+{% block content %}
+{#- One SOP: read it (anybody with the Privileged Access area), or — holding
+    “write SOPs” — edit it beside a preview rendered by the very macro the
+    terminal's side panel uses. There is no shell on this page, so its
+    commands offer Copy alone; pasting at a prompt is the terminal's. -#}
+{{ sop.styles() }}
+<style>
+  .sop-page { max-width:860px; }
+  .sop-meta { display:flex; gap:8px; align-items:center; flex-wrap:wrap; font-size:12px;
+    color:var(--muted); margin:2px 0 18px; }
+  .sop-meta .badge { margin:0; }
+  .sop-edit { display:grid; grid-template-columns:minmax(0, 1fr) minmax(0, 1fr); gap:18px;
+    align-items:start; }
+  @media (max-width:1100px) { .sop-edit { grid-template-columns:minmax(0, 1fr); } }
+  /* labels above the fields: the form is half the page, and the usual
+     side-by-side row leaves the inputs a third of it */
+  .sop-edit .field-row { display:block; }
+  .sop-edit .field-row label { display:block; margin:0 0 6px; }
+  .sop-edit .field-row input { width:100%; box-sizing:border-box; }
+  .sop-edit textarea { width:100%; box-sizing:border-box; min-height:520px;
+    font-family:var(--mono); font-size:12.5px; line-height:1.55; tab-size:2; }
+  .sop-help { font-size:12px; color:var(--muted); line-height:1.6; margin:8px 0 0;
+    padding-left:18px; }
+  .sop-help li { margin:0 0 3px; }
+  .sop-help code { font-family:var(--mono); font-size:11.5px; }
+  .sop-prev { position:sticky; top:14px; max-height:calc(100vh - 40px); overflow:auto; }
+  .sop-prev .empty { color:var(--muted); font-size:12.5px; }
+</style>
+
+{% if msg %}<div class="flash ok">✓ {{ msg }}</div>{% endif %}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+
+{% if not editing %}
+{# ── read ─────────────────────────────────────────────────── #}
+<div class="sop-page">
+  <div class="page-head">
+    <div>
+      <h1>{{ s.title }}</h1>
+      {% if s.summary %}<p class="sub">{{ s.summary }}</p>{% endif %}
+    </div>
+    <div style="display:flex;gap:9px;align-items:center;">
+      {% if why_no_write %}<button class="btn btn-ghost" type="button" disabled
+        title="{{ why_no_write }}">Edit</button>
+      {% else %}<a class="btn btn-ghost" href="/pam/sops/{{ s.id }}/edit">Edit</a>{% endif %}
+      {% if why_no_delete %}<button class="btn btn-danger" type="button" disabled
+        title="{{ why_no_delete }}">Delete</button>
+      {% else %}
+      <form method="post" action="/pam/sop/delete" data-del="the SOP “{{ s.title }}”">
+        <input type="hidden" name="sid" value="{{ s.id }}">
+        <button class="btn btn-danger" type="submit">Delete</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+  <div class="sop-meta">
+    {% for tg in s.tags %}<span class="badge">{{ tg }}</span>{% endfor %}
+    <span>{{ s.step_count }} step{{ 's' if s.step_count != 1 }} ·
+      {{ s.command_count }} command{{ 's' if s.command_count != 1 }}</span>
+    <span>· updated {{ s.updated_day }} by {{ s.updated_by or brand().name ~ ' (shipped example)' }}</span>
+  </div>
+  <div class="card"><div class="card-b" id="sopRoot">{{ sop.doc(s.r) }}</div></div>
+  <p class="sub" style="margin-top:12px;font-size:12px;">Open a terminal on a target
+    to paste these commands at its prompt — the SOPs panel sits beside the shell.</p>
+</div>
+{{ sop.script() }}
+<script nonce="{{ csp_nonce() }}">window.sopWire(document.getElementById('sopRoot'), {});</script>
+
+{% else %}
+{# ── edit ─────────────────────────────────────────────────── #}
+<div class="page-head">
+  <div>
+    <h1>{{ 'Edit SOP' if saved else 'New SOP' }}</h1>
+    <p class="sub">What is written here is pasted at production prompts by
+      people who trust it — every save is audited with a fingerprint of the
+      body.</p>
+  </div>
+</div>
+<div class="sop-edit">
+  <form method="post" action="/pam/sop/save" class="card" id="sopForm">
+    <div class="card-b">
+      <input type="hidden" name="sid" value="{{ s.id if saved else '' }}">
+      <div class="field-row"><label for="sopTitle">Title</label>
+        <input type="text" id="sopTitle" name="title" required maxlength="{{ limits.title }}"
+               value="{{ s.title if s else '' }}"
+               placeholder="Renew a TLS certificate on an NGINX host"></div>
+      <div class="field-row"><label for="sopSummary">Summary</label>
+        <input type="text" id="sopSummary" name="summary" maxlength="{{ limits.summary }}"
+               value="{{ s.summary if s else '' }}"
+               placeholder="one line — when to use it and what it does"></div>
+      <div class="field-row"><label for="sopTags">Tags</label>
+        <input type="text" id="sopTags" name="tags" spellcheck="false"
+               value="{{ tags_text }}"
+               placeholder="tls, nginx, lb — the side panel searches them"></div>
+      <div class="field-row">
+        <label for="sopBody">Steps</label>
+        <textarea id="sopBody" name="body" required spellcheck="false"
+                  placeholder="## First step&#10;What it does, and why.&#10;```&#10;the command&#10;```">{{ s.body if s else '' }}</textarea>
+        <ul class="sop-help">
+          <li><code>## Heading</code> starts a numbered step; text before the
+            first one is the introduction.</li>
+          <li>A <code>```</code> fence is a command — the terminal offers Copy
+            and Paste into shell. Write a language after the fence
+            (<code>```nginx</code>, <code>```output</code>) for anything that is
+            not a command: it gets Copy only.</li>
+          <li><code>{% raw %}{{CERT_PATH}}{% endraw %}</code> — an UPPER_CASE
+            name in double braces — is a value the operator fills in once, and
+            every command uses it. Paste stays off until it is filled in.</li>
+          <li><code>**bold**</code>, <code>`code`</code>, <code>- bullets</code>
+            and links work as usual.</li>
+        </ul>
+      </div>
+      <div class="actions" style="margin-top:14px;">
+        <button type="submit">Save</button>
+        <a class="btn btn-ghost" href="{{ '/pam/sops/' ~ s.id if saved else '/pam?sec=sops' }}">Cancel</a>
+        {% if not saved %}
+        <button type="button" class="btn btn-ghost" id="sopExample"
+                title="fill the form with the certificate-renewal example, to adapt">Start from the example</button>
+        {% endif %}
+      </div>
+    </div>
+  </form>
+  <div class="card sop-prev">
+    <div class="card-h">Preview <span class="hint">as the terminal's side panel shows it</span></div>
+    <div class="card-b" id="sopPrev">
+      {% if s %}{{ sop.doc(s.r) }}{% else %}<div class="empty">The steps appear here as you write them.</div>{% endif %}
+    </div>
+  </div>
+</div>
+{{ sop.script() }}
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  const body = document.getElementById('sopBody');
+  const prev = document.getElementById('sopPrev');
+  const EXAMPLE = {{ example|tojson }};
+  let wait, seq = 0;
+  if (prev.querySelector('.sop-doc')) window.sopWire(prev, {});
+  // The preview is rendered by the server, by the same escape-first renderer
+  // and macro the terminal uses -- a JavaScript markdown here would be a
+  // second renderer to keep in step with the first.
+  function render() {
+    const mine = ++seq, fd = new FormData();
+    fd.append('body', body.value);
+    fetch('/pam/sop/preview', {method: 'POST', body: fd, credentials: 'same-origin'})
+      .then(r => r.ok ? r.text() : Promise.reject(r.status))
+      .then(html => {
+        if (mine !== seq) return;              // a later keystroke already asked
+        prev.innerHTML = html.trim() ? html
+          : '<div class="empty">The steps appear here as you write them.</div>';
+        delete prev._sop;
+        if (prev.querySelector('.sop-doc')) window.sopWire(prev, {});
+      }).catch(() => {});
+  }
+  body.addEventListener('input', () => { clearTimeout(wait); wait = setTimeout(render, 350); });
+  const ex = document.getElementById('sopExample');
+  if (ex) ex.addEventListener('click', () => {
+    if (body.value.trim() && !window.confirm('Replace what is in the form with the example?')) return;
+    // by id: a form's .title is its own title attribute, not the field
+    document.getElementById('sopTitle').value = EXAMPLE.title;
+    document.getElementById('sopSummary').value = EXAMPLE.summary;
+    document.getElementById('sopTags').value = EXAMPLE.tags;
+    body.value = EXAMPLE.body;
+    render(); body.focus();
+  });
+})();
+</script>
+{% endif %}
+{% endblock %}

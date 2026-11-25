@@ -1,0 +1,239 @@
+{% extends "base.html" %}
+{% import "_bits.html" as bits %}
+{% block crumbs %}<b>Timeline</b>{% if centred %} <span class="sep">/</span>
+  <b>around {{ centred }}</b>{% endif %}{% endblock %}
+{% block content %}
+<style>
+  /* ── the density strip ────────────────────────────────────────
+     The gaps are the information. A flat list hides that nothing happened for
+     six hours and then everything happened inside two minutes, which is the
+     shape every incident actually has. Each bar is a link: it shows you which
+     minute matters, so it should also be the way you get there. */
+  .tl-strip { display:flex; align-items:flex-end; gap:2px; height:44px;
+    padding:0 2px; }
+  .tl-strip a { flex:1; min-width:2px; display:flex; align-items:flex-end;
+    height:100%; text-decoration:none; }
+  .tl-strip .b { width:100%; border-radius:2px 2px 0 0;
+    background:var(--accent); opacity:.30; min-height:2px;
+    transition:opacity .12s, transform .12s; transform-origin:bottom; }
+  .tl-strip .b.has { opacity:.75; }
+  .tl-strip .b.warn { background:var(--warn); opacity:.85; }
+  .tl-strip .b.bad  { background:var(--danger); opacity:.9; }
+  .tl-strip a:hover .b { opacity:1; transform:scaleY(1.08); }
+  .tl-strip a:focus-visible { outline:2px solid var(--accent-ink);
+    outline-offset:2px; border-radius:3px; }
+  .tl-scale { display:flex; justify-content:space-between; font-size:10.5px;
+    color:var(--faint); font-family:var(--mono); padding:5px 2px 0; }
+  .tl-hint { font-size:10.5px; color:var(--faint); text-align:center;
+    padding-top:2px; }
+
+  /* ── the stream ───────────────────────────────────────────── */
+  .tl { margin:0; padding:0; list-style:none; }
+  .tl-day { position:sticky; top:0; z-index:3; margin:2px 0 6px;
+    padding:6px 0 5px; background:var(--panel);
+    border-bottom:1px solid var(--line);
+    font-size:11px; font-weight:700; letter-spacing:.05em;
+    text-transform:uppercase; color:var(--muted); }
+  .tl-day span { color:var(--faint); font-weight:600; letter-spacing:0;
+    text-transform:none; margin-left:7px; }
+
+  .tl-row { position:relative; display:grid;
+    grid-template-columns:64px 26px minmax(0,1fr) auto; gap:11px;
+    padding:8px 8px 8px 0; align-items:start; border-radius:8px; }
+  .tl-row:hover { background:var(--panel2); }
+  /* the rail: behind the dots, stopping at the last row rather than running
+     into the footer */
+  .tl-row::before { content:""; position:absolute; left:76px; top:0; bottom:-8px;
+    width:1px; background:var(--line); z-index:0; }
+  .tl-row:last-child::before { height:18px; bottom:auto; }
+
+  .tl-when { text-align:right; padding-top:1px; }
+  .tl-when b { display:block; font-family:var(--mono); font-size:11.5px;
+    font-weight:500; color:var(--text2); }
+  .tl-when i { display:block; font-style:normal; font-size:10px;
+    color:var(--faint); margin-top:1px; }
+
+  .tl-dot { position:relative; z-index:1; width:23px; height:23px;
+    border-radius:7px; display:grid; place-items:center; font-size:11px;
+    background:var(--panel3); border:1px solid var(--line); }
+  .tl-dot.ok   { background:var(--ok);     border-color:transparent; }
+  .tl-dot.bad  { background:var(--danger); border-color:transparent; }
+  .tl-dot.warn { background:var(--warn);   border-color:transparent; }
+
+  .tl-body { min-width:0; }
+  .tl-title { display:flex; gap:7px; align-items:baseline; flex-wrap:wrap; }
+  .tl-title b { font-size:13px; font-weight:600; }
+  .tl-title a { text-decoration:none; }
+  .tl-title a:hover b { text-decoration:underline; }
+  .tl-meta { font-size:11.5px; color:var(--muted); margin-top:2px;
+    overflow-wrap:anywhere; }
+  .tl-meta .m { font-family:var(--mono); font-size:11px; }
+  .tl-msg { font-size:11.5px; color:var(--faint); margin-top:2px;
+    overflow-wrap:anywhere; }
+
+  .tl-chip { font-size:9.5px; text-transform:uppercase; letter-spacing:.05em;
+    font-weight:700; padding:1px 5px; border-radius:4px; white-space:nowrap;
+    background:var(--panel3); color:var(--muted); }
+  .tl-chip.ok   { background:var(--ok-on-wash);     color:var(--ink-on-ok); }
+  .tl-chip.bad  { background:var(--danger-on-wash); color:var(--ink-on-danger); }
+  .tl-chip.warn { background:var(--warn-on-wash);   color:var(--ink-on-warn); }
+  .tl-src { font-size:10px; color:var(--faint); white-space:nowrap;
+    padding-top:3px; }
+
+  /* the quiet between bursts, drawn rather than implied */
+  .tl-gap { display:flex; align-items:center; gap:9px; padding:3px 0 3px 76px;
+    font-size:10.5px; color:var(--faint); font-style:italic; }
+  .tl-gap::before { content:""; width:1px; height:16px; margin-left:-1px;
+    background:repeating-linear-gradient(to bottom, var(--line) 0 3px,
+      transparent 3px 6px); }
+
+  /* ── filters ──────────────────────────────────────────────── */
+  .tl-filters { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  /* A select is 100% wide by default here, which pushed the window control
+     and the Apply button onto lines of their own. The fix has to name the
+     `.dd` wrapper: base.html hides the native select once the themed dropdown
+     takes over, so this rule was written against an invisible element and the
+     layout it describes stayed broken. */
+  .tl-filters .dd, .tl-filters select { width:auto; min-width:150px;
+    flex:0 0 auto; }
+  .tl-filters input[type=search] { flex:1 1 220px; min-width:160px; }
+  @media (max-width:700px) {
+    .tl-row { grid-template-columns:52px 24px minmax(0,1fr); }
+    .tl-row::before { left:64px; }
+    .tl-gap { padding-left:64px; }
+    .tl-src { display:none; }
+  }
+</style>
+
+<div class="page-head">
+  <div><h1>Timeline</h1>
+    <p class="sub">
+      {% if centred %}Everything within {{ span }} minutes of
+        <b>{{ centred }}</b>{% else %}Everything that changed in the last
+        {{ hours }} hour{{ 's' if hours != 1 }}{% endif %} —
+      {{ events|length }} change{{ 's' if events|length != 1 }}{% if shown %}
+      from {{ shown|length }} source{{ 's' if shown|length != 1 }}{% endif %}.
+    </p></div>
+  <div style="display:flex;gap:10px;">
+    {% if centred %}<a class="btn btn-ghost" href="/timeline">↺ Back to now</a>{% endif %}
+    <a class="btn btn-ghost" href="{{ refresh_url }}">↻ Refresh</a>
+  </div>
+</div>
+
+{{ bits.tabbar(tabs) }}
+
+<form method="get" action="/timeline" class="card" style="margin-bottom:14px;">
+  <div class="card-b tl-filters">
+    {% if tab != 'all' %}<input type="hidden" name="tab" value="{{ tab }}">{% endif %}
+    <input type="search" name="q" value="{{ q }}"
+           placeholder="filter by name, namespace, target, branch or message…">
+    {% if centred %}
+    <input type="hidden" name="at" value="{{ at_raw }}">
+    <select name="span">
+      {% for n in [5, 10, 30, 60, 180] %}
+      <option value="{{ n }}" {% if n == span %}selected{% endif %}>± {{ n }} min</option>
+      {% endfor %}
+    </select>
+    {% else %}
+    <select name="hours">
+      {% for n, lbl in [(1,'last hour'), (6,'last 6 hours'), (24,'last 24 hours'),
+                        (72,'last 3 days'), (168,'last 7 days'), (336,'last 14 days')] %}
+      <option value="{{ n }}" {% if n == hours %}selected{% endif %}>{{ lbl }}</option>
+      {% endfor %}
+    </select>
+    {% endif %}
+    <button class="btn-ghost tbtn" type="submit">Apply</button>
+  </div>
+</form>
+
+{{ bits.collecting(pending) }}
+
+{% if notes %}
+{# A source that could not be read is part of the answer: an empty timeline
+   must never be able to mean "nothing happened" when it means "nobody
+   answered". #}
+<div class="card" style="border-color:var(--warn-line);margin-bottom:14px;">
+  <div class="card-b" style="font-size:12.5px;">
+    <b style="color:var(--warn-ink);">⚠ Not everything could be read</b>
+    <ul style="margin:6px 0 0;padding-left:18px;color:var(--muted);">
+      {% for n in notes %}<li>{{ n }}</li>{% endfor %}
+    </ul>
+  </div>
+</div>
+{% endif %}
+
+{% if events %}
+<div class="card" style="margin-bottom:14px;">
+  <div class="card-b" style="padding-bottom:9px;">
+    <div class="tl-strip">
+      {% for b in buckets %}
+      <a href="{{ bucket_href(b.centre, b.span) }}" title="{{ b.label }} — click to open this window">
+        <span class="b {{ b.tone }} {{ 'has' if b.n }}"
+              style="height:{{ 4 + b.pct * 0.34 }}px"></span>
+      </a>
+      {% endfor %}
+    </div>
+    <div class="tl-scale"><span>{{ since_label }}</span><span>{{ until_label }}</span></div>
+    <div class="tl-hint">click any bar to open that moment</div>
+  </div>
+</div>
+{% endif %}
+
+{# "not connected" is on the tabs themselves now, greyed with a dash. What a
+   ROLE hides is not visible there and still has to be said. #}
+{% if hidden %}
+<p class="sub" style="margin:-4px 0 12px;font-size:11.5px;">
+  Your roles do not include {{ hidden|join(', ') }}, so
+  {{ 'those are' if hidden|length != 1 else 'that is' }} not shown.</p>
+{% endif %}
+
+{% if not events %}
+<div class="empty">
+  <div class="big">{{ glyph("history", 40) }}</div>
+  <h2>Nothing changed in this window</h2>
+  <p>No {{ shown_labels or 'changes' }} were recorded
+     {% if centred %}within {{ span }} minutes of {{ centred }}{% else %}in the
+     last {{ hours }} hour{{ 's' if hours != 1 }}{% endif %}. Widen the window,
+     or pick another tab.</p>
+</div>
+{% else %}
+
+<div class="card">
+  <div class="card-b" style="padding-top:4px;">
+    {% for day, rows in days %}
+    <div class="tl-day">{{ day }}<span>{{ rows|length }} change{{ 's' if rows|length != 1 }}</span></div>
+    <ul class="tl">
+      {% for e in rows %}
+      <li class="tl-row">
+        <div class="tl-when"><b>{{ e.time }}</b><i>{{ e.ago }} ago</i></div>
+        <div class="tl-dot {{ e.tone }}">{{ sources[e.kind].icon }}</div>
+        <div class="tl-body">
+          <div class="tl-title">
+            {% if e.url %}<a href="{{ e.url }}"
+              {% if not e.url.startswith('/') %}target="_blank" rel="noopener"{% endif %}
+              ><b>{{ e.what }}</b></a>{% else %}<b>{{ e.what }}</b>{% endif %}
+            {% if e.status %}<span class="tl-chip {{ e.tone }}">{{ e.status }}</span>{% endif %}
+          </div>
+          <div class="tl-meta">
+            {%- if e.where %}{{ e.where }}{% endif -%}
+            {%- if e.who %}{% if e.where %} · {% endif %}<span class="m">{{ e.who }}</span>{% endif -%}
+          </div>
+          {% if e.detail %}<div class="tl-msg">{{ e.detail }}</div>{% endif %}
+        </div>
+        <div class="tl-src">{{ sources[e.kind].label }}</div>
+      </li>
+      {% if e.gap %}<div class="tl-gap">{{ e.gap }} quiet</div>{% endif %}
+      {% endfor %}
+    </ul>
+    {% endfor %}
+  </div>
+</div>
+
+<p class="sub" style="margin-top:10px;font-size:11.5px;">
+  Times are this portal's local clock. Builds are the most recent run of each
+  pipeline, deployments the most recent sync of each application, alerts the
+  ones still firing, and cluster events are capped at
+  {{ per_cluster }} per cluster with warnings kept first — each source keeps its
+  own history, and none of it is stored here.</p>
+{% endif %}
+{% endblock %}

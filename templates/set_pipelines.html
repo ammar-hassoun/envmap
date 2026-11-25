@@ -1,0 +1,170 @@
+{% extends "base.html" %}
+{% from "_set_head.html" import head %}
+{% block crumbs %}<a href="/settings">Settings</a> <span class="sep">/</span> <b>Pipelines</b>{% endblock %}
+{% block content %}
+{{ head("Pipelines",
+        "Connect Jenkins, GitHub Actions, Bitbucket Pipelines or GitLab CI. A connection does not have to belong to a project — leave it unassigned for a central server.",
+        msg, err) }}
+
+<div class="card" id="ci">
+  <div class="card-h">Connections
+    <span class="hint">{{ ci_conns|length }} configured · shown on
+      <a href="/pipelines">Pipelines</a></span>
+  </div>
+  <div class="card-b">
+    {% for c in ci_conns %}
+    <div class="rowcard" id="{{ c.id }}">
+      <div class="kv" style="margin-bottom:10px;">
+        {{ logo(c.type, c.name, 18) }}
+        <b style="font-size:14.5px;">{{ c.name }}</b>
+        <span class="badge">{{ providers[c.type].label if c.type in providers else c.type }}</span>
+        <span class="badge">{{ project_names[c.pid] if c.pid else 'central · all projects' }}</span>
+        {% if c.skip_tls %}<span class="badge" style="color:var(--warn-ink);">⚠ TLS unverified</span>{% endif %}
+        <span style="flex:1"></span>
+        <form method="post" action="/settings/ci/{{ c.id }}/test">
+          <input type="hidden" name="pid" value="{{ c.pid }}">
+          <button class="btn-ghost" style="padding:5px 13px;font-size:11.5px;">Test</button></form>
+        <form method="post" action="/settings/ci/{{ c.id }}/delete"
+              data-del="{{ c.name }}">
+          <input type="hidden" name="pid" value="{{ c.pid }}">
+          <button class="btn-danger" style="padding:5px 13px;font-size:11.5px;">Remove</button></form>
+      </div>
+      {% if c.status %}
+      <div class="sec-note" style="margin-bottom:10px;
+           color:{{ 'var(--ok-ink)' if c.status.startswith('ok') else 'var(--danger-ink)' }};">{{ c.status }}</div>
+      {% endif %}
+      <details class="adv"><summary>Edit connection</summary>
+        <form method="post" action="/settings/ci/{{ c.id }}/update" style="margin-top:10px;">
+          <input type="hidden" name="pid" value="{{ c.pid }}">
+          <div class="field-row"><label>display name</label>
+            <input type="text" name="name" value="{{ c.name }}"></div>
+          {% if c.type in ('jenkins','gitlab') %}
+          <div class="field-row"><label>base url</label>
+            <input type="text" name="base_url" value="{{ c.base_url }}"></div>{% endif %}
+          {% if c.type == 'jenkins' %}
+          <div class="field-row"><label>folder (optional)</label>
+            <input type="text" name="folder" value="{{ c.folder }}"
+                   placeholder="blank = whole server"></div>{% endif %}
+          {% if c.type in ('github','bitbucket') %}
+          <div class="field-row"><label>repo</label>
+            <input type="text" name="repo" value="{{ c.repo }}"></div>{% endif %}
+          {% if c.type == 'gitlab' %}
+          <div class="field-row"><label>project</label>
+            <input type="text" name="project" value="{{ c.project }}"></div>{% endif %}
+          {% if c.type in ('jenkins','bitbucket') %}
+          <div class="field-row"><label>username</label>
+            <input type="text" name="username" value="{{ c.username }}"></div>
+          {# Bitbucket's two credential types authenticate differently and the
+             only thing that distinguishes them here is whether this is filled
+             in. Left unsaid, a blank field looks like a mistake. #}
+          {% if c.type == 'bitbucket' %}
+          <div class="sec-note" style="margin:-4px 0 10px;">Fill in for an app
+            password or a personal API token. <strong>Leave empty</strong> for a
+            workspace, project or repository <em>access token</em> — those carry
+            no user and are rejected if one is sent.</div>{% endif %}{% endif %}
+          <div class="field-row"><label>API token</label>
+            <input type="password" name="token" autocomplete="new-password"
+                   placeholder="•••••• stored — type to replace"></div>
+          <div class="field-row"><label>skip TLS verification</label>
+            <div><input type="checkbox" name="skip_tls" style="width:auto"
+                        {% if c.skip_tls %}checked{% endif %}>
+              <span class="sec-note" style="margin:0 0 0 8px;">only for an internal
+                server with an expired or self-signed certificate</span></div></div>
+          <div class="actions"><button type="submit" style="padding:6px 16px;font-size:12.5px;">Save &amp; test</button></div>
+        </form>
+      </details>
+    </div>
+    {% endfor %}
+
+    <details class="adv" {% if not ci_conns %}open{% endif %}>
+      <summary>＋ Connect a CI system</summary>
+      <form method="post" action="/settings/ci/new" style="margin-top:12px;">
+        <div class="field-row"><label>provider</label>
+          <select name="type" id="ci-type" data-call-change="ciType" required>
+            <option value="">— choose —</option>
+            {% for key, pv in providers.items() %}
+            <option value="{{ key }}">{{ pv.icon }} {{ pv.label }}</option>
+            {% endfor %}
+          </select></div>
+        <div class="field-row"><label>project <span style="font-family:inherit;
+              text-transform:none;letter-spacing:0;">(optional)</span></label>
+          <select name="pid">
+            <option value="">Not assigned — central server, all projects</option>
+            {% for pid2, nm in project_names.items() %}
+            <option value="{{ pid2 }}">only {{ nm }}</option>
+            {% endfor %}
+          </select></div>
+        <div class="field-row"><label>display name</label>
+          <input type="text" name="name" placeholder="defaults to the provider name"></div>
+        <div class="ci-jenkins ci-gitlab cif" style="display:none;">
+          <div class="field-row"><label>base url</label>
+            <input type="text" name="base_url" placeholder="https://jenkins.example.com"></div></div>
+        <div class="ci-jenkins cif" style="display:none;">
+          <div class="field-row"><label>folder (optional)</label>
+            <input type="text" name="folder" placeholder="blank = whole server, incl. folders"></div></div>
+        {# ONE input named "repo", whatever it is called on screen.
+           Two inputs sharing a name put the hidden one's empty value last, and
+           the form parser keeps the last — so a filled-in owner was thrown away
+           and the page reported it missing. The label, placeholder and hint are
+           set per provider instead. #}
+        <div class="ci-github ci-bitbucket cif" style="display:none;">
+          <div class="field-row"><label id="repo-label">owner</label>
+            <input type="text" name="repo" id="repo-input"></div>
+          <div class="sec-note" id="repo-hint" style="margin:-4px 0 10px;"></div></div>
+        <div class="ci-gitlab cif" style="display:none;">
+          <div class="field-row"><label>group</label>
+            <input type="text" name="project" placeholder="platform  —  or a project id"></div>
+          <div class="sec-note" style="margin:-4px 0 10px;">Every project in the
+            group, subgroups included. A project id pins one project.</div></div>
+        {# one field, two providers: Jenkins always wants a user, Bitbucket
+           wants one for an app password and none for an access token. #}
+        <div class="ci-jenkins ci-bitbucket cif" style="display:none;">
+          <div class="field-row"><label>username</label>
+            <input type="text" name="username"
+                   placeholder="your login  —  empty for a Bitbucket access token">
+            </div></div>
+        <div class="field-row"><label>API token</label>
+          <input type="password" name="token" autocomplete="new-password"
+                 placeholder="never a password — use a token"></div>
+        <div class="field-row"><label>skip TLS verification</label>
+          <div><input type="checkbox" name="skip_tls" style="width:auto">
+            <span class="sec-note" style="margin:0 0 0 8px;">tick only for an internal
+              server whose certificate is expired or self-signed</span></div></div>
+        <div class="sec-note" id="ci-note"></div>
+        <div class="actions"><button type="submit">Connect &amp; test</button></div>
+      </form>
+    </details>
+  </div>
+</div>
+
+<script nonce="{{ csp_nonce() }}">
+const CI_NOTES = {{ ci_notes|tojson }};
+// what the one "repo" field is called, per provider
+const CI_REPO = {
+  github: {label: 'owner', placeholder: 'acme  —  a user or an organisation',
+           hint: 'Every repository under this owner is covered, and a new one appears on its own. To pin a single repository, write owner/repo instead.'},
+  bitbucket: {label: 'workspace', placeholder: 'my-workspace',
+              hint: 'Every repository in the workspace is covered. workspace/repo pins one.'},
+};
+function ciType(t) {
+  document.querySelectorAll('.cif').forEach(el => {
+    const show = !!(t && el.classList.contains('ci-' + t));
+    el.style.display = show ? '' : 'none';
+    // a hidden field must not be submitted: it is not what the person filled in,
+    // and an empty one sharing a name with a visible field overwrites it
+    el.querySelectorAll('input, select, textarea').forEach(i => { i.disabled = !show; });
+  });
+  const r = CI_REPO[t];
+  if (r) {
+    document.getElementById('repo-label').textContent = r.label;
+    document.getElementById('repo-input').placeholder = r.placeholder;
+    document.getElementById('repo-hint').textContent = r.hint;
+  }
+  document.getElementById('ci-note').textContent = CI_NOTES[t] || '';
+}
+ciType((document.getElementById('ci-type') || {}).value || '');
+</script>
+
+<p class="sub" style="margin-top:4px;">
+  Build status is shown on <a href="/pipelines">Pipelines</a>.</p>
+{% endblock %}

@@ -1,0 +1,152 @@
+{#- The Recordings tab: a readout of the filtered set, a user / target / date
+    filter, and the table. Reads sess_stats / sess_facets / sessions and the
+    sess_who / sess_target / sess_from / sess_to selections from the route.
+    A sum cannot link to a row count, so the strip is a readout and the
+    narrowing lives in the filter row, the same shape the Ansible page uses. -#}
+<style>
+  .sess-strip { display:flex; gap:20px; flex-wrap:wrap; }
+  .sess-strip div { font-size:12px; color:var(--muted); }
+  .sess-strip b { display:block; font-size:19px; color:var(--text);
+    font-variant-numeric:tabular-nums; letter-spacing:-.3px; }
+</style>
+<div class="card">
+  <div class="card-h" style="flex-wrap:wrap;">Session recordings
+    <span class="hint">every live session — the screen, replayable, and (for SSH)
+      the commands. Newest first.
+      {%- if not cfg.record_sessions %} · <b>recording is off</b>{% endif %}</span>
+    <span style="flex:1"></span>
+    {% if sessions %}
+    <a class="abtn go" title="download every SSH command in these recordings as one text file"
+       href="/pam/commands.txt?who={{ sess_who|urlencode }}&proj={{ proj|urlencode }}&reg={{ reg|urlencode }}&target={{ sess_target|urlencode }}&dfrom={{ sess_from|urlencode }}&dto={{ sess_to|urlencode }}"
+       >commands ⤓</a>{% endif %}
+    {#- SHOWN ONLY TO SOMEBODY WHO MAY ACTUALLY DO IT. A recording is the
+        evidence that a session happened, and the person most motivated to
+        remove one is the person who did something in it -- so removing it is
+        not part of the grant that opens sessions. The handler enforces this;
+        the button follows, because offering one that is refused on submit is
+        its own bug. -#}
+    {% if sessions and may_pam_full %}
+    <form method="post" action="/pam/sessions/clear" data-del="the recordings shown here and their replays" style="display:inline;">
+      <input type="hidden" name="proj" value="{{ proj }}">
+      <input type="hidden" name="reg" value="{{ reg }}">
+      <input type="hidden" name="who" value="{{ sess_who }}">
+      <input type="hidden" name="sess_target" value="{{ sess_target }}">
+      <input type="hidden" name="sess_from" value="{{ sess_from }}">
+      <input type="hidden" name="sess_to" value="{{ sess_to }}">
+      <button type="submit" class="abtn danger">clear</button>
+    </form>{% endif %}
+  </div>
+
+  <div class="card-b sess-strip" style="border-bottom:1px solid var(--line);">
+    <div><b>{{ sess_stats.count }}</b> recording{{ 's' if sess_stats.count != 1 }}</div>
+    <div><b>{% if sess_stats.seconds >= 3600 %}{{ sess_stats.seconds // 3600 }}h {{ (sess_stats.seconds % 3600) // 60 }}m{% else %}{{ sess_stats.seconds // 60 }}m {{ sess_stats.seconds % 60 }}s{% endif %}</b> captured</div>
+    <div><b>{{ sess_stats.commands }}</b> command{{ 's' if sess_stats.commands != 1 }}</div>
+    <div><b>{{ sess_stats.users }}</b> user{{ 's' if sess_stats.users != 1 }}</div>
+    <div><b>{{ sess_stats.targets }}</b> target{{ 's' if sess_stats.targets != 1 }}</div>
+  </div>
+
+  <div class="card-b" style="padding-top:10px;padding-bottom:10px;">
+    {#- The recordings filter: user, target and a date range, each a themed
+        control that auto-submits on change (data-submit). The target list holds
+        only targets that actually have a recording in this place scope. The
+        value shown in each control IS the active-filter indicator, so there are
+        no chips -- Reset returns all four to the place scope. The place filter
+        (project/region) stays the page-wide bar at the top and rides along as
+        hidden inputs. -#}
+    <form method="get" action="/pam" class="placebar" style="margin:0;">
+      <input type="hidden" name="sec" value="sessions">
+      {% if proj %}<input type="hidden" name="proj" value="{{ proj }}">{% endif %}
+      {% if reg %}<input type="hidden" name="reg" value="{{ reg }}">{% endif %}
+      {{ glyph('user-cog', 14) }}
+      <select name="sess_who" data-submit title="filter by user">
+        <option value="">every user</option>
+        {% for u in sess_facets.users %}
+        <option value="{{ u }}" {% if sess_who == u %}selected{% endif %}>{{ u }}</option>
+        {% endfor %}
+      </select>
+      <select name="sess_target" data-submit title="filter by target">
+        <option value="">every target</option>
+        {% for t in sess_facets.targets %}
+        <option value="{{ t.id }}" {% if sess_target == t.id %}selected{% endif %}>{{ t.label }}</option>
+        {% endfor %}
+      </select>
+      <input type="date" name="sess_from" value="{{ sess_from }}" title="from date" data-submit>
+      <input type="date" name="sess_to" value="{{ sess_to }}" title="to date" data-submit>
+      <button class="btn btn-ghost tbtn" type="submit">Apply</button>
+      {% if sess_who or sess_target or sess_from or sess_to %}
+      <a class="btn btn-ghost tbtn"
+         href="/pam?sec=sessions{{ '&proj=' ~ proj if proj }}{{ '&reg=' ~ reg if reg }}"
+         title="clear the user, target and date filters">Reset</a>{% endif %}
+    </form>
+  </div>
+
+  {% if sessions %}
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr>
+        <th style="min-width:128px;">User</th>
+        <th style="width:80px;">Protocol</th>
+        <th style="min-width:140px;">Target</th>
+        <th style="width:118px;">Where</th>
+        <th style="width:74px;">Length</th>
+        <th style="width:66px;">Commands</th>
+        <th style="width:96px;">When</th>
+        <th class="actcol" style="width:196px;"></th>
+      </tr></thead>
+      <tbody>
+      {% for s in sessions %}
+      <tr>
+        <td class="jname"><b>{{ s.who or '—' }}</b>
+          {% if s.status == 'failed' %}<div class="sec-note" style="margin:2px 0 0;">did not start</div>
+          {% elif s.status == 'running' %}<div class="sec-note" style="margin:2px 0 0;color:var(--accent-ink);"
+               title="This session is still open. Its replay is ready, and it can be deleted, once it ends.">recording now</div>
+          {% elif s.status == 'interrupted' %}<div class="sec-note" style="margin:2px 0 0;color:var(--warn-ink);"
+               title="The portal stopped while this session was open. The recording holds everything up to that moment.">interrupted</div>
+          {% elif s.source == 'ansible' %}<div class="sec-note" style="margin:2px 0 0;">via Ansible</div>{% endif %}</td>
+        <td><span class="badge">{{ s.proto_label }}</span></td>
+        <td style="overflow:hidden;text-overflow:ellipsis;max-width:150px;"
+            title="{{ s.target_name or s.address }}">{{ s.target_name or s.address or '—' }}</td>
+        <td>{% if s.project_name %}<span class="badge">{{ s.project_name }}{% if s.region_name %}
+          · {{ s.region_name }}{% endif %}</span>{% else %}<span class="hint">—</span>{% endif %}</td>
+        <td>{{ s.took }}</td>
+        <td class="mid">{% if s.cmd_count %}<a href="#" data-pamcmd="{{ s.id }}"
+            data-pamname="{{ s.who }} · {{ s.target_name or s.address }}"
+            title="view this session's commands">{{ s.cmd_count }}</a>
+          {% else %}<span class="hint">{{ '—' if s.protocol != 'ssh' else 0 }}</span>{% endif %}</td>
+        <td><div class="sec-note" style="margin:0;" title="{{ s.started }}">{{ s.ago }}</div></td>
+        <td class="mid actcol">
+          {#- A RUNNING session is on this list from its first second, and its
+              file is still being written: neither replayed nor deleted until
+              it ends -- disabled with the reason, never removed. -#}
+          {% if s.status == 'running' %}<button type="button" class="abtn go" disabled
+            title="still recording — the replay is ready once the session ends">replay</button>
+          {% else %}<a class="abtn go" href="/pam/sessions/{{ s.id }}">replay</a>{% endif %}
+          {% if s.protocol == 'ssh' %}<button type="button" class="abtn"
+            data-pamcmd="{{ s.id }}" data-pamname="{{ s.who }} · {{ s.target_name or s.address }}">commands</button>{% endif %}
+          {#- No permission, no button: the delete is hidden entirely for anyone
+              without the full Privileged Access: delete grant, never shown
+              disabled. A permitted user still sees it disabled while the session
+              is running, because the file cannot be removed until it ends. #}
+          {% if may_pam_full %}{% if s.status == 'running' %}<button type="button" class="abtn danger" disabled
+            title="still recording — a session can be deleted once it has ended">delete</button>
+          {% else %}
+          <form method="post" action="/pam/session/delete" data-del="this recording and its replay" style="display:inline;">
+            <input type="hidden" name="sid" value="{{ s.id }}">
+            <button type="submit" class="abtn danger">delete</button>
+          </form>{% endif %}{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-b" style="color:var(--muted);font-size:13px;">
+    {% if sess_who or proj %}Nothing matches this filter —
+    <a href="/pam?sec=sessions">show all {{ summary.sessions }}</a>.
+    {% elif not cfg.record_sessions %}Recording is switched off for this
+    installation. {% if may('settings') %}<a href="/settings/pam">Turn it on</a>.{% endif %}
+    {% else %}No recordings yet. Connect to a target and the session lands here —
+    the screen, replayable, and every command that was run.{% endif %}</div>
+  {% endif %}
+</div>

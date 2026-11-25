@@ -1,0 +1,680 @@
+{% extends "base.html" %}
+{% import "_bits.html" as bits %}
+{% block crumbs %}<b>Expiry radar</b>{% endblock %}
+{% block content %}
+<style>
+  /* ── the two chart panels ─────────────────────────────────── */
+  .ex-panels { display:grid; gap:12px; margin-bottom:14px;
+    grid-template-columns:minmax(0,1.55fr) minmax(262px,1fr); }
+  .ex-panels > .card { min-width:0; }
+  .ex-panels .card-b { display:flex; flex-direction:column; height:100%; }
+  /* a hairline where one panel carries two things, so the second reads as part
+     of the same answer rather than as a card that lost its header */
+  .ex-split { border-top:1px solid var(--line); margin-top:13px;
+    padding-top:11px; }
+  .ex-split .fname, .ex-lab { font-size:10.5px; text-transform:uppercase;
+    letter-spacing:.9px; color:var(--muted); font-weight:650; }
+  .ex-todo { display:flex; flex-direction:column; gap:1px; margin-top:6px; }
+  .ex-todo a { display:flex; gap:9px; align-items:baseline; padding:4px 7px;
+    margin:0 -7px; border-radius:7px; text-decoration:none; font-size:12px;
+    color:var(--text2); }
+  .ex-todo a:hover { background:var(--overlay); color:var(--text); }
+  .ex-todo .w { font-family:var(--mono); font-size:11px; color:var(--muted);
+    flex:0 0 auto; }
+  .ex-todo .t { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .ex-todo .late { color:var(--danger-ink); }
+  @media (max-width:960px) { .ex-panels { grid-template-columns:minmax(0,1fr); } }
+
+  /* the months, as columns you can click. A bar is the right shape here: what
+     falls due in November is a count for that month, not a value sampled at a
+     point, and a line between the months would invent a slope. */
+  .ex-cal { display:grid; grid-auto-flow:column; grid-auto-columns:1fr; gap:7px;
+    align-items:end; height:158px; }
+  .ex-cal .col { display:flex; flex-direction:column; justify-content:flex-end;
+    height:100%; text-decoration:none; border-radius:7px 7px 0 0;
+    padding:0 1px; }
+  .ex-cal .n { font-size:11.5px; font-weight:700; text-align:center;
+    font-variant-numeric:tabular-nums; color:var(--muted); padding-bottom:4px;
+    min-height:16px; }
+  .ex-cal .col.has .n { color:var(--text); }
+  /* px, not %: a percentage would resolve against the whole column — number,
+     bar and label — so the tallest month would overflow its own track. And
+     flex:none, or the bar shrinks to make room for the label instead. */
+  .ex-cal .bar { position:relative; flex:0 0 auto; border-radius:6px 6px 2px 2px;
+    min-height:4px; background:var(--accent); opacity:.34;
+    transition:opacity .12s; }
+  .ex-cal .col:hover .bar { opacity:.95; }
+  .ex-cal .col.has .bar { opacity:.62; }
+  .ex-cal .col.on .bar { opacity:1; }
+  /* the part of the month that will not happen by itself, drawn inside the
+     bar rather than beside it: the eye compares the share at a glance */
+  .ex-cal .bar .man { position:absolute; left:0; right:0; bottom:0;
+    background:var(--warn); border-radius:0 0 2px 2px; }
+  /* a month where nothing renews itself is amber all the way up, so it takes
+     the bar's own corners rather than showing 2px of blue above itself */
+  .ex-cal .bar .man.full { border-radius:inherit; }
+  .ex-cal .lbl { font-size:10px; color:var(--muted); text-align:center;
+    padding-top:5px; border-top:1px solid var(--line); margin-top:5px;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .ex-cal .col.now .lbl { color:var(--accent-ink); font-weight:700; }
+  /* past due is on the chart but not of the months: the rule says so, so the
+     eye does not read it as the month before this one */
+  .ex-cal .col.past { border-right:1px dashed var(--line); padding-right:7px;
+    margin-right:3px; }
+  .ex-cal .col.past .bar { background:var(--danger); }
+  .ex-cal .col.past .lbl { color:var(--danger-ink); font-weight:700;
+    border-top-color:var(--danger-line); }
+  .ex-cal .col.past .n { color:var(--danger-ink); }
+  .ex-legend { display:flex; gap:15px; flex-wrap:wrap; font-size:11px;
+    color:var(--muted); margin-top:11px; }
+  .ex-legend i { display:inline-block; width:9px; height:9px; border-radius:3px;
+    margin-right:5px; font-style:normal; vertical-align:baseline; }
+  .ex-legend .a { background:var(--accent); opacity:.62; }
+  .ex-legend .m { background:var(--warn); }
+  .ex-legend .p { background:var(--danger); }
+
+  /* the mix: one ring, and a legend that is three links */
+  .ex-mix { display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
+  .ex-mix .keys { flex:1 1 130px; min-width:0; }
+  .ex-key { display:flex; align-items:center; gap:8px; text-decoration:none;
+    font-size:12px; padding:4px 7px; border-radius:7px; margin:0 -7px;
+    color:var(--text2); }
+  .ex-key:hover { background:var(--overlay); color:var(--text); }
+  .ex-key i { width:9px; height:9px; border-radius:3px; flex:0 0 auto; }
+  .ex-key .k { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .ex-key .v { margin-left:auto; font-family:var(--mono); font-size:11.5px;
+    color:var(--muted); }
+  .ex-key.on { background:var(--accent-wash); color:var(--text); }
+
+  /* ── active filters, each with the link that removes it ───── */
+  .ex-chips { display:flex; gap:7px; flex-wrap:wrap; align-items:center;
+    margin:10px 0 0; font-size:11.5px; }
+  .ex-chip { display:inline-flex; align-items:center; gap:6px;
+    background:var(--accent-wash); border:1px solid var(--accent);
+    color:var(--text); border-radius:999px; padding:2px 4px 2px 10px; }
+  .ex-chip a { text-decoration:none; color:var(--muted); font-size:13px;
+    line-height:1; padding:2px 5px; border-radius:999px; }
+  .ex-chip a:hover { color:var(--danger-ink); background:var(--overlay); }
+
+  /* ── the list ─────────────────────────────────────────────── */
+  .ex-band { display:flex; align-items:center; gap:10px; margin:18px 0 8px; }
+  .ex-band:first-child { margin-top:2px; }
+  .ex-band h3 { margin:0; font-size:12.5px; letter-spacing:.04em;
+    text-transform:uppercase; color:var(--muted); }
+  .ex-band .rule { flex:1; height:1px; background:var(--line); }
+  .ex-band .cnt { font-size:11px; color:var(--faint); }
+  .ex-band .dot { width:7px; height:7px; border-radius:99px;
+    background:var(--line2); }
+  .ex-band.expired .dot, .ex-band.critical .dot { background:var(--danger); }
+  .ex-band.soon .dot { background:var(--warn); }
+  .ex-band.watch .dot { background:var(--accent); }
+
+  .ex-row { display:grid; grid-template-columns:104px 26px minmax(0,1fr) auto;
+    gap:11px; align-items:start; padding:9px 10px 9px 8px;
+    border-radius:9px; border-left:3px solid transparent; }
+  .ex-row + .ex-row { border-top:1px solid var(--line); }
+  .ex-row:hover { background:var(--panel2); }
+  .ex-row.expired, .ex-row.critical { border-left-color:var(--danger); }
+  .ex-row.soon { border-left-color:var(--warn); }
+  .ex-when { text-align:right; }
+  .ex-when b { display:block; font-family:var(--mono); font-size:12px;
+    font-weight:500; }
+  .ex-when i { display:block; font-style:normal; font-size:10.5px;
+    color:var(--muted); margin-top:2px; }
+  .ex-row.expired .ex-when b { color:var(--danger-ink); }
+  .ex-row.critical .ex-when b { color:var(--danger-ink); }
+  .ex-row.soon .ex-when b { color:var(--warn-ink); }
+  .ex-kind { display:flex; align-items:center; justify-content:center;
+    width:26px; height:26px; border-radius:8px; background:var(--well);
+    color:var(--muted); margin-top:1px; }
+  .ex-what b { font-size:13.5px; }
+  .ex-what a { text-decoration:none; }
+  .ex-what a:hover b { text-decoration:underline; }
+  .ex-meta { font-size:11.5px; color:var(--muted); margin-top:2px;
+    overflow-wrap:anywhere; }
+  .ex-note { font-size:11px; color:var(--warn-ink); margin-top:2px; }
+  .ex-ev { font-size:10.5px; color:var(--muted); margin-top:3px;
+    display:flex; flex-wrap:wrap; gap:4px 10px; }
+  .ex-ev-i { white-space:nowrap; }
+  .ex-ev code { font-size:10.5px; background:var(--well); padding:0 4px;
+    border-radius:4px; }
+  .ex-act { display:flex; align-items:center; gap:8px; white-space:nowrap; }
+  /* `.ex-open` IS USED ON BOTH AN <a> AND A <button>, and the offender is not
+     the user agent — it is THIS STYLESHEET. `app.css:629` styles a bare
+     `button` as the product's PRIMARY button: a blue accent gradient, white
+     text, weight 600, no border and a glow. `.ex-open` set `color:var(--muted)`
+     and no background, so "what breaks" and "not counted" rendered as GREY
+     TEXT ON A BLUE GRADIENT with a shadow, while "open" beside them — an
+     anchor, which that rule never touches — looked correct. Reported from a
+     screenshot as simply unreadable, and it was.
+     Every property `app.css:629` sets has to be answered here or the two
+     controls cannot look the same: background, box-shadow, font-weight and
+     border all come from it. Same shape as the `btn-ghost is not a button`
+     rule in CLAUDE.md; this is the second time it has bitten, so the rule is
+     to reset the whole thing, not to re-tint it. */
+  .ex-open { font-size:11px; text-decoration:none; color:var(--muted);
+    border:1px solid var(--line); border-radius:7px; padding:2px 8px;
+    background:transparent; box-shadow:none; font-weight:500;
+    font-family:inherit; line-height:1.45; gap:0;
+    -webkit-appearance:none; appearance:none; cursor:pointer;
+    display:inline-flex; align-items:center; text-align:center;
+    margin:0; box-sizing:border-box; }
+  .ex-open:hover { filter:none; }
+  .ex-open:hover:not([disabled]) { color:var(--accent-ink);
+    border-color:var(--accent); }
+  /* An inapplicable action is DISABLED with the reason in its title, never
+     hidden, so the controls do not jump between rows — which means the
+     disabled look has to exist. Mirrors `.abtn[disabled]` in app.css. */
+  .ex-open[disabled] { opacity:.45; cursor:not-allowed; }
+  .ex-tag { display:inline-flex; align-items:center; gap:4px; font-size:10px;
+    text-transform:uppercase; letter-spacing:.04em; font-weight:700;
+    padding:2px 7px; border-radius:999px; white-space:nowrap; }
+  .ex-tag.automatic { background:var(--ok-on-wash); color:var(--ink-on-ok); }
+  .ex-tag.manual { background:var(--warn-on-wash); color:var(--ink-on-warn); }
+  .ex-tag.unknown { background:var(--panel3); color:var(--muted); }
+  .ex-filters { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  /* Targets the `.dd` WRAPPER, not `select`: base.html hides the native
+     select once the themed dropdown takes over, so a rule on `select` never
+     applies. Written as `select` first, which is why the layout it was added
+     to fix stayed broken. */
+  .ex-filters .dd, .ex-filters select { width:auto; min-width:140px;
+    flex:0 0 auto; }
+  .ex-filters input[type=search] { flex:1 1 220px; min-width:160px; }
+  @media (max-width:700px) {
+    .ex-row { grid-template-columns:88px 26px minmax(0,1fr); }
+    .ex-row .ex-act { grid-column:3; justify-self:start; }
+    .ex-cal { height:130px; }
+  }
+</style>
+
+<div class="page-head">
+  <div><h1>Expiry radar</h1>
+    <p class="sub">Everything that runs out — certificates, warranties,
+      subscriptions and licences — soonest first, with how each one renews.</p></div>
+  <div style="display:flex;gap:10px;">
+    <a class="btn btn-ghost" href="{{ refresh_url }}">↻ Refresh</a>
+  </div>
+</div>
+
+{# The tiles are the navigation. "Needs a person" is the number that matters:
+   a self-renewing certificate thirty days out needs nobody, and burying the
+   one that does not renew among sixty that do is how it gets missed. #}
+<div class="ex-tiles">
+  {# clicking it must show exactly what it counts, or the number is a claim the
+     page cannot back up #}
+  <a class="ex-tile act {{ 'quiet' if not summary.act }} {{ 'on' if renewal == 'manual' and horizon == 90 }}"
+     href="{{ href(renewal='manual', horizon=90) }}">
+    <span class="ico">{{ glyph("user-cog", 17) }}</span>
+    <span><span class="big">{{ summary.act }}</span>
+      <span class="cap">Needs a person</span>
+      <span class="sub">within 90 days, will not renew itself</span></span>
+  </a>
+  <a class="ex-tile bad {{ 'quiet' if not summary.bands.expired }} {{ 'on' if band == 'expired' }}"
+     href="{{ href(band='expired') }}">
+    <span class="ico">{{ glyph("triangle-alert", 17) }}</span>
+    <span><span class="big">{{ summary.bands.expired }}</span>
+      <span class="cap">Already expired</span>
+      <span class="sub">still installed or still recorded</span></span>
+  </a>
+  <a class="ex-tile bad {{ 'quiet' if not summary.bands.critical }} {{ 'on' if band == 'critical' }}"
+     href="{{ href(band='critical') }}">
+    <span class="ico">{{ glyph("zap", 17) }}</span>
+    <span><span class="big">{{ summary.bands.critical }}</span>
+      <span class="cap">Next 7 days</span>
+      <span class="sub">this week</span></span>
+  </a>
+  <a class="ex-tile warn {{ 'quiet' if not summary.bands.soon }} {{ 'on' if band == 'soon' }}"
+     href="{{ href(band='soon') }}">
+    <span class="ico">{{ glyph("hourglass", 17) }}</span>
+    <span><span class="big">{{ summary.bands.soon }}</span>
+      <span class="cap">Next 30 days</span>
+      <span class="sub">this month</span></span>
+  </a>
+  <a class="ex-tile ok {{ 'quiet' if not summary.auto }} {{ 'on' if renewal == 'automatic' }}"
+     href="{{ href(renewal='automatic') }}">
+    <span class="ico">{{ glyph("circle-check", 17) }}</span>
+    <span><span class="big">{{ summary.auto }}</span>
+      <span class="cap">Renew themselves</span>
+      <span class="sub">cert-manager, CDN, auto-renewing</span></span>
+  </a>
+  {#- SET ASIDE, AND STILL VISIBLE. Every other tile on this page links to
+      exactly what it counts, and so does this one: the number is the rows
+      `aside=1` opens, within the tab being shown. It appears only when there
+      are any -- a zero here is a control for a thing nobody has done, and the
+      house rule is that a zero-count element stays quiet. -#}
+  {% if aside_count %}
+  <a class="ex-tile {{ 'on' if aside }}" href="{{ href(aside=1) }}">
+    <span class="ico">{{ glyph("shield-check", 17) }}</span>
+    <span><span class="big">{{ aside_count }}</span>
+      <span class="cap">Not counted</span>
+      <span class="sub">said not to need renewing</span></span>
+  </a>
+  {% endif %}
+</div>
+
+{# One line saying what to do about all of that, because five numbers are five
+   questions and this is the answer to them. #}
+{% if summary.act or summary.bands.expired %}
+<div class="ex-call work">
+  <span class="ico">{{ glyph("triangle-alert", 16) }}</span>
+  <span>
+    {%- if summary.bands.expired %}<b>{{ summary.bands.expired }}</b>
+      {{ 'thing has' if summary.bands.expired == 1 else 'things have' }} already
+      expired{% if summary.act %} and {% endif %}{% endif %}
+    {%- if summary.act %}<b>{{ summary.act }}</b>
+      {{ 'needs' if summary.act == 1 else 'need' }} a person within 90 days{% endif %}.
+    {%- if summary.next_act %} The next one is
+      <b>{{ summary.next_act.name }}</b>, {{ word(summary.next_act.days) }}.{% endif %}
+  </span>
+  <a class="btn btn-ghost more" href="{{ href(renewal='manual', horizon=90) }}">Show the work</a>
+</div>
+{% elif summary.total %}
+<div class="ex-call calm">
+  <span class="ico">{{ glyph("circle-check", 16) }}</span>
+  <span>Nothing here needs a person in the next 90 days —
+    all {{ summary.total }} {{ 'entry renews' if summary.total == 1 else 'entries renew' }}
+    themselves or fall due later.</span>
+</div>
+{% endif %}
+
+{% if summary.total %}
+<div class="ex-panels">
+  <div class="card">
+    <div class="card-h">When the work lands
+      <span class="hint">next {{ plan.months }} months · click a month to see it</span></div>
+    <div class="card-b">
+      <div class="ex-cal">
+        {% if plan.overdue %}
+        {# Past due is its own column, not folded into this month: a bar that
+           silently included forty lapsed items would lie about the month
+           ahead. It is still on the chart, because leaving it off is how it
+           gets forgotten. #}
+        <a class="col past has {{ 'on' if band == 'expired' }}"
+           href="{{ href(band='expired') }}"
+           title="{{ plan.overdue|length }} already expired — not counted in any month below">
+          <span class="n">{{ plan.overdue|length }}</span>
+          <span class="bar" style="height:{{ (5 + [100, (plan.overdue|length / plan.top * 100)]|min * 1.11)|round }}px"></span>
+          <span class="lbl">past</span>
+        </a>
+        {% endif %}
+        {% for b in plan.buckets %}
+        {# the year is in the tooltip, not under the bar: "Jan 27" beside "Aug"
+           reads as the 27th of January, which is a date this page never means #}
+        <a class="col {{ 'has' if b.n }} {{ 'now' if loop.first }} {{ 'on' if month == b.month }}"
+           href="{{ href(month=b.month) }}"
+           title="{{ b.long }} — {{ b.n }} due{% if b.manual %}, {{ b.manual }} needing a person{% endif %}">
+          <span class="n">{{ b.n or '' }}</span>
+          <span class="bar" style="height:{{ (5 + b.pct * 1.11)|round }}px">
+            {% if b.mpct %}<span class="man {{ 'full' if b.mpct == 100 }}"
+                 style="height:{{ b.mpct }}%"></span>{% endif %}
+          </span>
+          <span class="lbl">{{ b.label }}</span>
+        </a>
+        {% endfor %}
+      </div>
+      <div class="ex-legend">
+        <span><i class="a"></i>renews itself</span>
+        <span><i class="m"></i>needs a person</span>
+        {% if plan.overdue %}<span><i class="p"></i>already expired</span>{% endif %}
+        <span style="margin-left:auto;">{{ plan.due }} due in the next
+          {{ plan.months }} months{% if plan.beyond %},
+          {{ plan.beyond|length }} beyond{% endif %}</span>
+      </div>
+
+      {# the kind facet only on All, where its counts and the ring share a
+         denominator: inside one tab it would draw bars wider than their track #}
+      {% set kinds_facet = tab == 'all' and by_source|length > 1 %}
+      {% if kinds_facet or places %}
+      <div class="ex-split facets">
+        {% if kinds_facet %}
+        <div class="facet">
+          <div class="fname">kind</div>
+          {% for s in by_source %}
+          <a class="fval" href="{{ href(tab=s.key) }}">
+            <span class="bar" style="width:{{ (s.n / summary.total * 100)|round }}%"></span>
+            <span class="t"><span class="v">{{ s.label }}</span>
+              <span class="n">{{ s.n }}</span></span></a>
+          {% endfor %}
+        </div>
+        {% endif %}
+        {% if places %}
+        <div class="facet">
+          <div class="fname">cluster, vendor or site</div>
+          {#- A bar links to the CLUSTER filter when it is a cluster the portal
+              knows, and falls back to a text search for a vendor or a site,
+              which are not things with ids. It used to be a search either way:
+              that matched a namespace sharing a word with a cluster name, so
+              the list the bar opened could be longer than the number on it. -#}
+          {% for p in places %}
+          <a class="fval" href="{{ href(cluster=p.cid) if p.cid else href(q=p.name) }}">
+            <span class="bar" style="width:{{ (p.n / summary.total * 100)|round }}%"></span>
+            <span class="t"><span class="v">{{ p.name }}</span>
+              <span class="n">{{ p.n }}</span></span></a>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-h">Who renews it</div>
+    <div class="card-b">
+      <div class="ex-mix">
+        {{ ring([('renews itself', summary.auto, 'var(--ok)'),
+                 ('needs a person', summary.manual, 'var(--warn)'),
+                 ('unknown', summary.unknown, 'var(--line2)')],
+                centre=summary.total, sub='tracked', size=126) }}
+        <div class="keys">
+          <a class="ex-key {{ 'on' if renewal == 'automatic' }}"
+             href="{{ href(renewal='automatic') }}">
+            <i style="background:var(--ok);"></i>
+            <span class="k">renews itself</span><span class="v">{{ summary.auto }}</span></a>
+          <a class="ex-key {{ 'on' if renewal == 'manual' }}"
+             href="{{ href(renewal='manual') }}">
+            <i style="background:var(--warn);"></i>
+            <span class="k">needs a person</span><span class="v">{{ summary.manual }}</span></a>
+          <a class="ex-key {{ 'on' if renewal == 'unknown' }}"
+             href="{{ href(renewal='unknown') }}">
+            <i style="background:var(--line2);"></i>
+            <span class="k">unknown</span><span class="v">{{ summary.unknown }}</span></a>
+        </div>
+      </div>
+      {% if summary.act_rows %}
+      {# The ring says how much work there is; this says which work. Five at
+         most — a panel is a starting point, and the list below is the list. #}
+      <div class="ex-split">
+        <div class="ex-lab">Do these first</div>
+        <div class="ex-todo">
+          {% for r in summary.act_rows %}
+          <a href="{{ r.url or href(q=r.name) }}" title="{{ r.where }}{% if r.detail %} · {{ r.detail }}{% endif %}">
+            <span class="w {{ 'late' if r.days < 0 }}">{{ word(r.days) }}</span>
+            <span class="t">{{ r.name }}</span></a>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{{ bits.tabbar(tabs) }}
+
+<form method="get" action="/expiry" class="card" style="margin-bottom:6px;">
+  <div class="card-b ex-filters">
+    {% if tab != 'all' %}<input type="hidden" name="tab" value="{{ tab }}">{% endif %}
+    {% if band %}<input type="hidden" name="band" value="{{ band }}">{% endif %}
+    {% if month %}<input type="hidden" name="month" value="{{ month }}">{% endif %}
+    {#- An axis whose select is not rendered (nothing here carries it) still has
+        to survive Apply, or narrowing to a cluster and then changing the
+        horizon would silently widen the page back out. -#}
+    {% if f_project and not facets.projects %}<input type="hidden" name="project" value="{{ f_project }}">{% endif %}
+    {% if f_cluster and not facets.clusters %}<input type="hidden" name="cluster" value="{{ f_cluster }}">{% endif %}
+    {% if f_region and not facets.regions %}<input type="hidden" name="region" value="{{ f_region }}">{% endif %}
+    <input type="search" name="q" value="{{ q }}"
+           placeholder="filter by name, cluster, namespace or vendor…">
+    <select name="horizon">
+      {% for n, lbl in horizons %}
+      <option value="{{ n }}" {% if n == horizon %}selected{% endif %}>{{ lbl }}</option>
+      {% endfor %}
+    </select>
+    <select name="renewal">
+      <option value="">renews any way</option>
+      <option value="manual" {% if renewal == 'manual' %}selected{% endif %}>needs a person</option>
+      <option value="automatic" {% if renewal == 'automatic' %}selected{% endif %}>renews itself</option>
+      <option value="unknown" {% if renewal == 'unknown' %}selected{% endif %}>unknown</option>
+    </select>
+    {#- WHERE it lives. Three separate questions, because they are: a project
+        spans clusters, a cluster serves several regions, and a region is
+        served by more than one cluster — so none of the three is derivable
+        from the others and one combined box would have to pick a winner.
+
+        Each list is built from the rows PRESENT in this tab, with its count,
+        so the dropdown can never offer a choice that opens an empty page. An
+        axis nothing carries — no row here names a region — is not rendered at
+        all rather than rendered empty. -#}
+    {% if facets.projects %}
+    <select name="project">
+      <option value="">every project</option>
+      {% for o in facets.projects %}
+      <option value="{{ o.value }}" {% if o.value == f_project %}selected{% endif %}
+        >{{ o.label }} · {{ o.n }}</option>
+      {% endfor %}
+    </select>
+    {% endif %}
+    {% if facets.clusters %}
+    <select name="cluster">
+      <option value="">every cluster</option>
+      {% for o in facets.clusters %}
+      <option value="{{ o.value }}" {% if o.value == f_cluster %}selected{% endif %}
+        >{{ o.label }} · {{ o.n }}</option>
+      {% endfor %}
+    </select>
+    {% endif %}
+    {% if facets.regions %}
+    <select name="region">
+      <option value="">every region</option>
+      {% for o in facets.regions %}
+      <option value="{{ o.value }}" {% if o.value == f_region %}selected{% endif %}
+        >{{ o.label }} · {{ o.n }}</option>
+      {% endfor %}
+    </select>
+    {% endif %}
+    <button class="btn-ghost tbtn" type="submit">Apply</button>
+    {% if chips %}
+    <a class="btn btn-ghost tbtn" href="/expiry{% if tab != 'all' %}?tab={{ tab }}{% endif %}">Clear all</a>
+    {% endif %}
+  </div>
+  {% if chips %}
+  {# Every filter in force, and the link that lifts it. Three of these can be
+     picked up in three clicks from the tiles and the chart, and a list that is
+     shorter than the tile promised is only confusing while the reason for it
+     is invisible. #}
+  <div class="card-b" style="padding-top:0;">
+    <div class="ex-chips"><span class="hint">showing only:</span>
+      {% for c in chips %}
+      <span class="ex-chip">{{ c.label }}<a href="{{ c.off }}" title="remove this filter">×</a></span>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+</form>
+
+{{ bits.collecting(pending, "Counts below do not include it yet.") }}
+
+{% if notes %}
+{# Something that could not be read is part of the answer: an empty radar must
+   never be able to mean "nothing expires" when it means "nobody answered". #}
+<div class="card" style="border-color:var(--warn-line);margin:12px 0;">
+  <div class="card-b" style="font-size:12.5px;">
+    <b style="color:var(--warn-ink);">⚠ Not everything could be checked</b>
+    <ul style="margin:6px 0 0;padding-left:18px;color:var(--muted);">
+      {% for n in notes %}<li>{{ n }}</li>{% endfor %}
+    </ul>
+  </div>
+</div>
+{% endif %}
+
+{% if hidden %}
+<p class="sub" style="margin:8px 0 0;font-size:11.5px;">
+  Your roles do not include {{ hidden|join(', ') }}, so
+  {{ 'those are' if hidden|length != 1 else 'that is' }} not counted here.</p>
+{% endif %}
+
+{% if not rows %}
+<div class="empty">
+  <div class="big">{{ glyph("hourglass", 40) }}</div>
+  <h2>Nothing matches</h2>
+  <p>{% if chips %}No entry matches this filter —
+     widen it, or clear it to see everything.{% else %}Nothing with an expiry
+     date has been found yet. Certificates appear as soon as a cluster is
+     connected; warranties and subscriptions once they carry a date.{% endif %}</p>
+</div>
+{% else %}
+
+<div class="card" style="margin-top:12px;">
+  <div class="card-h">{{ rows|length }} of {{ scoped }}
+    {{ 'entry' if scoped == 1 else 'entries' }}
+    <span class="hint">soonest first</span></div>
+  <div class="card-b">
+    {% for key, label, group in groups %}
+    <div class="ex-band {{ key }}">
+      <span class="dot"></span><h3>{{ label }}</h3><div class="rule"></div>
+      <span class="cnt">{{ group|length }}</span>
+    </div>
+    {% for r in group %}
+    <div class="ex-row {{ key }}">
+      <div class="ex-when"><b>{{ r.on }}</b><i>{{ word(r.days) }}</i></div>
+      {# which kind of thing this is, without having to read the row: on the
+         All tab a warranty and a certificate otherwise look identical #}
+      <div class="ex-kind" title="{{ sources[r.kind].label if r.kind in sources else r.kind }}">
+        {{ sources[r.kind].icon if r.kind in sources }}</div>
+      <div class="ex-what">
+        {% if r.url %}<a href="{{ r.url }}"><b>{{ r.name }}</b></a>
+        {% else %}<b>{{ r.name }}</b>{% endif %}
+        <div class="ex-meta">
+          {%- if r.where %}{{ r.where }}{% endif -%}
+          {%- if r.detail %}{% if r.where %} · {% endif %}{{ r.detail }}{% endif -%}
+        </div>
+        {#- THE EVIDENCE, on the row, under the claim. The tag above says
+            "needs a person" or "renews itself" — a verdict the portal reached.
+            This line is what it reached it from: who owns the object, how long
+            the certificate was issued for and how long ago. A reader with 279
+            rows cannot audit a verdict; they can read four facts and see at a
+            glance that a 90-day certificate issued 11 days ago is fine. -#}
+        {% if r.owner or r.life %}
+        <div class="ex-ev">
+          {%- if r.owner %}<span class="ex-ev-i" title="the object that created this certificate — a fact the API server recorded, not a guess">owned by <code>{{ r.owner }}</code></span>{% endif -%}
+          {%- if r.renewer %}<span class="ex-ev-i" title="this operator renews its own certificates">{{ r.renewer }} renews it</span>{% endif -%}
+          {%- if r.life %}<span class="ex-ev-i" title="read from the certificate's own notBefore and notAfter">{{ r.life }}-day certificate{% if r.age is not none %}, issued {{ r.age }} day{{ '' if r.age == 1 else 's' }} ago{% endif %}</span>{% endif -%}
+        </div>
+        {% endif %}
+        {% if r.note %}<div class="ex-note">⚠ {{ r.note }}</div>{% endif %}
+      </div>
+      <div class="ex-act">
+        <span class="ex-tag {{ r.renewal }}">
+          {%- if r.renewal == 'automatic' %}renews itself
+          {%- elif r.renewal == 'manual' %}needs a person
+          {%- else %}unknown{% endif %}</span>
+        {% if r.url %}<a class="ex-open" href="{{ r.url }}">open</a>{% endif %}
+        {#- WHAT BREAKS IF THIS IS NOT RENEWED. Only for a certificate on a
+            cluster we can name, and only when the certificate carries host
+            names -- a row without those cannot be traced, and the house rule
+            is that an inapplicable action is DISABLED with the reason in its
+            title, never quietly missing, so the buttons do not jump between
+            rows. -#}
+        {% if r.kind == 'certificate' %}
+          {% if r.cid and r.names %}
+          <button type="button" class="ex-open" data-blast="pid={{ r.pid|urlencode }}&cid={{ r.cid|urlencode }}&names={{ r.names|join(',')|urlencode }}&name={{ r.name|urlencode }}"
+                  data-blast-name="{{ r.name }}"
+                  title="which hosts, services and environments stop working if this is not renewed"
+                  >what breaks</button>
+          {% else %}
+          <button type="button" class="ex-open" disabled
+                  title="{% if not r.cid %}this certificate is not on a registered cluster, so there is nothing to trace it through{% else %}this certificate carries no host names{% endif %}"
+                  >what breaks</button>
+          {% endif %}
+        {% endif %}
+        {#- NOT COUNTED, SAID ONCE. A headline number that counts certificates
+            nobody intends to renew is a number people learn to discount, and a
+            discounted number hides the one that did matter. Setting a row
+            aside asks WHY, because it changes what everybody else reads. -#}
+        {% if r.aside %}
+        <form method="post" action="/expiry/count-again" style="display:inline;"
+              data-del-skip>
+          <input type="hidden" name="k" value="{{ r.key }}">
+          <input type="hidden" name="name" value="{{ r.name }}">
+          <input type="hidden" name="tab" value="{{ tab }}">
+          <input type="hidden" name="aside" value="1">
+          <button type="submit" class="ex-open"
+                  title="{{ r.aside_why }}{% if r.aside_who %} — set aside by {{ r.aside_who }}{% endif %}"
+                  >count again</button>
+        </form>
+        {% else %}
+        <button type="button" class="ex-open" data-aside
+                data-kind="{{ r.kind }}" data-source="{{ r.source }}"
+                data-name="{{ r.name }}" data-where="{{ r.where }}"
+                title="stop counting this one — it does not need renewing"
+                >not counted</button>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+    {% endfor %}
+  </div>
+</div>
+
+<p class="sub" style="margin-top:10px;font-size:11.5px;">
+  Certificates are read from the TLS secrets each cluster is actually serving,
+  not only from cert-manager — the ones nothing renews are the point of this
+  page. Private keys are never fetched: the read asks for the certificate
+  alone.</p>
+{% endif %}
+
+{#- WHY, BEFORE IT STOPS BEING COUNTED. This is somebody asserting that a
+    certificate the portal can see expiring does not matter, and the assertion
+    changes the number everybody else reads on the overview. Six months later
+    the question is "why is this not counted?", and a reason recorded at the
+    time is the only thing that answers it. The server requires one too -- this
+    dialog is the convenience, not the control. -#}
+<dialog id="asDlg" class="psh">
+  <div class="psh-bar">
+    <span class="psh-dots"><b title="close" data-asdot="close">✕</b></span>
+    <b>not counted</b>
+    <span class="psh-ns" id="asWhat"></span>
+    <span style="flex:1"></span>
+    <button type="button" class="psh-x" id="asCancel">cancel</button>
+  </div>
+  <form method="post" action="/expiry/aside" class="card-b"
+        style="border:0;padding:14px 16px;" data-del-skip>
+    <input type="hidden" name="kind" id="asKind">
+    <input type="hidden" name="source" id="asSource">
+    <input type="hidden" name="name" id="asName">
+    <input type="hidden" name="where" id="asWhere">
+    <input type="hidden" name="tab" value="{{ tab }}">
+    <input type="hidden" name="q" value="{{ q }}">
+    <label style="display:block;font-size:12px;color:var(--text2);
+                  margin:0 0 6px;">Why does it not need renewing?</label>
+    <input type="text" name="reason" required minlength="4" maxlength="300"
+           spellcheck="false" autocomplete="off" style="width:100%;"
+           placeholder="internal CA, rotated by the platform, decommissioned…">
+    <div class="sec-note" style="margin-top:8px;">It stays on this page under
+      “Not counted”, with this reason and your name, and can be put back at any
+      time. It stops being included in the totals here and on the overview.</div>
+    <div class="actions" style="margin:14px 0 0;">
+      <button type="submit" style="padding:6px 16px;font-size:12.5px;"
+              >Stop counting it</button>
+    </div>
+  </form>
+</dialog>
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  const dlg = document.getElementById('asDlg');
+  if (!dlg) return;
+  const close = () => { try { dlg.close(); } catch (e) {} };
+  document.addEventListener('click', e => {
+    const b = e.target.closest && e.target.closest('[data-aside]');
+    if (b) {
+      // Carried from the row rather than looked up: the row is what somebody
+      // read before deciding, and the server derives the key from these four
+      // fields exactly as the page does.
+      document.getElementById('asKind').value = b.dataset.kind || '';
+      document.getElementById('asSource').value = b.dataset.source || '';
+      document.getElementById('asName').value = b.dataset.name || '';
+      document.getElementById('asWhere').value = b.dataset.where || '';
+      document.getElementById('asWhat').textContent =
+        (b.dataset.name || '') + (b.dataset.where ? ' · ' + b.dataset.where : '');
+      dlg.showModal();
+      const r = dlg.querySelector('input[name="reason"]');
+      if (r) { r.value = ''; r.focus(); }
+      return;
+    }
+    if (e.target.closest && e.target.closest('#asCancel, [data-asdot="close"]'))
+      close();
+  });
+})();
+</script>
+{% include "_blast_dialog.html" %}
+{% endblock %}

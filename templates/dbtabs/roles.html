@@ -1,0 +1,30 @@
+{% if section_error %}
+<div class="flash err">⚠ {{ section_error }}</div>
+{% endif %}
+<div class="card">
+  <div class="card-h">{{ 'Roles' if server.type == 'postgres' else 'Accounts' }}
+    <span class="hint">{{ roles|length }}</span></div>
+  <div class="card-b">
+    {% if not roles %}
+    <p class="sub" style="margin:0;">Nothing to show — a read-only account is
+      usually not permitted to list them, which is as it should be.</p>
+    {% else %}
+    <table class="jenkins">
+      <thead><tr><th>name</th><th>superuser</th><th>can create</th>
+        <th>can log in</th><th>expires</th></tr></thead>
+      <tbody>
+        {% for r in roles %}
+        <tr>
+          <td><b>{{ r.name }}</b></td>
+          <td>{% if r.super %}<span class="badge"
+               style="color:var(--danger-ink);">yes</span>{% else %}—{% endif %}</td>
+          <td>{{ 'yes' if r.createdb else '—' }}</td>
+          <td>{{ 'yes' if r.login else '—' }}</td>
+          <td>{{ r.until or '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </div>
+</div>

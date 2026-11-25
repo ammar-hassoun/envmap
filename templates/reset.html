@@ -1,0 +1,61 @@
+{% extends "_auth_shell.html" %}
+{% set title = 'Set a new password' %}
+{% set width = 440 %}
+{% block body %}
+
+{% if not ok %}
+<h1>This link cannot be used</h1>
+<p class="sub">{{ why }}</p>
+<div class="note"><a href="/forgot">Ask for a new one</a> ·
+  <a href="/login">Go to sign in</a></div>
+
+{% else %}
+<h1>Set a new password</h1>
+<p class="sub">For <b>{{ who.email }}</b>. Nobody else sees what you choose.
+  {% if clear_mfa %}An administrator issued this, so it resets your
+  authenticator as well.{% endif %}</p>
+
+{% if err %}<div class="err">⚠ {{ err }}</div>{% endif %}
+
+<form method="post" action="/reset/{{ token }}" id="resetform">
+  <label class="f" for="pw">New password</label>
+  <input id="pw" type="password" name="password" required autofocus
+         autocomplete="new-password" minlength="10" aria-describedby="pwrule">
+  <div id="pwrule" class="sub" style="margin:-10px 0 16px;font-size:12px;">
+    At least 10 characters, mixing upper and lower case, with a digit.</div>
+
+  <label class="f" for="pw2">Type it again</label>
+  <input id="pw2" type="password" name="confirm" required
+         autocomplete="new-password" minlength="10">
+
+  <button type="submit">{{ 'Save it and reset the authenticator'
+    if clear_mfa else 'Save the new password' }}</button>
+</form>
+
+{# Which of these it is changes what the person has to do next, so it is said
+   before they set the password rather than discovered at the sign-in page. #}
+{% if clear_mfa %}
+<div class="note">Your authenticator will be reset too. After saving, you will
+  be asked to scan a new code — the old entry in your authenticator app stops
+  working, so delete it.</div>
+{% else %}
+<div class="note">This does not change your authenticator. You will sign in
+  with the new password and a code from the same app as before.</div>
+{% endif %}
+
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  var f = document.getElementById('resetform');
+  var a = document.getElementById('pw'), b = document.getElementById('pw2');
+  function match() {
+    b.setCustomValidity(b.value && a.value !== b.value
+                        ? 'The two passwords do not match.' : '');
+  }
+  a.addEventListener('input', match);
+  b.addEventListener('input', match);
+  f.addEventListener('submit', match);
+})();
+</script>
+{% endif %}
+
+{% endblock %}

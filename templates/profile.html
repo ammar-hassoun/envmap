@@ -1,0 +1,555 @@
+{% extends "base.html" %}
+{% import "_mcp_tokens.html" as tokbits %}
+{% block crumbs %}<b>Your account</b>{% endblock %}
+{% block content %}
+
+<div style="display:flex;align-items:center;gap:16px;margin-bottom:6px;">
+  <div class="acc-av" style="width:52px;height:52px;font-size:20px;">
+    {{ (me.name or me.email)[:1]|upper }}</div>
+  <div>
+    <h1 style="margin:0;">{{ me.name or me.email }}</h1>
+    <span class="sub" style="margin:0;">{{ me.email }}</span>
+  </div>
+  <div style="margin-left:auto;">
+    <form method="post" action="/logout" style="margin:0;"><button type="submit" class="btn btn-ghost">⏻ Sign out</button></form>
+  </div>
+</div>
+
+<div style="margin:14px 0 22px;">
+  <span class="badge">role <b>{{ me.role }}</b></span>
+  {% if me.mfa_enrolled %}
+  <span class="badge" style="color:var(--ok-ink);">✓ two-factor enrolled</span>
+  {% else %}
+  <span class="badge" style="color:var(--warn-ink);">two-factor not enrolled</span>
+  {% endif %}
+  {% if me.created %}<span class="badge">joined <b>{{ me.created[:10] }}</b></span>{% endif %}
+  {% if me.last_login %}<span class="badge">last sign-in <b>{{ me.last_login[:16]|replace('T',' ') }}</b></span>{% endif %}
+</div>
+
+{% if msg %}<div class="flash">✓ {{ msg }}</div>{% endif %}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+
+{# ── re-enrolment, shown only mid-flow ── #}
+{% if enrol %}
+<div class="card">
+  <div class="card-h">Scan the new QR code</div>
+  <div class="card-b" style="text-align:center;">
+    <p class="sub" style="max-width:520px;margin:0 auto 18px;">
+      Your old authenticator entry stops working the moment you confirm below.
+      Delete it from your phone afterwards to avoid confusion.</p>
+    {# rendered at its natural pixel size: scaling a QR greys the module edges
+       and phone cameras cope with that far less well than decoders do #}
+    <img src="{{ qr }}" width="{{ qr_size }}" height="{{ qr_size }}" alt="QR code"
+         style="image-rendering:pixelated;border-radius:8px;">
+    <form method="post" action="/me/mfa/confirm" style="margin-top:20px;">
+      <div class="field-row" style="max-width:330px;margin:0 auto;">
+        <label>code from the app</label>
+        <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code"
+               pattern="[0-9]*" maxlength="6" required autofocus
+               style="font-family:var(--mono);letter-spacing:4px;text-align:center;">
+      </div>
+      <div class="actions" style="justify-content:center;">
+        <button type="submit">Confirm and replace</button>
+        <a class="btn btn-ghost" href="/me">Cancel</a>
+      </div>
+    </form>
+  </div>
+</div>
+{% endif %}
+
+
+{#- The disclosure and detail-row component moved to base.html when Users &
+    audit started using it too — a component written twice is one that drifts.
+    What is left here is the passkey list, which only this page has. -#}
+<style>
+  .pk-list { display:grid; gap:6px; }
+  .pk-row { display:flex; align-items:center; gap:10px; padding:8px 11px;
+    border:1px solid var(--line); border-radius:9px; background:var(--panel2);
+    font-size:12.5px; }
+  .pk-dev { display:inline-flex; align-items:center; gap:7px;
+    font-weight:600; color:var(--text); }
+</style>
+
+{#- ── SIGN IN: one table, not four cards ───────────────────────────────────
+    Password, authenticator and passkeys are one subject — how you get in — and
+    they were three cards of equal weight beside "display name". As rows they
+    can be read down in a second, and each opens its own form only when it is
+    wanted.
+
+    NO-SORT on every header, deliberately: this table has detail rows, and the
+    house sorter is a flat sort that would scramble a form away from the row it
+    belongs to. That is the same rule that makes a grouped table opt out. -#}
+<div class="card" id="passkeys">
+  <div class="card-h">Sign in</div>
+  <div class="card-b" style="padding:0 0 4px;overflow-x:auto;">
+    <table class="jenkins acc-t">
+      <thead><tr>
+        <th class="no-sort" style="width:210px;">Method</th>
+        <th class="no-sort">Status</th>
+        <th class="no-sort actcol" style="width:210px;"></th>
+      </tr></thead>
+      <tbody>
+
+      <tr><td><b>Password</b></td>
+        <td class="hint">set — and still needed alongside a code</td>
+        <td class="actcol"><span class="actrow oneline">
+          <button type="button" class="abtn" data-acc="pw">change</button>
+        </span></td></tr>
+      <tr class="acc-form" id="acc-pw" hidden><td colspan="3">
+        <form method="post" action="/me/password">
+          <div class="field-row"><label>current password</label>
+            <input type="password" name="current" required autocomplete="current-password"></div>
+          <div class="field-row"><label>new password</label>
+            <input type="password" name="new" required autocomplete="new-password"
+                   placeholder="at least 10 chars, mixed case, a digit"></div>
+          <div class="field-row"><label>repeat it</label>
+            <input type="password" name="again" required autocomplete="new-password"></div>
+          <div class="field-row"><label>AI clients</label>
+            <label style="display:flex;gap:8px;align-items:center;text-transform:none;">
+              <input type="checkbox" name="revoke_tokens" checked>
+              also revoke my AI client (MCP) tokens</label></div>
+          <div class="sec-note">Your current password is required even though you
+            are signed in, so a borrowed session cannot take over the account.
+            A token minted from a borrowed session would outlive the new password,
+            so leave the box ticked if you are changing it because something is
+            wrong; your clients then need a new token.</div>
+          <div class="actions"><button type="submit">Change password</button>
+            <button type="button" class="btn btn-ghost acc-cancel">Cancel</button></div>
+        </form></td></tr>
+
+      <tr><td><b>Authenticator</b></td>
+        <td class="hint">{% if me.mfa_enrolled %}enrolled, required at every
+          sign-in{% else %}<span style="color:var(--warn-ink);">not enrolled</span>
+          {% endif %}</td>
+        <td class="actcol"><span class="actrow oneline">
+          <button type="button" class="abtn" data-acc="mfa">replace</button>
+        </span></td></tr>
+      <tr class="acc-form" id="acc-mfa" hidden><td colspan="3">
+        <form method="post" action="/me/mfa">
+          <div class="field-row"><label>your password</label>
+            <input type="password" name="current" required autocomplete="current-password"></div>
+          <div class="field-row"><label>code from the current app</label>
+            <input type="text" name="code" inputmode="numeric" pattern="[0-9]*"
+                   maxlength="6" required autocomplete="one-time-code"
+                   style="font-family:var(--mono);letter-spacing:3px;"></div>
+          <div class="sec-note">Both are needed: proving the password alone would
+            let anyone with a live session swap your second factor.</div>
+          {% if not me.mfa_enrolled %}
+          <div class="sec-note" style="color:var(--warn-ink);">If you cannot sign
+            in at all, an administrator can reset two-factor for you under
+            Users &amp; audit.</div>
+          {% endif %}
+          <div class="actions"><button type="submit">Replace authenticator</button>
+            <button type="button" class="btn btn-ghost acc-cancel">Cancel</button></div>
+        </form></td></tr>
+
+      <tr><td><b>Fingerprint</b>
+          <div class="hint">Touch ID, Windows Hello, a security key</div></td>
+        <td class="hint">
+          {%- if not pk_ready.ok %}<span style="color:var(--warn-ink);">not
+            available here</span>
+          {%- elif pk_mine %}{{ pk_mine|length }} device{{ 's' if pk_mine|length != 1 }} —
+            {{ pk_mine|map(attribute='name')|join(', ') }}
+          {%- else %}not set up — sign in without a password or a code
+          {%- endif %}</td>
+        <td class="actcol"><span class="actrow oneline">
+          {% if pk_ready.ok %}
+          <button type="button" class="abtn go" id="pk-add"
+            >{{ 'add' if pk_mine else 'set up' }}</button>
+          {% if pk_mine %}<button type="button" class="abtn" data-acc="pk"
+            >manage</button>{% endif %}
+          {% else %}
+          <button type="button" class="abtn" disabled
+                  title="{{ pk_ready.why }}">unavailable</button>
+          {% endif %}
+        </span></td></tr>
+      {% if pk_mine %}
+      <tr class="acc-form" id="acc-pk" hidden><td colspan="3">
+        <div class="pk-list">
+          {% for k in pk_mine %}
+          <div class="pk-row">
+            <span class="pk-dev">{{ glyph('key-round', 14) }} {{ k.name }}</span>
+            <span class="hint">{{ 'last used ' ~ k.last_used[:10]
+                                   if k.last_used else 'added ' ~ k.created[:10] }}</span>
+            <span style="flex:1"></span>
+            <form method="post" action="/me/passkey/{{ k.id }}/delete" data-del-skip
+                  data-confirm="Remove {{ k.name }}? You can still sign in with your password and code.">
+              <button class="abtn danger" type="submit">remove</button></form>
+          </div>
+          {% endfor %}
+        </div>
+        <div class="sec-note">Your fingerprint stays on your device — this portal
+          only stores a key it cannot use for anything else. Your password and
+          code keep working: a lost laptop must never be the reason nobody can
+          get in.</div>
+      </td></tr>
+      {% endif %}
+
+      <tr><td><b>Display name</b></td>
+        <td class="hint">{{ me.name or me.email }} · signed in as
+          <span style="font-family:var(--mono);">{{ me.email }}</span></td>
+        <td class="actcol"><span class="actrow oneline">
+          <button type="button" class="abtn" data-acc="name">rename</button>
+        </span></td></tr>
+      <tr class="acc-form" id="acc-name" hidden><td colspan="3">
+        <form method="post" action="/me/name">
+          <div class="field-row"><label>display name</label>
+            <input type="text" name="name" value="{{ me.name or '' }}" required></div>
+          <div class="sec-note">The email is your username and cannot be changed
+            here — an administrator creates and removes accounts under
+            Users &amp; audit.</div>
+          <div class="actions"><button type="submit">Save name</button>
+            <button type="button" class="btn btn-ghost acc-cancel">Cancel</button></div>
+        </form></td></tr>
+
+      </tbody>
+    </table>
+  </div>
+</div>
+<div class="sec-note" id="pk-msg" style="margin:-4px 0 18px;"></div>
+
+{#- ── EVERYTHING ELSE IS SHUT UNTIL ASKED FOR ──────────────────────────────
+    The page was eight cards, all open at once: the audit trail you read when
+    something has gone wrong had the same weight as a theme switch. <details>
+    rather than JavaScript because it is native and keyboard-accessible, and
+    because the point is a short page rather than a page with opinions about
+    which section you wanted. -#}
+
+<details class="acc-sec" id="activity">
+  <summary><span class="acc-chev">{{ glyph('chevron-right', 14) }}</span>
+    <b>Recent activity</b>
+    <span class="hint">{{ mine|length }} most recent entries on this account</span>
+  </summary>
+  <div class="acc-secb">
+  {% if mine %}
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr>
+        <th style="width:150px;">When</th><th style="width:190px;">Action</th>
+        <th style="min-width:260px;">Target</th><th style="width:120px;">From</th>
+      </tr></thead>
+      <tbody>
+      {% for a in mine %}
+      <tr>
+        <td>{{ a.at[:16]|replace('T', ' ') }}</td>
+        <td style="font-family:var(--mono);font-size:11.5px;
+            {% if 'denied' in a.action or 'failed' in a.action %}color:var(--danger-ink);{% endif %}">
+          {{ a.action }}</td>
+        <td class="jname" style="white-space:normal;word-break:break-word;">
+          {{ a.target or '—' }}
+          {% if a.detail %}<div class="sec-note" style="margin:2px 0 0;">{{ a.detail[:150] }}</div>{% endif %}
+        </td>
+        <td style="font-family:var(--mono);font-size:11.5px;">{{ a.ip or '—' }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-b" style="color:var(--muted);font-size:13px;">
+    Nothing recorded against this account yet.</div>
+  {% endif %}
+
+    {% if me.role == 'admin' %}
+    <div class="actions" style="padding:0 14px 12px;">
+      <a class="btn btn-ghost" href="/admin/audit">Full audit log →</a></div>
+    {% endif %}
+  </div>
+</details>
+
+{% if not assistant_enabled() %}
+{#- The 3D view's doctor runs as you, on your own Claude account. While the
+    Ask panel is switched off its "own model account" section is hidden, so
+    the doctor has this one: the same stored account, Anthropic only. -#}
+<details class="acc-sec" id="doctor">
+  <summary><span class="acc-chev">{{ glyph('chevron-right', 14) }}</span>
+    <b>Claude, the doctor</b>
+    <span class="hint">
+      {%- if cc.connected %}connected · Claude Code on your subscription
+      {%- elif not cc.offered and ai.connected and ai.provider == 'anthropic' %}connected · {{ ai.hint }}
+      {%- else %}not connected{% endif %}</span>
+  </summary>
+  <div class="acc-secb">
+<div class="card-b">
+    <p class="sub" style="margin:0 0 16px;">In a cluster's 3D view, press
+      <b>H</b> and Claude comes into the view as the doctor: it examines the
+      pods that are unwell, talks with them, and asks you there before it
+      changes anything. It works as you, with your permissions.</p>
+    {% if cc.offered %}
+    <p class="sub" style="margin:0 0 16px;">Here the doctor is <b>Claude Code</b>,
+      the Claude CLI, running in this portal on your own Claude subscription
+      (Pro or Max). It is not the Claude API, and nothing is billed per call. To
+      sign it in, run <code>claude setup-token</code> once on a computer where
+      Claude Code is installed, sign in in the browser it opens, and paste the
+      token it prints (it starts <code>sk-ant-oat</code> and lasts a year). It is
+      encrypted at rest and never shown again.</p>
+    {% else %}
+    <p class="sub" style="margin:0 0 16px;">This portal does not run Claude Code,
+      so the doctor needs an API key from console.anthropic.com, billed to that
+      account. It is encrypted at rest and never shown again.</p>
+    {% endif %}
+    <form method="post" action="/me/doctor">
+      <div class="field-row"><label for="drtoken">{{ 'Claude Code sign-in' if cc.offered else 'Claude API key' }}
+          {% if not (cc.connected or (not cc.offered and ai.connected and ai.provider == 'anthropic')) %}<b style="color:var(--danger-ink)">*</b>{% endif %}</label>
+        <input type="password" id="drtoken" name="token" autocomplete="off" data-nosave
+               placeholder="{{ 'leave blank to keep what is stored' if cc.connected or (not cc.offered and ai.connected and ai.provider == 'anthropic')
+                              else ('sk-ant-oat… from claude setup-token' if cc.offered
+                                    else 'sk-ant-… from console.anthropic.com') }}"></div>
+      {% if not cc.offered %}
+      <div class="field-row"><label for="drmodel">model</label>
+        <input type="text" id="drmodel" name="model"
+               value="{{ ai.model if ai.provider == 'anthropic' else '' }}" placeholder="claude-opus-5-5"></div>
+      {% endif %}
+      <div style="display:flex;gap:10px;margin-top:14px;">
+        <button type="submit">{{ 'Update' if cc.connected or (not cc.offered and ai.connected and ai.provider == 'anthropic') else 'Connect' }}</button>
+        {% if ai.connected or cc.connected %}
+        <button type="submit" name="disconnect" value="1" class="btn btn-ghost"
+                formnovalidate>Disconnect</button>
+        {% endif %}
+      </div>
+    </form>
+  </div>
+  </div>
+</details>
+{% endif %}
+{% if assistant_enabled() %}
+<details class="acc-sec" id="assistant">
+  <summary><span class="acc-chev">{{ glyph('chevron-right', 14) }}</span>
+    <b>Assistant · your own model account</b>
+    <span class="hint">
+      {%- if ai.connected %}connected · {{ ai.hint }}
+      {%- elif ai_shared.provider %}using the deployment's {{ ai_shared.provider }}
+      {%- else %}not configured{% endif %}</span>
+  </summary>
+  <div class="acc-secb">
+<div class="card-b">
+    <p class="sub" style="margin:0 0 16px;">Connect your own API key and your
+      questions are answered by your account and billed to it, at whatever model
+      you choose. It applies to you alone — everyone else keeps using whatever
+      the deployment is configured with. The key is encrypted at rest and is
+      never sent back to this page.</p>
+    <form method="post" action="/me/assistant">
+      <div class="grid2-lic">
+        <div class="field-row"><label for="aiprov">provider <b style="color:var(--danger-ink)">*</b></label>
+          <select id="aiprov" name="provider">
+            {% for key, pv in ai_providers.items() %}
+            <option value="{{ key }}" {% if key == ai.provider %}selected{% endif %}>{{ pv.label }}</option>
+            {% endfor %}
+          </select></div>
+        <div class="field-row"><label for="aimodel">model</label>
+          <input type="text" id="aimodel" name="model" value="{{ ai.model }}"
+                 placeholder="claude-sonnet-4-5"></div>
+      </div>
+      <div class="field-row"><label for="aitoken">API key
+          {% if not ai.connected %}<b style="color:var(--danger-ink)">*</b>{% endif %}</label>
+        <input type="password" id="aitoken" name="token" autocomplete="off"
+               placeholder="{{ 'leave blank to keep the stored key' if ai.connected
+                              else 'sk-ant-… from console.anthropic.com' }}"></div>
+      <div class="field-row"><label for="aiurl">endpoint</label>
+        <input type="text" id="aiurl" name="base_url" value="{{ ai.base_url }}"
+               placeholder="only for a gateway or a self-hosted model"></div>
+      <div style="display:flex;gap:10px;margin-top:14px;">
+        <button type="submit">{{ 'Update' if ai.connected else 'Connect' }}</button>
+        {% if ai.connected %}
+        <button type="submit" name="disconnect" value="1" class="btn btn-ghost"
+                formnovalidate>Disconnect</button>
+        {% endif %}
+      </div>
+    </form>
+  </div>
+  </div>
+</details>
+{% endif %}
+
+{% if mcp_on %}
+{#- Open when it holds a token just minted: that secret is shown once, and it
+    came back inside a shut fold, under a message saying to copy it now. -#}
+<details class="acc-sec" id="mcp" {% if mcp_fresh %}open{% endif %}>
+  <summary><span class="acc-chev">{{ glyph('chevron-right', 14) }}</span>
+    <b>AI clients · MCP</b>
+    <span class="hint">
+      {%- set live = mcp_tokens|selectattr('live')|list %}
+      {%- if live %}{{ live|length }} token{{ 's' if live|length != 1 }} in use
+      {%- elif mcp_tokens %}{{ mcp_tokens|length }} token{{ 's' if mcp_tokens|length != 1 }}
+      {%- else %}none yet{% endif %}</span>
+  </summary>
+  <div class="acc-secb">
+<div class="card-b">
+    {% if not mcp_may %}
+    <p class="sub" style="margin:0;">Your account does not hold the <b>MCP
+      access</b> area, so a token would be refused. Ask an administrator for
+      it.</p>
+    {% else %}
+    {{ tokbits.styles() }}
+    
+    <p class="sub" style="margin:0 0 14px;">Mint a token and your own Claude can
+      ask this portal the questions these pages answer — what is unhealthy, what
+      failed, what expires, what changed. It is shown once, and it can never
+      reach further than <b>your</b> own permissions — only less, if you scope
+      it that way.</p>
+
+    {% if mcp_fresh %}{{ tokbits.fresh(mcp_fresh, mcp_command, mcp_json) }}{% endif %}
+
+    {{ tokbits.mint(mcp_areas, mcp_modes, mcp_acts, mcp_days,
+                    mcp_may_manage, 'me') }}
+
+    {% if mcp_tokens %}
+    {{ tokbits.cards(mcp_tokens, mcp_areas, mcp_modes, mcp_acts,
+                     mcp_may_manage, 'me') }}
+    {% endif %}
+    {#- The cards and the mint form are inert markup without this: it opens
+        "change scope", closes it on Cancel and shows the Custom fields. It was
+        dropped when this page became collapsed sections, and the only symptom
+        was a button that did nothing, on the page a refusal over MCP sends
+        people to ("re-scope it… on your own account page"). -#}
+    {{ tokbits.js() }}
+    {% endif %}
+  </div>
+  </div>
+</details>
+{% endif %}
+
+<details class="acc-sec" id="appearance">
+  <summary><span class="acc-chev">{{ glyph('chevron-right', 14) }}</span>
+    <b>Appearance</b>
+    <span class="hint">stored in this browser, not on your account</span>
+  </summary>
+  <div class="acc-secb">
+    <div class="card-b">
+      <p class="sub" style="margin:0 0 12px;">The theme is stored in this browser,
+        so it can differ between machines. With no choice made the portal follows
+        your operating system.</p>
+      <div class="actions" style="margin:0;">
+        <button type="button" class="btn-ghost" data-call="portalToggleTheme"
+                style="padding:6px 16px;font-size:12.5px;">Switch theme</button>
+        <button type="button" class="btn-ghost" style="padding:6px 16px;font-size:12.5px;"
+                data-call="portalThemeForget">
+          Follow the system again</button>
+      </div>
+    </div>
+  </div>
+</details>
+
+<script nonce="{{ csp_nonce() }}">
+(() => {
+  // The section the address names is opened and brought into view. Every form
+  // in a fold comes back here with that fold's name after the #, and a fold
+  // that came back shut hid what had just happened in it: a new token, a
+  // connected account, the reason one was refused.
+  const named = () => {
+    const id = decodeURIComponent((location.hash || '').slice(1));
+    const el = id && document.getElementById(id);
+    if (!el) return;
+    const fold = el.closest('details');
+    if (fold) fold.open = true;
+    el.scrollIntoView({block: 'start'});
+  };
+  named();
+  window.addEventListener('hashchange', named);
+})();
+</script>
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  // ONE FORM OPEN AT A TIME. The row's own button unfolds it underneath; a
+  // second click, Cancel, or opening another one puts it away. Nothing is
+  // remembered — arriving at this page should show the short version every
+  // time, which is the whole reason the forms are not on it.
+  const forms = () => [...document.querySelectorAll('.acc-form')];
+  const shut = except => forms().forEach(f => {
+    if (f !== except) f.hidden = true;
+  });
+  document.addEventListener('click', ev => {
+    const b = ev.target.closest('[data-acc]');
+    if (b) {
+      const box = document.getElementById('acc-' + b.dataset.acc);
+      if (!box) return;
+      const opening = box.hidden;
+      shut(box);
+      box.hidden = !opening;
+      if (opening) {
+        const first = box.querySelector('input:not([type=hidden]), textarea');
+        if (first) first.focus({preventScroll: true});
+      }
+      return;
+    }
+    if (ev.target.closest('.acc-cancel')) shut(null);
+  });
+})();
+</script>
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  const add = document.getElementById('pk-add');
+  if (!add) return;                       // the card is not rendered here
+  const msg = document.getElementById('pk-msg');
+  if (!window.PublicKeyCredential || !navigator.credentials) {
+    add.disabled = true;
+    msg.textContent = 'This browser cannot make a passkey. It needs a recent '
+      + 'browser on a secure (https) connection.';
+    return;
+  }
+
+  const b64 = s => {
+    const t = (s || '').replace(/-/g, '+').replace(/_/g, '/');
+    const raw = atob(t + '='.repeat((4 - t.length % 4) % 4));
+    return Uint8Array.from(raw, c => c.charCodeAt(0));
+  };
+  const ub64 = buf => btoa(String.fromCharCode(...new Uint8Array(buf)))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const say = (t, bad) => {
+    msg.textContent = t;
+    msg.style.color = bad ? 'var(--danger-ink)' : '';
+  };
+
+  add.addEventListener('click', async () => {
+    add.disabled = true;
+    say('waiting for your device…');
+    try {
+      const r = await fetch('/me/passkey/options', {method: 'POST'});
+      const opts = await r.json();
+      if (opts.error) { say(opts.error, true); add.disabled = false; return; }
+      opts.challenge = b64(opts.challenge);
+      opts.user.id = b64(opts.user.id);
+      // Without this the browser will happily make a SECOND passkey for a
+      // device that already has one, and the account collects duplicates
+      // nobody can tell apart.
+      (opts.excludeCredentials || []).forEach(c => { c.id = b64(c.id); });
+
+      const cred = await navigator.credentials.create({publicKey: opts});
+      const body = {
+        credential: {
+          id: cred.id, rawId: ub64(cred.rawId), type: cred.type,
+          response: {
+            clientDataJSON: ub64(cred.response.clientDataJSON),
+            attestationObject: ub64(cred.response.attestationObject),
+          },
+        },
+      };
+      const v = await fetch('/me/passkey/verify', {method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body)});
+      const out = await v.json();
+      if (!out.ok) { say(out.error || 'that did not work', true); add.disabled = false; return; }
+      // Reload rather than splice a row in: the table is server-rendered and a
+      // second source of truth for it is one that drifts.
+      window.location.href = '/me#passkeys';
+      window.location.reload();
+    } catch (e) {
+      say(e && e.name === 'InvalidStateError'
+          ? 'this device already has a passkey on this account.'
+          : e && e.name === 'NotAllowedError'
+            ? 'cancelled — nothing was added.'
+            : 'could not add a passkey: ' + (e && e.message ? e.message : e),
+          true);
+      add.disabled = false;
+    }
+  });
+})();
+</script>
+{% endblock %}
+
+<script nonce="{{ csp_nonce() }}">
+window.portalThemeForget = function () {
+  try { localStorage.removeItem('portal-theme'); } catch (e) {}
+  location.reload();
+};
+</script>

@@ -1,0 +1,207 @@
+{% include "_combo_js.html" %}
+const P = i => ({ value: i.id, label: `${i.icon} ${i.name}` });
+const R = i => ({ value: i.id, label: `${i.flag || '🌐'} ${i.name}` });
+const proj = id => TREE.find(p => p.id === id);
+const reg = (pid, rid) => (proj(pid) || {regions:[]}).regions.find(r => r.id === rid);
+
+/* ── one shared project, then region → env → service per side ─ */
+const SHARED = { pid: '' };
+
+function buildSide(prefix, field) {
+  const kr = makeCombo(prefix + 'k_rgid', 'region');
+  const ke = makeCombo(prefix + 'k_env', 'environment');
+  if (!kr) return null;
+  const st = { get pid() { return SHARED.pid; }, rgid: '', env: '' };
+
+  function commit() {
+    // The token is no longer what gets submitted — the sweep sends the parts —
+    // but it is kept in step so "copy from A" and the swap button have one thing
+    // to move around, and so a bookmark of a token still round-trips.
+    field.value = (st.pid && st.rgid && st.env)
+      ? [st.pid, st.rgid, st.env].join('|') : '';
+    // The sweep needs the parts, not the token: it compares every service in
+    // one environment against another, so it never has a single file to name.
+    const rg = document.getElementById('p_rg' + prefix);
+    const ev = document.getElementById('p_e' + prefix);
+    if (rg) rg.value = st.rgid || '';
+    if (ev) ev.value = st.env || '';
+    gate();
+  }
+  function loadEnvs() {
+    const r = reg(st.pid, st.rgid);
+    ke.setItems((r ? r.envs : []).map(e => ({
+      value: e.env, label: e.env, sub: `${e.services.length} services` })), false);
+    st.env = ke.value || ''; commit();
+  }
+  function loadRegions() {
+    const p = proj(st.pid);
+    kr.setItems((p ? p.regions : []).map(R), false);
+    st.rgid = kr.value || ''; loadEnvs();
+  }
+  kr.onPick = v => { st.rgid = v || ''; loadEnvs(); };
+  ke.onPick = v => { st.env = v || ''; commit(); };
+
+  // fill every level at once, without the cascade wiping what we set
+  function restore(pid, rgid, env) {
+    const p = proj(pid || st.pid);
+    kr.setItems((p ? p.regions : []).map(R), false);
+    st.rgid = rgid || '';
+    kr.set(st.rgid);
+    const r = reg(st.pid, st.rgid);
+    ke.setItems((r ? r.envs : []).map(e => ({
+      value: e.env, label: e.env, sub: `${e.services.length} services` })), false);
+    st.env = env || '';
+    ke.set(st.env);
+    commit();
+  }
+
+  return { st, kr, ke, field, restore, loadRegions };
+}
+
+// ── which mode, and whether it can run yet ─────────────────────────────────
+// One picker set serves both modes. A sweep needs a region and an environment on
+// each side and no service at all; a pair needs the service too. Two forms would
+// mean two copies of the cascade, and the copy nobody used would rot.
+function sweeping() {
+  const m = document.getElementById('p_mode');
+  return m && m.value === 'sweep';
+}
+
+function gate() {
+  const a = document.getElementById('p_a'), b = document.getElementById('p_b');
+  const go = document.getElementById('p_go');
+  const hint = document.getElementById('p_hint');
+  if (!go) return;
+  if (sweeping()) {
+    const pid = (document.getElementById('p_pid') || {}).value || '';
+    const ra = document.getElementById('p_rga').value;
+    const ea = document.getElementById('p_ea').value;
+    const rb = document.getElementById('p_rgb').value;
+    const eb = document.getElementById('p_eb').value;
+    const ok = pid && ra && ea && rb && eb;
+    go.disabled = !ok;
+    go.textContent = ok ? 'Compare every service' : 'Compare';
+    if (hint) hint.textContent = ok
+      ? 'Every service either side has will be compared.'
+      : 'Choose a project, then a region and environment on each side.';
+    if (ok) fillServiceList(ra, ea, rb, eb);
+    return;
+  }
+  const ok = a.value && b.value;
+  go.disabled = !ok;
+  go.textContent = 'Compare';
+  if (hint) hint.textContent = ok ? 'Both sides chosen.'
+    : 'Choose a project, then a region, environment and service on each side.';
+}
+
+// The list is built from the catalogue already on the page, so ticking a subset
+// costs nothing. Left empty, the server compares everything — the common case,
+// and the reason this mode exists.
+function fillServiceList(ra, ea, rb, eb) {
+  const box = document.getElementById('svcpick');
+  if (!box) return;
+  const names = (rgid, env) => {
+    const r = reg(SHARED.pid, rgid);
+    const e = r ? r.envs.find(x => x.env === env) : null;
+    return new Set((e ? e.services : []).map(s => s.name));
+  };
+  const A = names(ra, ea), B = names(rb, eb);
+  const all = [...new Set([...A, ...B])].sort();
+  const was = new Set(Array.from(box.querySelectorAll('input:checked'))
+                           .map(i => i.value));
+  box.innerHTML = all.map(n => {
+    const only = A.has(n) && B.has(n) ? '' : (A.has(n) ? ' · only in A' : ' · only in B');
+    return `<label class="svcchip${only ? ' lone' : ''}" ` +
+           `data-name="${n.toLowerCase().replace(/"/g, '&quot;')}">` +
+           `<input type="checkbox" name="svc" value="${n.replace(/"/g, '&quot;')}"` +
+           `${was.has(n) ? ' checked' : ''}> ${n}` +
+           `<small>${only}</small></label>`;
+  }).join('');
+  const count = document.getElementById('svccount');
+  if (count) count.textContent = all.length + ' service' + (all.length === 1 ? '' : 's')
+    + ' · ' + [...A].filter(n => B.has(n)).length + ' on both sides';
+  // the chips were just replaced, so whatever the count said is now wrong
+  countTicked();
+}
+
+const sideA = buildSide('a', document.getElementById('p_a'));
+const sideB = buildSide('b', document.getElementById('p_b'));
+
+/* shared project selector drives both sides */
+const kproj = makeCombo('k_project', 'choose project');
+if (kproj) {
+  kproj.setItems(TREE.map(P), false);
+  kproj.onPick = v => {
+    SHARED.pid = v || '';
+    const f = document.getElementById('p_pid');
+    if (f) f.value = SHARED.pid;
+    sideA && sideA.loadRegions();
+    sideB && sideB.loadRegions();
+    gate();
+  };
+  // Restore from the URL. A pair carries the project inside its tokens; a
+  // sweep carries it in its own field, and its sides have a region and an
+  // environment but no file — so both shapes are read rather than only the one
+  // that happened to exist first.
+  const a = (document.getElementById('p_a').value || '').split('|');
+  const b = (document.getElementById('p_b').value || '').split('|');
+  const field = document.getElementById('p_pid');
+  const pid = a.length === 4 ? a[0]
+            : (b.length === 4 ? b[0] : ((field && field.value) || ''));
+  if (pid) {
+    SHARED.pid = pid;
+    if (field) field.value = pid;
+    kproj.set(pid);
+    // The route has already translated any a/b token into these fields, so one
+    // path restores both a fresh selection and an old bookmark.
+    sideA.restore(pid, document.getElementById('p_rga').value,
+                  document.getElementById('p_ea').value);
+    sideB.restore(pid, document.getElementById('p_rgb').value,
+                  document.getElementById('p_eb').value);
+  }
+}
+function swapPair() {
+  // Swaps what is actually submitted. It used to swap the a/b tokens, which the
+  // sweep does not read — the button would have appeared to do nothing.
+  const rga = document.getElementById('p_rga'), ea = document.getElementById('p_ea');
+  const rgb = document.getElementById('p_rgb'), eb = document.getElementById('p_eb');
+  if (!rga.value && !rgb.value) return;
+  [rga.value, rgb.value] = [rgb.value, rga.value];
+  [ea.value, eb.value] = [eb.value, ea.value];
+  document.getElementById('pairForm').submit();
+}
+// copy A's selection into B so you only need to change the environment
+function mirrorFromA() {
+  // Copy A's region and environment into B, so only the environment needs
+  // changing — which is the common case and the reason the button exists.
+  if (!sideB) return;
+  const rgid = document.getElementById('p_rga').value;
+  const env = document.getElementById('p_ea').value;
+  if (!rgid) return;
+  sideB.restore(SHARED.pid, rgid, env);  // project is shared; only B's levels move
+}
+
+
+/* ── row filters ───────────────────────────────────────────── */
+function applyFilters() {
+  const onlyDiff = document.getElementById('onlyDiff');
+  if (!onlyDiff) return;
+  const q = (document.getElementById('rowFilter').value || '').toLowerCase();
+  const plat = document.getElementById('showPlat').checked;
+  let visible = 0;
+  document.querySelectorAll('tr.row').forEach(r => {
+    let show = true;
+    if (onlyDiff.checked && r.classList.contains('same')) show = false;
+    if (!plat && r.dataset.plat === '1') show = false;
+    if (q && !r.dataset.key.includes(q)) show = false;
+    r.style.display = show ? '' : 'none';
+    if (show) visible++;
+  });
+  const none = document.getElementById('noRows');
+  if (none) none.style.display = visible ? 'none' : '';
+}
+['onlyDiff', 'showPlat', 'rowFilter'].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener(id === 'rowFilter' ? 'input' : 'change', applyFilters);
+});
+applyFilters();

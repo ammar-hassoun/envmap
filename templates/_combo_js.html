@@ -1,0 +1,141 @@
+{#- The searchable picker, on its own so more than one page can have one.
+
+    It was written for Compare and lived inside that page's script, tangled
+    with its project/region cascade — so the cluster page could not have a
+    namespace picker without a second implementation. Nothing here knows what
+    it is picking: give it items and an onPick.
+
+    Keyboard: ↑ ↓ to move, Enter to choose, Escape to close. The panel is
+    position:fixed so a card with overflow:hidden cannot clip it. -#}
+// Searchable cascading pickers built on TREE.
+function makeCombo(mountId, placeholder) {
+  const mount = document.getElementById(mountId);
+  if (!mount) return null;
+  mount.innerHTML = `
+    <div class="combo">
+      <button type="button" class="combo-btn"><span class="combo-val"></span><span class="combo-caret">▾</span></button>
+      <div class="combo-pop">
+        <input type="search" class="combo-search" placeholder="Search…" autocomplete="off">
+        <div class="combo-list"></div>
+      </div>
+    </div>`;
+  const api = {
+    root: mount.querySelector('.combo'),
+    btn: mount.querySelector('.combo-btn'),
+    val: mount.querySelector('.combo-val'),
+    pop: mount.querySelector('.combo-pop'),
+    search: mount.querySelector('.combo-search'),
+    list: mount.querySelector('.combo-list'),
+    items: [], value: null, onPick: null, placeholder,
+  };
+  api.val.textContent = placeholder;
+  api.val.classList.add('muted');
+
+  function render(q) {
+    const needle = (q || '').toLowerCase();
+    const shown = api.items.filter(i =>
+      !needle || i.label.toLowerCase().includes(needle) ||
+      (i.sub || '').toLowerCase().includes(needle));
+    api.list.innerHTML = shown.length ? shown.map(i => `
+      <button type="button" class="combo-item${i.value === api.value ? ' sel' : ''}"
+              data-v="${encodeURIComponent(i.value)}">
+        <span>${i.label}</span>${i.sub ? `<span class="combo-sub">${i.sub}</span>` : ''}
+      </button>`).join('')
+      : `<div class="combo-empty">no matches</div>`;
+    api.list.querySelectorAll('.combo-item').forEach(el =>
+      el.addEventListener('click', () => {
+        api.set(decodeURIComponent(el.dataset.v));
+        close();
+        if (api.onPick) api.onPick(api.value);
+      }));
+  }
+  function place() {
+    // fixed positioning so the panel is never clipped by a card's overflow
+    const vh = document.documentElement.clientHeight || window.innerHeight || 800;
+    const vw = document.documentElement.clientWidth || window.innerWidth || 1200;
+    const r = api.btn.getBoundingClientRect();
+    const width = Math.max(r.width, 270);
+    api.pop.style.width = width + 'px';
+    api.pop.style.left = Math.max(12, Math.min(r.left, vw - width - 12)) + 'px';
+
+    const below = vh - r.bottom - 16;
+    const above = r.top - 16;
+    const flip = below < 200 && above > below;
+    const room = Math.max(160, flip ? above : below);
+    api.list.style.maxHeight = Math.min(320, room - 48) + 'px';
+    if (flip) {
+      api.pop.style.top = 'auto';
+      api.pop.style.bottom = (vh - r.top + 6) + 'px';
+    } else {
+      api.pop.style.bottom = 'auto';
+      api.pop.style.top = (r.bottom + 6) + 'px';
+    }
+  }
+  function open() {
+    document.querySelectorAll('.combo.open').forEach(c => c.classList.remove('open'));
+    api.root.classList.add('open');
+    api.search.value = ''; render('');
+    place();
+    requestAnimationFrame(() => api.search.focus());
+  }
+  function close() { api.root.classList.remove('open'); }
+  // keep the panel glued to its button while the page moves
+  window.addEventListener('scroll', () => {
+    if (api.root.classList.contains('open')) place();
+  }, true);
+  window.addEventListener('resize', () => {
+    if (api.root.classList.contains('open')) place();
+  });
+  api.btn.addEventListener('click', e => {
+    e.stopPropagation();
+    api.root.classList.contains('open') ? close() : open();
+  });
+  // keep clicks inside the popup from reaching the document handler,
+  // otherwise focusing the search box immediately closes the panel
+  api.pop.addEventListener('mousedown', e => e.stopPropagation());
+  api.pop.addEventListener('click', e => e.stopPropagation());
+
+  api.search.addEventListener('input', () => { render(api.search.value); mark(0); });
+  api.search.addEventListener('keydown', e => {
+    const items = [...api.list.querySelectorAll('.combo-item')];
+    if (e.key === 'Escape') { close(); api.btn.focus(); return; }
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (!items.length) return;
+      const cur = items.findIndex(i => i.classList.contains('active'));
+      mark(((cur < 0 ? 0 : cur) + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length);
+      return;
+    }
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      (items.find(i => i.classList.contains('active')) || items[0])?.click();
+    }
+  });
+  function mark(idx) {
+    const items = [...api.list.querySelectorAll('.combo-item')];
+    items.forEach(i => i.classList.remove('active'));
+    if (items[idx]) {
+      items[idx].classList.add('active');
+      items[idx].scrollIntoView({block: 'nearest'});
+    }
+  }
+  // only close when the click really lands outside this combo
+  document.addEventListener('mousedown', e => {
+    if (!api.root.contains(e.target)) close();
+  });
+
+  api.setItems = function (items, keepValue) {
+    api.items = items;
+    if (!keepValue || !items.some(i => i.value === api.value)) api.set(null);
+    else api.set(api.value);
+    api.btn.disabled = items.length === 0;
+    api.root.classList.toggle('disabled', items.length === 0);
+  };
+  api.set = function (v) {
+    api.value = v;
+    const hit = api.items.find(i => i.value === v);
+    api.val.textContent = hit ? hit.label : api.placeholder;
+    api.val.classList.toggle('muted', !hit);
+  };
+  return api;
+}

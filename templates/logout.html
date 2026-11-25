@@ -1,0 +1,11 @@
+{% extends "_auth_shell.html" %}
+{% block body %}
+<h1>Sign out?</h1>
+<p class="sub">This ends your session in this browser.</p>
+<form method="post" action="/logout">
+  <button type="submit" autofocus>Sign out</button>
+</form>
+{% endblock %}
+{% block after %}
+<div class="note"><a href="/" style="color:var(--muted);">Stay signed in</a></div>
+{% endblock %}

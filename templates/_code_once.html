@@ -1,0 +1,35 @@
+{# The authenticator code field of /mfa and /mfa/setup: digits only, and the
+   form is sent by the sixth digit and then NEVER AGAIN from this page.
+
+   It used to call form.submit() on the sixth digit, which skips the submit
+   event, so Enter, the button or a password manager sent the same form a
+   moment later. The first POST signed in; the second arrived with the code
+   already used, was refused, and its "incorrect code" page was the one the
+   browser showed on a sign-in that had worked (reported 23 November 2026).
+   requestSubmit() goes through the submit event, where every later send is
+   cancelled. The server answers a repeat from a signed-in session with the
+   home page as well (main.py, mfa_verify), so this is the first of two
+   guards, not the only one. #}
+<script nonce="{{ csp_nonce() }}">
+(() => {
+  const c = document.getElementById('code'), f = c.form,
+        b = f.querySelector('button[type=submit]');
+  let sent = false;
+  f.addEventListener('submit', e => {
+    if (sent) { e.preventDefault(); return; }
+    sent = true;
+    // after the event, so the send already under way is not the one stopped
+    setTimeout(() => { b.disabled = true; });
+  });
+  // back to this page through the browser's history: it may be sent again
+  addEventListener('pageshow', e => {
+    if (e.persisted) { sent = false; b.disabled = false; }
+  });
+  c.addEventListener('input', () => {
+    c.value = c.value.replace(/\D/g, '').slice(0, 6);
+    if (c.value.length === 6 && !sent) {
+      if (f.requestSubmit) f.requestSubmit(); else f.submit();
+    }
+  });
+})();
+</script>

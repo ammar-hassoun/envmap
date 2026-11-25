@@ -1,0 +1,83 @@
+{#- The SOPs tab: every runbook the terminal's side panel offers. Reading is
+    the `pam` area this page already needs; writing is `pam_sops`, deleting is
+    `pam_sops` and `pam_delete` — and a control somebody may not use is
+    disabled with the reason, never hidden — the reasons are sops.why_not()'s,
+    the rule the handlers refuse with. -#}
+<style>
+  .sop-tab-q { flex:0 1 240px; min-width:150px; font-size:12.5px; padding:4px 9px; }
+</style>
+<div class="card">
+  <div class="card-h" style="flex-wrap:wrap;">Standard operating procedures
+    <span class="hint">the runbooks every terminal shows beside the shell —
+      each command copies, or pastes at the prompt without pressing Enter</span>
+    <span style="flex:1"></span>
+    {% if sop_list %}
+    <input type="search" id="sopQ" class="sop-tab-q" placeholder="search SOPs…"
+           autocomplete="off" spellcheck="false" aria-label="search the SOPs">
+    <span class="hint" id="sopCount"></span>
+    {% endif %}
+    {% if not sop_why.write %}<a class="btn tbtn" href="/pam/sops/new">＋ New SOP</a>
+    {% else %}<button class="btn tbtn" type="button" disabled
+      title="{{ sop_why.write }}">＋ New SOP</button>{% endif %}
+  </div>
+  {% if sop_list %}
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins" id="sopTable">
+      <thead><tr>
+        <th style="min-width:280px;">SOP</th>
+        <th style="min-width:150px;">Tags</th>
+        <th style="width:120px;">Steps</th>
+        <th style="width:200px;">Updated</th>
+        <th class="actcol no-sort" style="width:200px;"></th>
+      </tr></thead>
+      <tbody>
+      {% for s in sop_list %}
+      <tr data-find="{{ (s.title ~ ' ' ~ s.summary ~ ' ' ~ s.tags|join(' '))|lower }}">
+        <td class="jname"><a href="/pam/sops/{{ s.id }}"><b>{{ s.title }}</b></a>
+          {% if s.summary %}<div class="sec-note" style="margin:3px 0 0;">{{ s.summary }}</div>{% endif %}</td>
+        <td>{% for tg in s.tags %}<span class="badge" style="margin:0 4px 4px 0;">{{ tg }}</span>
+          {% else %}<span class="muted">—</span>{% endfor %}</td>
+        <td>{{ s.step_count }} step{{ 's' if s.step_count != 1 }}
+          <div class="sec-note" style="margin:2px 0 0;">{{ s.command_count }}
+            command{{ 's' if s.command_count != 1 }}</div></td>
+        <td data-sort="{{ s.updated_sort }}">{{ s.updated_day }}
+          <div class="sec-note" style="margin:2px 0 0;">{{ s.updated_by or brand().name ~ ' (shipped example)' }}</div></td>
+        <td class="mid actcol">
+          <div class="actrow oneline">
+            <a class="abtn" href="/pam/sops/{{ s.id }}">open</a>
+            {% if not sop_why.write %}<a class="abtn" href="/pam/sops/{{ s.id }}/edit">edit</a>
+            {% else %}<button type="button" class="abtn" disabled
+              title="{{ sop_why.write }}">edit</button>{% endif %}
+            {% if not sop_why.delete %}
+            <form method="post" action="/pam/sop/delete" style="display:inline;"
+                  data-del="the SOP “{{ s.title }}”">
+              <input type="hidden" name="sid" value="{{ s.id }}">
+              <button type="submit" class="abtn danger">delete</button>
+            </form>
+            {% else %}<button type="button" class="abtn danger" disabled
+              title="{{ sop_why.delete }}">delete</button>{% endif %}
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <div class="card-b" id="sopNone" hidden
+         style="color:var(--muted);font-size:13px;">No SOP matches that.</div>
+  </div>
+  <script nonce="{{ csp_nonce() }}">
+  window.pamRowFilter(document.getElementById('sopQ'),
+                      [...document.querySelectorAll('#sopTable tbody tr')],
+                      document.getElementById('sopCount'),
+                      document.getElementById('sopNone'));
+  </script>
+  {% else %}
+  <div class="card-b" style="color:var(--muted);font-size:13px;">
+    No SOPs yet. An SOP is a runbook — numbered steps, and the commands for
+    each — that the terminal shows beside the shell, so a renewal or a restart
+    is done the same way every time.
+    {% if not sop_why.write %}<a href="/pam/sops/new">Write the first one</a>.
+    {% else %}Somebody holding “Privileged Access: write SOPs” adds them here.{% endif %}
+  </div>
+  {% endif %}
+</div>

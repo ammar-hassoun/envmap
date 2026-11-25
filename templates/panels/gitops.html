@@ -1,0 +1,49 @@
+{# Argo CD applications. Out-of-sync and unhealthy are counted separately: an app
+   can be perfectly healthy while running something other than what is in git,
+   and that is the state that surprises people mid-incident. #}
+{% set g = d.gitops %}
+{% if g and g.conns %}
+<div class="card" style="margin:0;">
+  <div class="card-h">🔁 <a href="/gitops" style="color:var(--text);">GitOps</a>
+    <span class="hint">{{ g.apps }} application{{ 's' if g.apps != 1 }}</span>
+    <span style="flex:1"></span>
+    {% if g.outofsync %}
+    <a class="badge" style="color:var(--warn-ink);" href="/gitops"><b
+       style="color:var(--warn-ink);">{{ g.outofsync }}</b> out of sync</a>
+    {% endif %}
+    {% if g.degraded %}
+    <a class="badge" style="color:var(--danger-ink);" href="/gitops"><b
+       style="color:var(--danger-ink);">{{ g.degraded }}</b> degraded</a>
+    {% endif %}
+    {% if not g.outofsync and not g.degraded and g.apps %}
+    <span class="badge" style="color:var(--ok-ink);">all synced and healthy</span>
+    {% endif %}
+  </div>
+  <div class="card-b">
+    {% for s in g.sites %}
+    <div class="kv" style="gap:8px;flex-wrap:wrap;{{
+         'border-top:1px solid var(--line);padding-top:8px;margin-top:8px;'
+         if not loop.first }}">
+      <b style="font-size:13px;">{{ s.name }}</b>
+      <span style="flex:1"></span>
+      {% if s.error %}
+      <span class="hint" style="color:var(--warn-ink);">{{ s.error }}</span>
+      {% else %}
+      <span class="badge">{{ s.apps }} apps</span>
+      <span class="badge" style="color:var(--ok-ink);">{{ s.synced }} synced</span>
+      {% if s.outofsync %}<span class="badge" style="color:var(--warn-ink);">{{
+        s.outofsync }} drifted</span>{% endif %}
+      {% if s.degraded %}<span class="badge" style="color:var(--danger-ink);">{{
+        s.degraded }} degraded</span>{% endif %}
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% else %}
+<div class="card" style="margin:0;"><div class="card-b">
+  <p class="sub" style="margin:0;">No GitOps tool connected.
+    <a href="/settings/conns/gitops">Connect Argo CD</a> and this panel shows
+    which applications have drifted from git.</p>
+</div></div>
+{% endif %}

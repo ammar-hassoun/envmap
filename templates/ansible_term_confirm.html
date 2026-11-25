@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block crumbs %}<a href="/ansible">Ansible</a> <span class="sep">/</span>
+  <a href="/ansible/groups/{{ g.id }}">{{ g.name }}</a> <span class="sep">/</span>
+  <b>Terminal</b>{% endblock %}
+{% block content %}
+{#- A production group demands its name before a terminal opens on one of its
+    hosts — the same confirm a real run does, collected on the way in because
+    a socket has nobody to prompt. -#}
+<div class="page-head"><div>
+  <h1>Open a terminal on {{ host }}</h1>
+  <p class="sub">{{ g.name }} is marked <b>production</b>. Type its name to
+    confirm a live session on <b>{{ host }}</b>.</p>
+</div></div>
+
+{% if bad %}<div class="flash err">⚠ That did not match {{ g.name }}.</div>{% endif %}
+
+<div class="card">
+  <div class="card-b">
+    <form method="get" action="/ansible/groups/{{ g.id }}/terminal">
+      <input type="hidden" name="host" value="{{ host }}">
+      <div class="field-row"><label>type {{ g.name }}</label>
+        <input type="text" name="confirm" required placeholder="{{ g.name }}"
+               spellcheck="false" autocomplete="off" autofocus></div>
+      <div class="actions" style="margin-top:6px;">
+        <button type="submit" style="padding:6px 16px;font-size:12.5px;">
+          Open the terminal</button>
+        <a class="btn btn-ghost" href="/ansible/groups/{{ g.id }}"
+           style="padding:6px 16px;font-size:12.5px;">Cancel</a>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

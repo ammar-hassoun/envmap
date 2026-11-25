@@ -1,0 +1,364 @@
+{% extends "base.html" %}
+{% import "_bits.html" as bits %}
+{% import "_virt_bits.html" as vb %}
+{% block crumbs %}<a href="/virt">Hypervisors</a> <span>›</span>
+  <a href="/virt/host?c={{ conn.id|urlencode }}&node={{ node|urlencode }}">{{ conn.name }}</a> <span>›</span>
+  <b>{{ vm.name or vmid }}</b>{% endblock %}
+{% block content %}
+{%- set base = '/virt/vm?c=' ~ (conn.id|urlencode) ~ '&vm=' ~ (vmid|urlencode) ~ '&node=' ~ (node|urlencode) ~ '&kind=' ~ (kind|urlencode) -%}
+<div data-virt data-c="{{ conn.id }}" data-node="{{ node }}" data-kind="{{ kind }}" data-vm="{{ vmid }}"
+     data-prod="{{ '1' if conn.production else '0' }}" data-prodname="{{ vm.name or '' }}">
+{% if msg %}<div class="flash">✓ {{ msg }}</div>{% endif %}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+{% if error %}
+<div class="flash err">⚠ {{ error }} — <a href="/virt">back to Hypervisors</a></div>
+{% else %}
+{%- set on = vm.power in ('poweredOn', 'running') -%}
+{%- set off = vm.power in ('poweredOff', 'stopped') -%}
+<div class="page-head">
+  <div>
+    <h1 style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">{{ vm.name }}
+      <span class="sv {{ 'sv-ok' if on else 'sv-medium' }}" style="font-size:12px;{{ 'color:var(--ok-ink);' if on }}">{{ vm.state }}</span>
+      {% if vm.template %}<span class="badge">template</span>{% endif %}
+      {% if conn.production %}<span class="badge" style="color:var(--danger-ink);">production</span>{% endif %}</h1>
+    <p class="sub">{{ vm.guest_os or vm.ostype or '' }}
+      {%- if vm.host or node %} · on {{ vm.host or node }}{% endif %}
+      {%- if vm.ip %} · {{ vm.ip }}{% elif vm.ips %} · {{ vm.ips|join(', ') }}{% endif %}
+      {%- if vm.uptime %} · up {{ vm.uptime }}{% endif %}</p>
+    {%- set ci = chain_info or {} %}
+    {% if ci %}
+    <div class="runson" style="margin-top:6px;">
+      {% if ci.host %}{{ glyph('layers', 13) }} on <a href="{{ ci.host.href }}">{{ ci.host.label }}</a>
+        {%- if ci.server %} <span class="sep">→</span> server <a href="{{ ci.server.href }}&sec=runs">{{ ci.server.name }}</a>{% endif %}
+        <span class="sep">·</span>{% endif %}
+      {{ glyph('boxes', 13) }}
+      {% if ci.doubt %}<span class="sv sv-high">could not tell which Kubernetes node</span>
+        {% for d in ci.doubt %}{{ ' or ' if not loop.first }}{% if d.hidden %}a node you cannot open{% else %}<a href="{{ d.href }}">{{ d.name }}</a> of {{ d.cluster }}{% endif %}{% endfor %}
+        <span class="how">({{ ci.node_how }})</span>
+      {% elif ci.node and ci.node.hidden %}a Kubernetes node in a cluster your roles do not open ({{ ci.node.pods }} pods)
+      {% elif ci.node %}Kubernetes node <a href="{{ ci.node.href }}"><b>{{ ci.node.name }}</b></a> of {{ ci.node.cluster }}
+        {%- if not ci.node.ready %} <span class="sv sv-critical">NotReady</span>{% endif %}
+        <span class="sep">·</span> {{ ci.node.pods }} pods{% if ci.node.bad %} <span style="color:var(--danger-ink);">({{ ci.node.bad }} not healthy)</span>{% endif %}
+        <span class="how">{{ ci.node_how if ci.node_how.startswith('set by hand') else 'linked by ' ~ ci.node_how }}{% if ci.note %} · {{ ci.note }}{% endif %}</span>
+      {% else %}not a Kubernetes node EnvMap knows{% if ci.note %} <span class="how">({{ ci.note }})</span>{% endif %}{% if ci.node_how %} <span class="how">({{ ci.node_how }})</span>{% endif %}{% endif %}
+      {% if ci.can_link %}
+      <details style="display:inline-block;">
+        <summary class="how" style="cursor:pointer;">change</summary>
+        <form data-link="/virt/link" class="vform" style="margin-top:6px;">
+          <input type="hidden" name="vm" value="{{ ci.vm.key }}">
+          <label>Kubernetes node<select name="node">{% if ci.node and ci.node.key %}<option value="{{ ci.node.key }}" selected>{{ ci.node.name }} · {{ ci.node.cluster }}</option>{% endif %}
+            {% for c in ci.choices %}<option value="{{ c.key }}">{{ c.label }}</option>{% endfor %}</select></label>
+          <button type="button" class="abtn go" name="link" value="link">Link</button>
+          <button type="button" class="abtn" name="link" value="none">Not a node</button>
+          {% if ci.node_how and 'by hand' in ci.node_how %}<button type="button" class="abtn" name="link" value="auto">Back to automatic</button>{% endif %}
+        </form>
+      </details>{% endif %}
+    </div>
+    {% endif %}
+  </div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+    {{ vb.console_link(conn, vm, node, kind, caps) }}
+    <a class="btn btn-ghost" href="{{ base }}&sec={{ sec }}">↻ Refresh</a>
+  </div>
+</div>
+
+{% if caps.power and caps.admin and caps.console %}
+<div class="sec-note" style="margin:0 0 12px;">Read-only here: {{ caps.admin }}.</div>
+{% endif %}
+
+<div class="card"><div class="card-b vactions">
+  {%- set vimp = '/virt/impact?c=' ~ (conn.id|urlencode) ~ '&vm=' ~ (vmid|urlencode) %}
+  {{ vb.power(vm, caps, flavor, impact=vimp) }}
+  <span class="vsep"></span>
+  <button type="button" class="abtn" data-dlg-open="vsnapdlg" {{ vb.no(caps, 'power') }}>📸 Snapshot</button>
+  {% if flavor == 'proxmox' and kind == 'qemu' %}
+  <button type="button" class="abtn" data-dlg-open="vclonedlg" {{ vb.no(caps, 'admin') }}>⧉ Clone</button>
+  <button type="button" class="abtn" data-dlg-open="vmigdlg" {{ vb.no(caps, 'admin') }}>⇄ Migrate</button>
+  {% endif %}
+  <span style="flex:1"></span>
+  {% if flavor == 'esxi' %}
+  <button type="button" class="abtn" data-act="vm.unregister" data-impact="{{ vimp }}" data-target="{{ vm.name }}" data-label="Remove {{ vm.name }} from the inventory"
+    data-ask="Remove {{ vm.name }} from this host's inventory? Its files stay on the datastore and it can be registered again."
+    data-after="/virt/host?c={c}&sec=vms"
+    {% if not off %}disabled title="power it off first"{% else %}{{ vb.no(caps, 'admin') }}{% endif %}>Unregister</button>
+  {% endif %}
+  <button type="button" class="abtn danger" data-act="vm.delete" data-impact="{{ vimp }}" data-target="{{ vm.name }}" data-label="Delete {{ vm.name }}"
+    data-del="{{ vm.name }} and its disks" data-after="/virt/host?c={c}&node={node}&sec=vms"
+    {% if not off %}disabled title="power it off first"{% else %}{{ vb.no(caps, 'admin') }}{% endif %}>Delete</button>
+</div></div>
+{{ vb.status() }}
+
+{{ bits.subtabs(base, 'sec', sec, [
+  {'key': 'summary', 'label': 'Summary', 'icon': 'layers', 'count': none},
+  {'key': 'hardware', 'label': 'Hardware', 'icon': 'cpu', 'count': none},
+  {'key': 'snapshots', 'label': 'Snapshots', 'icon': 'history', 'count': vm.snapshots|length},
+  {'key': 'tasks', 'label': 'Tasks', 'icon': 'clipboard-list', 'count': none}], wide=true) }}
+
+{% if sec == 'summary' %}
+<div class="vgrid">
+  <div class="card"><div class="card-h">Usage</div><div class="card-b">
+    <table class="kvt">
+      <tr><td class="k">CPU</td><td>{% if vm.cpu_pct is not none %}{{ vm.cpu_pct }}% of {% endif %}{{ vm.cpus }} vCPU{{ 's' if vm.cpus != 1 }}
+        {%- if vm.cores_per_socket and vm.cores_per_socket > 1 %} ({{ vm.cores_per_socket }} per socket){% elif vm.sockets and vm.sockets > 1 %} × {{ vm.sockets }} sockets{% endif %}</td></tr>
+      <tr><td class="k">Memory</td><td>{% if vm.mem_pct is not none %}{{ vm.mem_pct }}% of {% endif %}{{ ((vm.memory_mb or 0) / 1024)|round(1) }} GiB</td></tr>
+      {% if vm.committed_gib is defined %}<tr><td class="k">On disk</td><td>{{ vm.committed_gib }} GiB</td></tr>{% endif %}
+      <tr><td class="k">Uptime</td><td>{{ vm.uptime or '—' }}</td></tr>
+    </table></div></div>
+  <div class="card"><div class="card-h">Guest</div><div class="card-b">
+    <table class="kvt">
+      <tr><td class="k">OS</td><td>{{ vm.guest_running_os or vm.guest_os or vm.ostype or '—' }}</td></tr>
+      {% if flavor == 'esxi' %}
+      <tr><td class="k">Host name</td><td>{{ vm.hostname or '—' }}</td></tr>
+      <tr><td class="k">VMware Tools</td><td>{{ {'guestToolsRunning': 'running', 'guestToolsNotRunning': 'not running', 'guestToolsExecutingScripts': 'starting'}.get(vm.tools, vm.tools or '—') }}
+        {%- if vm.tools_version and vm.tools_version not in ('guestToolsCurrent', 'guestToolsUnmanaged') %} · {{ vm.tools_version|replace('guestTools', '')|lower }}{% endif %}</td></tr>
+      {% else %}
+      <tr><td class="k">Guest agent</td><td>{{ 'enabled' if vm.agent else 'not enabled' }}</td></tr>
+      <tr><td class="k">Start at boot</td><td>{{ 'yes' if vm.onboot else 'no' }}</td></tr>
+      {% endif %}
+      <tr><td class="k">Addresses</td><td>
+        {%- if vm.nets %}{% for n in vm.nets %}<div>{{ n.ips|join(', ') or '—' }} <span class="hint">{{ n.network }} · {{ n.mac }}</span></div>{% endfor %}
+        {%- elif vm.ips %}{{ vm.ips|join(', ') }}{% else %}—{% endif %}</td></tr>
+    </table></div></div>
+  <div class="card"><div class="card-h">Configuration</div><div class="card-b">
+    <table class="kvt">
+      {% if flavor == 'esxi' %}
+      <tr><td class="k">Firmware</td><td>{{ 'UEFI' if vm.firmware == 'efi' else 'BIOS' }}{% if vm.secure_boot %} · Secure Boot{% endif %}</td></tr>
+      <tr><td class="k">Hardware</td><td>{{ vm.hw_version }}</td></tr>
+      <tr><td class="k">Files</td><td style="word-break:break-all;">{{ vm.vmx }}</td></tr>
+      {% else %}
+      <tr><td class="k">Firmware</td><td>{{ 'UEFI (OVMF)' if vm.bios == 'ovmf' else 'BIOS (SeaBIOS)' }}</td></tr>
+      <tr><td class="k">VM id</td><td>{{ vm.id }} on {{ node }}</td></tr>
+      {% if vm.lock %}<tr><td class="k">Lock</td><td style="color:var(--warn-ink);">{{ vm.lock }}</td></tr>{% endif %}
+      {% endif %}
+      <tr><td class="k">Disks</td><td>{{ vm.disks|length }} · {{ vm.disks|sum(attribute='gib')|round(1) }} GiB</td></tr>
+      <tr><td class="k">Adapters</td><td>{{ vm.nics|map(attribute='network')|join(', ') or '—' }}</td></tr>
+    </table></div></div>
+  <div class="card"><div class="card-h">Notes</div><div class="card-b">
+    <form data-act="vm.resources" data-label="Save the notes">
+      <textarea name="notes" rows="4" style="width:100%;" {{ vb.no(caps, 'admin') }}>{{ vm.notes or '' }}</textarea>
+      <div class="actions" style="margin-top:8px;"><button type="submit" class="abtn" {{ vb.no(caps, 'admin') }}>Save notes</button></div>
+    </form></div></div>
+</div>
+
+{% elif sec == 'hardware' %}
+<div class="card"><div class="card-h">CPU and memory
+  <span class="hint">{% if flavor == 'esxi' %}most guests need to be off for this, unless hot-add is enabled{% endif %}</span></div>
+  <div class="card-b">
+  <form data-act="vm.resources" data-label="Change CPU and memory" class="vform">
+    <label>vCPUs<input type="number" name="cpus" min="1" max="768" value="{{ vm.cpus }}" required {{ vb.no(caps, 'admin') }}></label>
+    {% if flavor == 'esxi' %}
+    <label>Cores per socket<input type="number" name="cores_per_socket" min="1" max="768" value="{{ vm.cores_per_socket or 1 }}" {{ vb.no(caps, 'admin') }}></label>
+    {% else %}
+    <label>Sockets<input type="number" name="sockets" min="1" max="8" value="{{ vm.sockets or 1 }}" {{ vb.no(caps, 'admin') }}></label>
+    {% endif %}
+    <label>Memory (MB)<input type="number" name="memory_mb" min="256" step="4" value="{{ vm.memory_mb }}" required {{ vb.no(caps, 'admin') }}></label>
+    {% if flavor == 'proxmox' %}
+    <label class="chk"><input type="checkbox" name="onboot" {% if vm.onboot %}checked{% endif %} {{ vb.no(caps, 'admin') }}> start at boot</label>
+    {% endif %}
+    <button type="submit" class="abtn go" {{ vb.no(caps, 'admin') }}>Apply</button>
+  </form></div></div>
+
+<div class="card"><div class="card-h">Disks <span class="hint">{{ vm.disks|length }}</span></div><div class="card-b">
+  {% if vm.disks %}
+  <div style="overflow-x:auto;"><table class="jenkins">
+    <thead><tr><th>Disk</th><th>Size</th><th>File</th><th style="min-width:260px;"></th></tr></thead>
+    <tbody>
+    {% for d in vm.disks %}
+    <tr>
+      <td><b>{{ d.label or d.key }}</b>{% if d.thin %} <span class="hint">thin</span>{% endif %}{% if d.mount %} <span class="hint">{{ d.mount }}</span>{% endif %}</td>
+      <td>{{ d.gib }} GiB</td>
+      <td class="hint" style="word-break:break-all;">{{ d.file }}</td>
+      <td class="actcol">
+        <form data-act="vm.disk_extend" data-p-key="{{ d.key }}" data-label="Grow {{ d.label or d.key }}" style="display:inline-flex;gap:6px;align-items:center;"
+              data-ask="Grow {{ d.label or d.key }}? A disk cannot be made smaller again; grow the partition inside the guest afterwards.">
+          <input type="number" name="gib" min="{{ d.gib + 1 }}" step="1" value="{{ (d.gib + 10)|int }}" style="width:90px;" {{ vb.no(caps, 'admin') }} {% if not d.resizable is undefined and not d.resizable %}disabled{% endif %}> GiB
+          <button type="submit" class="abtn" {{ vb.no(caps, 'admin') }}>Grow</button></form>
+        <button type="button" class="abtn danger" data-act="vm.device_remove" data-p-key="{{ d.key }}" data-p-delete-file="1"
+          data-label="Remove {{ d.label or d.key }}" data-del="{{ d.label or d.key }} from {{ vm.name }}"
+          {{ vb.no(caps, 'admin') }}>Remove</button>
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody></table></div>
+  {% else %}<div class="sec-note">No disks.</div>{% endif %}
+  <form data-act="vm.disk_add" data-label="Add a disk" class="vform" style="margin-top:12px;">
+    <b style="font-size:12.5px;">Add a disk</b>
+    <label>Size (GiB)<input type="number" name="gib" min="1" value="20" required {{ vb.no(caps, 'admin') }}></label>
+    <label>{{ 'Datastore' if flavor == 'esxi' else 'Storage' }}<select name="datastore" {{ vb.no(caps, 'admin') }}>
+      {% for d in vopts.datastores or [] %}<option value="{{ d.name }}">{{ d.name }} · {{ d.free_gib }} GiB free</option>{% endfor %}</select></label>
+    {% if flavor == 'esxi' %}<label class="chk"><input type="checkbox" name="thin" checked {{ vb.no(caps, 'admin') }}> thin</label>{% endif %}
+    <button type="submit" class="abtn go" {{ vb.no(caps, 'admin') }}>Add disk</button>
+  </form>
+</div></div>
+
+<div class="card"><div class="card-h">Network adapters <span class="hint">{{ vm.nics|length }}</span></div><div class="card-b">
+  {% if vm.nics %}
+  <div style="overflow-x:auto;"><table class="jenkins">
+    <thead><tr><th>Adapter</th><th>MAC</th><th>Network</th><th>Link</th><th></th></tr></thead>
+    <tbody>
+    {% for n in vm.nics %}
+    <tr>
+      <td><b>{{ n.label or n.key }}</b> <span class="hint">{{ n.adapter }}</span></td>
+      <td style="font-family:var(--mono);font-size:11.5px;">{{ n.mac }}</td>
+      <td>
+        <form data-act="vm.nic_set" data-p-key="{{ n.key }}" data-label="Move {{ n.label or n.key }}" style="display:inline-flex;gap:6px;align-items:center;">
+          <select name="network" {{ vb.no(caps, 'admin') }}>
+            {% for net in (vopts.networks or []) %}<option value="{{ net }}" {% if net == n.network %}selected{% endif %}>{{ net }}</option>{% endfor %}
+            {% if n.network not in (vopts.networks or []) %}<option value="{{ n.network }}" selected>{{ n.network }}</option>{% endif %}
+          </select>
+          {% if flavor == 'proxmox' %}<input type="text" name="vlan" value="{{ n.vlan }}" placeholder="VLAN" style="width:70px;" {{ vb.no(caps, 'admin') }}>{% endif %}
+          <button type="submit" class="abtn" {{ vb.no(caps, 'admin') }}>Apply</button></form></td>
+      <td>{% if n.connected %}<span class="sv sv-ok" style="color:var(--ok-ink);">connected</span>{% else %}<span class="sv sv-medium">disconnected</span>{% endif %}</td>
+      <td class="actcol">
+        <button type="button" class="abtn" data-act="vm.nic_set" data-p-key="{{ n.key }}" data-p-connected="{{ '0' if n.connected else '1' }}"
+          data-label="{{ 'Disconnect' if n.connected else 'Connect' }} {{ n.label or n.key }}"
+          {% if n.connected %}data-ask="Disconnect {{ n.label or n.key }}? The guest loses this network until it is connected again."{% endif %}
+          {{ vb.no(caps, 'admin') }}>{{ 'Disconnect' if n.connected else 'Connect' }}</button>
+        <button type="button" class="abtn danger" data-act="vm.device_remove" data-p-key="{{ n.key }}"
+          data-label="Remove {{ n.label or n.key }}" data-del="{{ n.label or n.key }} from {{ vm.name }}" {{ vb.no(caps, 'admin') }}>Remove</button>
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody></table></div>
+  {% else %}<div class="sec-note">No network adapters.</div>{% endif %}
+  <form data-act="vm.nic_add" data-label="Add a network adapter" class="vform" style="margin-top:12px;">
+    <b style="font-size:12.5px;">Add an adapter</b>
+    <label>Network<select name="network" required {{ vb.no(caps, 'admin') }}>
+      {% for net in (vopts.networks or []) %}<option value="{{ net }}">{{ net }}</option>{% endfor %}</select></label>
+    <label>Model<select name="adapter" {{ vb.no(caps, 'admin') }}>
+      {% if flavor == 'esxi' %}<option value="vmxnet3">VMXNET3</option><option value="e1000e">E1000e</option><option value="e1000">E1000</option>
+      {% else %}<option value="virtio">VirtIO</option><option value="e1000">Intel E1000</option><option value="vmxnet3">VMXNET3</option><option value="rtl8139">Realtek</option>{% endif %}
+    </select></label>
+    {% if flavor == 'proxmox' %}<label>VLAN<input type="text" name="vlan" placeholder="none" style="width:80px;" {{ vb.no(caps, 'admin') }}></label>{% endif %}
+    <button type="submit" class="abtn go" {{ vb.no(caps, 'admin') }}>Add adapter</button>
+  </form>
+</div></div>
+
+<div class="card"><div class="card-h">CD/DVD</div><div class="card-b">
+  {% for cd in vm.cdroms %}
+  <form data-act="vm.cd" data-p-key="{{ cd.key }}" data-label="Insert an ISO" class="vform">
+    <b style="font-size:12.5px;">{{ cd.label or cd.key }}</b>
+    <span class="hint">{{ cd.iso or 'empty' }}</span>
+    <select name="iso" {{ vb.no(caps, 'admin') }}>
+      {% for i in (vopts.isos or []) %}<option value="{{ i }}" {% if i == cd.iso %}selected{% endif %}>{{ i }}</option>{% endfor %}
+    </select>
+    <button type="submit" class="abtn go" {{ vb.no(caps, 'admin') }} {% if not vopts.isos %}disabled title="no ISO on any datastore — upload one on the host's Storage tab"{% endif %}>Insert</button>
+    <button type="button" class="abtn" data-act="vm.cd" data-p-key="{{ cd.key }}" data-p-iso="" data-label="Eject"
+      {% if not cd.iso %}disabled title="nothing inserted"{% else %}{{ vb.no(caps, 'admin') }}{% endif %}>Eject</button>
+  </form>
+  {% else %}
+  <div class="sec-note">No CD/DVD drive.
+    {% if flavor == 'proxmox' and kind == 'qemu' %}<button type="button" class="abtn" data-act="vm.cd_add" data-label="Add a CD/DVD drive" {{ vb.no(caps, 'admin') }}>Add a drive</button>{% endif %}</div>
+  {% endfor %}
+</div></div>
+
+{% if flavor == 'esxi' %}
+<div class="card"><div class="card-h">Boot</div><div class="card-b">
+  <form data-act="vm.boot" data-label="Change boot options" class="vform">
+    <label>Firmware<select name="firmware" {% if not off %}disabled title="power it off first"{% else %}{{ vb.no(caps, 'admin') }}{% endif %}>
+      <option value="efi" {% if vm.firmware == 'efi' %}selected{% endif %}>UEFI</option>
+      <option value="bios" {% if vm.firmware != 'efi' %}selected{% endif %}>BIOS</option></select></label>
+    <label class="chk"><input type="checkbox" name="secure_boot" {% if vm.secure_boot %}checked{% endif %} {{ vb.no(caps, 'admin') }}> Secure Boot</label>
+    <button type="submit" class="abtn" {{ vb.no(caps, 'admin') }}>Apply</button>
+  </form>
+  <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+    <button type="button" class="abtn" data-act="vm.boot" data-p-enter-setup="1" data-label="Enter the firmware setup on next boot"
+      {{ vb.no(caps, 'admin') }}>Enter setup on next boot</button>
+    <span class="hint">{% if vm.enter_setup %}set — the next start opens the {{ 'UEFI' if vm.firmware == 'efi' else 'BIOS' }} setup{% else %}opens the {{ 'UEFI' if vm.firmware == 'efi' else 'BIOS' }} setup once, then boots normally{% endif %}</span>
+  </div>
+</div></div>
+{% endif %}
+
+<div class="card"><div class="card-h">Name</div><div class="card-b">
+  <form data-act="vm.rename" data-label="Rename" class="vform">
+    <label>New name<input type="text" name="name" value="{{ vm.name }}" required maxlength="80" {{ vb.no(caps, 'admin') }}></label>
+    <button type="submit" class="abtn" {{ vb.no(caps, 'admin') }}>Rename</button>
+    <span class="hint">renames the VM in the inventory{% if flavor == 'esxi' %}; its folder on the datastore keeps the old name{% endif %}</span>
+  </form>
+</div></div>
+
+{% elif sec == 'snapshots' %}
+<div class="card"><div class="card-h">Snapshots <span class="hint">{{ vm.snapshots|length }}</span>
+  <span style="flex:1"></span>
+  <button type="button" class="abtn" data-dlg-open="vsnapdlg" {{ vb.no(caps, 'power') }}>📸 Take a snapshot</button>
+  {% if flavor == 'esxi' and vm.snapshots %}
+  <button type="button" class="abtn danger" data-act="vm.snapshot_delete_all" data-label="Delete every snapshot" data-target="{{ vm.name }}"
+    data-del="every snapshot of {{ vm.name }}" {{ vb.no(caps, 'power') }}>Delete all</button>{% endif %}
+  </div><div class="card-b">
+  {% if vm.snapshots %}
+  <div style="overflow-x:auto;"><table class="jenkins">
+    <thead><tr><th>Snapshot</th><th>Taken</th><th>State</th><th style="min-width:220px;"></th></tr></thead>
+    <tbody>
+    {% for s in vm.snapshots %}
+    <tr>
+      <td><span style="display:inline-block;width:{{ (s.depth or 0) * 18 }}px;"></span>{% if s.depth %}└ {% endif %}<b>{{ s.name }}</b>
+        {% if s.current %}<span class="badge" style="color:var(--accent-ink);">you are here</span>{% endif %}
+        {% if s.description %}<div class="hint" style="font-size:11.5px;margin-left:{{ (s.depth or 0) * 18 }}px;">{{ s.description }}</div>{% endif %}</td>
+      <td class="hint">{{ s.created|vtime }}</td>
+      <td class="hint">{{ {'poweredOn': 'running, with memory', 'poweredOff': 'powered off', 'suspended': 'suspended'}.get(s.state, s.state) or '—' }}{% if s.quiesced %} · quiesced{% endif %}</td>
+      <td class="actcol">
+        <button type="button" class="abtn" data-act="vm.revert" data-p-snapshot="{{ s.id }}" data-target="{{ vm.name }}" data-label="Revert to {{ s.name }}"
+          data-ask="Revert {{ vm.name }} to “{{ s.name }}”? Everything since that snapshot is lost unless you take another one first."
+          {{ vb.no(caps, 'power') }}>Revert</button>
+        <button type="button" class="abtn danger" data-act="vm.snapshot_delete" data-p-snapshot="{{ s.id }}" data-target="{{ vm.name }}"
+          data-label="Delete {{ s.name }}" data-del="the snapshot {{ s.name }}" {{ vb.no(caps, 'power') }}>Delete</button>
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody></table></div>
+  {% else %}<div class="sec-note">No snapshots.</div>{% endif %}
+</div></div>
+
+{% else %}
+<div class="card"><div class="card-h">Recent tasks</div><div class="card-b">{{ vb.task_rows(vm.tasks) }}</div></div>
+{% endif %}
+
+<dialog id="vsnapdlg" class="pdialog">
+  <form data-act="vm.snapshot" data-label="Take a snapshot" data-target="{{ vm.name }}">
+    <div class="dhead"><span><span class="dtitle">Take a snapshot</span>
+      <span class="dwhere">{{ vm.name }}</span></span><span style="flex:1"></span>
+      <button type="button" class="dx" aria-label="Close" data-dlg-close="vsnapdlg">✕</button></div>
+    <div class="dbody">
+      <div class="dfield"><label for="vs_name">Name</label>
+        <input id="vs_name" name="name" required maxlength="40" value="before-{{ 'change' }}"
+               {% if flavor == 'proxmox' %}pattern="[A-Za-z][A-Za-z0-9_\-]{1,39}" title="starts with a letter: letters, digits, - and _"{% endif %}></div>
+      <div class="dfield"><label for="vs_desc">Description</label><input id="vs_desc" name="description" maxlength="200"></div>
+      <label class="chk"><input type="checkbox" name="memory" {% if not on %}disabled{% endif %}> include memory (the running state, so a revert resumes it)</label>
+      {% if flavor == 'esxi' %}<label class="chk"><input type="checkbox" name="quiesce" {% if vm.tools != 'guestToolsRunning' %}disabled{% endif %}> quiesce the guest's file systems (needs VMware Tools)</label>{% endif %}
+    </div>
+    <div class="dfoot"><button type="button" class="btn-ghost" data-dlg-close="vsnapdlg">Cancel</button>
+      <span class="spacer"></span><button type="submit" {{ vb.no(caps, 'power') }}>Take snapshot</button></div>
+  </form>
+</dialog>
+
+{% if flavor == 'proxmox' and kind == 'qemu' %}
+<dialog id="vclonedlg" class="pdialog">
+  <form data-act="vm.clone" data-label="Clone {{ vm.name }}" data-target="{{ vm.name }}" data-after="/virt/vm?c={c}&node={node}&kind=qemu&vm={new_id}">
+    <div class="dhead"><span><span class="dtitle">Clone</span><span class="dwhere">{{ vm.name }}</span></span><span style="flex:1"></span>
+      <button type="button" class="dx" aria-label="Close" data-dlg-close="vclonedlg">✕</button></div>
+    <div class="dbody">
+      <div class="dfield"><label for="vc_name">Name of the copy</label><input id="vc_name" name="name" required value="{{ vm.name }}-copy"></div>
+      <label class="chk"><input type="checkbox" name="full" checked> full copy (not a linked clone)</label>
+    </div>
+    <div class="dfoot"><button type="button" class="btn-ghost" data-dlg-close="vclonedlg">Cancel</button>
+      <span class="spacer"></span><button type="submit" {{ vb.no(caps, 'admin') }}>Clone</button></div>
+  </form>
+</dialog>
+<dialog id="vmigdlg" class="pdialog">
+  <form data-act="vm.migrate" data-label="Migrate {{ vm.name }}" data-target="{{ vm.name }}" data-after="/virt/host?c={c}&sec=vms">
+    <div class="dhead"><span><span class="dtitle">Migrate</span><span class="dwhere">{{ vm.name }} from {{ node }}</span></span><span style="flex:1"></span>
+      <button type="button" class="dx" aria-label="Close" data-dlg-close="vmigdlg">✕</button></div>
+    <div class="dbody">
+      <div class="dfield"><label for="vm_target">To node</label><input id="vm_target" name="target" required placeholder="node name"></div>
+      <label class="chk"><input type="checkbox" name="online" {% if on %}checked{% endif %}> live (keep it running)</label>
+    </div>
+    <div class="dfoot"><button type="button" class="btn-ghost" data-dlg-close="vmigdlg">Cancel</button>
+      <span class="spacer"></span><button type="submit" {{ vb.no(caps, 'admin') }}>Migrate</button></div>
+  </form>
+</dialog>
+{% endif %}
+{% endif %}
+{{ vb.prod_dialog() }}
+</div>
+<script src="/static/virt.js?v={{ portal_version() }}" nonce="{{ csp_nonce() }}"></script>
+{% endblock %}

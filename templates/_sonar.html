@@ -1,0 +1,197 @@
+{# SonarQube, rendered as SonarQube rather than as a security scanner.
+
+   The rest of this page counts findings by severity, which is the right shape
+   for DefectDojo and the wrong one for Sonar: a project with no vulnerabilities
+   and a failing quality gate would read as perfectly healthy. So Sonar gets its
+   own table — the gate first, because that is the thing that blocks a merge,
+   then the ratings and the measures behind it. #}
+
+{% macro gate(status) -%}
+{% if status == 'OK' %}<span class="qg qg-ok">Passed</span>
+{%- elif status == 'ERROR' %}<span class="qg qg-bad">Failed</span>
+{%- elif status %}<span class="qg qg-warn">{{ status|lower }}</span>
+{%- else %}<span class="qg qg-none">not measured</span>{% endif %}
+{%- endmacro %}
+
+{% macro rating(letter, what) -%}
+{% if letter %}<span class="rt rt-{{ letter|lower }}" title="{{ what }}: {{ letter }}"
+  >{{ letter }}</span>{% else %}<span class="rt rt-none" title="{{ what }}: not measured">–</span>{% endif %}
+{%- endmacro %}
+
+{% macro pct(v) -%}
+{% if v is none %}<span class="absent">—</span>{% else %}{{ '{:.1f}'.format(v) }}%{% endif %}
+{%- endmacro %}
+
+{# ── one row per project ──────────────────────────────────────────────── #}
+{% macro projects(rows, home) %}
+<div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+  <table class="jenkins sonartab">
+    <thead><tr>
+      <th>Project</th>
+      <th style="width:96px;">Quality gate</th>
+      <th style="width:118px;" title="Reliability · Security · Maintainability">Ratings</th>
+      <th style="width:210px;">Open issues</th>
+      <th style="width:150px;">Coverage · duplication</th>
+      <th style="width:110px;">Size · debt</th>
+      <th style="width:56px;"></th>
+    </tr></thead>
+    <tbody>
+      {% for p in rows %}
+      {% set q = p.quality %}
+      <tr>
+        <td class="jname">
+          <a href="{{ home }}&product={{ p.id|urlencode }}">{{ p.name }}</a>
+          {% if p.gate_why %}
+          {# the reason, not just the verdict: "Failed" alone sends somebody to
+             Sonar to find out why, which is the trip this page exists to save #}
+          <div class="sec-note" style="margin:3px 0 0;color:var(--danger-ink);">
+            {% for c in p.gate_why[:3] %}{{ c.label }} {{ c.actual }}{{
+              ' (' ~ c.op ~ ' ' ~ c.want ~ ')' }}{{ ' · ' if not loop.last }}{% endfor %}
+            {%- if p.gate_why|length > 3 %} · +{{ p.gate_why|length - 3 }} more{% endif %}
+          </div>
+          {% endif %}
+        </td>
+        <td>{{ gate(q.gate) }}</td>
+        <td class="rts">
+          {{ rating(q.reliability, 'Reliability') }}
+          {{ rating(q.security, 'Security') }}
+          {{ rating(q.maintainability, 'Maintainability') }}
+        </td>
+        <td class="counts">
+          <span title="Bugs"><b>{{ q.bugs }}</b> bug{{ 's' if q.bugs != 1 }}</span>
+          <span title="Vulnerabilities" class="{{ 'hot' if q.vulnerabilities }}"
+            ><b>{{ q.vulnerabilities }}</b> vuln</span>
+          <span title="Code smells"><b>{{ '{:,}'.format(q.smells) }}</b> smell{{ 's' if q.smells != 1 }}</span>
+          {% if q.hotspots %}<span title="Security hotspots to review" class="hot"
+            ><b>{{ q.hotspots }}</b> hotspot{{ 's' if q.hotspots != 1 }}</span>{% endif %}
+        </td>
+        <td class="counts">
+          <span>{{ pct(q.coverage) }} covered</span>
+          <span>{{ pct(q.duplication) }} duplicated</span>
+        </td>
+        <td class="counts">
+          <span>{{ '{:,}'.format(q.ncloc) }} lines</span>
+          {% if q.debt %}<span>{{ q.debt }} debt</span>{% endif %}
+        </td>
+        <td style="text-align:right;">
+          <a class="btn btn-ghost" href="{{ p.url }}" target="_blank" rel="noopener"
+             title="Open in SonarQube" style="padding:4px 9px;font-size:11px;">↗</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endmacro %}
+
+{# ── one project, in full ─────────────────────────────────────────────── #}
+{% macro detail(d) %}
+{% set q = d.quality %}
+<div class="card">
+  <div class="card-h" style="flex-wrap:wrap;gap:9px;">
+    <b style="font-size:14.5px;">Quality gate</b>
+    {{ gate(q.gate) }}
+    {% if d.gate.period %}<span class="hint">against code new since
+      {{ d.gate.period }}</span>{% endif %}
+    <span style="flex:1"></span>
+    <a class="btn btn-ghost" href="{{ d.url }}" target="_blank" rel="noopener"
+       style="padding:5px 13px;font-size:11.5px;">Open in SonarQube ↗</a>
+  </div>
+  <div class="card-b">
+    {% if d.gate.conditions %}
+    <table class="jenkins">
+      <thead><tr><th>Condition</th><th style="width:110px;">Measured</th>
+        <th style="width:190px;">Required</th>
+        <th style="width:80px;">Result</th></tr></thead>
+      <tbody>
+        {% for c in d.gate.conditions %}
+        <tr>
+          <td class="jname">{{ c.label }}</td>
+          <td><b>{{ c.actual }}</b></td>
+          <td class="hint">{{ c.op }} {{ c.want }}</td>
+          <td>{% if c.ok %}<span class="sv sv-clean">pass</span>
+              {% else %}<span class="sv sv-high">fail</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="sub" style="margin:0;">No quality gate conditions are reported for
+      this project — it may never have been analysed.</p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(168px,1fr));">
+  {% for label, value, note in [
+      ('Reliability', q.reliability, q.bugs ~ ' bug' ~ ('s' if q.bugs != 1 else '')),
+      ('Security', q.security, q.vulnerabilities ~ ' vulnerabilit' ~ ('ies' if q.vulnerabilities != 1 else 'y')),
+      ('Maintainability', q.maintainability, '{:,}'.format(q.smells) ~ ' code smell' ~ ('s' if q.smells != 1 else '')),
+      ('Hotspots reviewed', q.review, q.hotspots ~ ' to review')] %}
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="kv" style="gap:9px;">{{ rating(value, label) }}
+      <div><div class="statsub" style="font-weight:650;color:var(--text);"
+           >{{ label }}</div>
+        <div class="statsub">{{ note }}</div></div></div>
+  </div></div>
+  {% endfor %}
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat">{{ pct(q.coverage) }}</div>
+    <div class="statsub">test coverage</div></div></div>
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat">{{ pct(q.duplication) }}</div>
+    <div class="statsub">duplicated lines</div></div></div>
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat">{{ '{:,}'.format(q.ncloc) }}</div>
+    <div class="statsub">lines of code</div></div></div>
+  <div class="card" style="margin:0;"><div class="card-b">
+    <div class="stat">{{ q.debt or '—' }}</div>
+    <div class="statsub">technical debt</div></div></div>
+</div>
+
+<div class="card">
+  <div class="card-h" style="flex-wrap:wrap;gap:8px;">
+    <b style="font-size:14.5px;">Open issues</b>
+    <span class="hint">{{ '{:,}'.format(d.facets.total) }} unresolved</span>
+    {# already pluralised where the counts are read: "vulnerabilitys" is what
+       an 's' appended in the template gives you #}
+    {% for kind, n in d.facets.types.items() %}
+    <span class="badge">{{ '{:,}'.format(n) }} {{ kind }}</span>
+    {% endfor %}
+    <span style="flex:1"></span>
+    {% if d.facets.total > d.shown %}
+    <span class="hint">worst {{ d.shown }} shown</span>{% endif %}
+  </div>
+  {% if d.issues %}
+  <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
+    <table class="jenkins">
+      <thead><tr><th>Issue</th><th style="width:104px;">Severity</th>
+        <th style="width:112px;">Type</th><th style="width:210px;">Where</th>
+        <th style="width:88px;">Effort</th><th style="width:92px;">Raised</th>
+        <th style="width:56px;"></th></tr></thead>
+      <tbody>
+        {% for i in d.issues %}
+        <tr>
+          <td class="jname">{{ i.title }}
+            <div class="sec-note" style="margin:2px 0 0;font-family:var(--mono);
+                 font-size:10.5px;">{{ i.rule }}</div></td>
+          <td><span class="sv sv-{{ i.severity }}">{{ i.severity }}</span></td>
+          <td class="hint">{{ i.type }}</td>
+          <td class="hint" style="font-family:var(--mono);font-size:11px;
+              word-break:break-all;">{{ i.component }}{% if i.line %}:{{ i.line }}{% endif %}</td>
+          <td class="hint">{{ i.effort or '—' }}</td>
+          <td class="hint">{{ i.when }}</td>
+          <td style="text-align:right;">
+            <a class="btn btn-ghost" href="{{ i.url }}" target="_blank" rel="noopener"
+               style="padding:4px 9px;font-size:11px;">↗</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-b"><p class="sub" style="margin:0;">Nothing unresolved on this
+    project.</p></div>
+  {% endif %}
+</div>
+{% endmacro %}

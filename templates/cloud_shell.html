@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% from "_cloud_search.html" import searchbar %}
+{% block crumbs %}<a href="/clouds">Clouds</a> <span class="sep">/</span>
+  <a href="/clouds?account={{ sel.id }}">{{ sel.name }}</a> <span class="sep">/</span>
+  <a href="/clouds/r/{{ sel.id }}/compute/{{ instance }}?region={{ region }}"
+     style="font-family:var(--mono);">{{ instance }}</a>
+  <span class="sep">/</span> <b>Command</b>{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>❯ Run a command</h1>
+    <p class="sub" style="font-family:var(--mono);">{{ instance }} · {{ region }}</p>
+  </div>
+  <a class="btn btn-ghost"
+     href="/clouds/r/{{ sel.id }}/compute/{{ instance }}?region={{ region }}">← Instance</a>
+</div>
+
+{{ searchbar(search_index) }}
+
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+
+<div class="card">
+  <div class="card-h">What this is, and is not
+    <span class="hint">Cloud Assistant</span></div>
+  <div class="card-b">
+    <p class="sub" style="margin:0 0 8px;">This is not an interactive terminal.
+      Alibaba's API has no session to attach to, so a command is submitted to the
+      instance's Cloud Assistant agent and its output collected — which suits an
+      audited portal better than a terminal would: <b>every command run here is
+      recorded with who ran it</b>, before it runs.</p>
+    <div class="sec-note">The agent runs as root. It is preinstalled on recent
+      images; an older one needs it installed first. A command that waits for
+      input will hit its timeout with nothing to show, so pass flags like
+      <code>-y</code> rather than answering prompts.</div>
+  </div>
+</div>
+
+<form method="post" action="/clouds/shell/{{ sel.id }}/{{ instance }}">
+  <input type="hidden" name="region" value="{{ region }}">
+  <div class="card">
+    <div class="card-h">Command</div>
+    <div class="card-b">
+      <div class="field-row" style="grid-template-columns:1fr;gap:6px;">
+        <textarea name="script" required spellcheck="false"
+                  style="min-height:130px;font-family:var(--mono);font-size:12px;"
+                  placeholder="systemctl status openvpn --no-pager
+ip -brief address
+df -h"></textarea>
+      </div>
+      <div class="field-row"><label>type RUN</label>
+        <input type="text" name="confirm" required autocomplete="off"
+               placeholder="RUN"></div>
+      <div class="actions"><button type="submit">Run on this instance</button></div>
+    </div>
+  </div>
+</form>
+
+{% if invoke %}
+<div class="card">
+  <div class="card-h">Result
+    <span class="hint" style="font-family:var(--mono);">{{ invoke }}</span>
+    <span style="flex:1"></span>
+    {% if result and not result.done %}
+    <a class="btn btn-ghost" style="padding:5px 13px;font-size:11.5px;"
+       href="/clouds/shell/{{ sel.id }}/{{ instance }}?region={{ region }}&invoke={{ invoke }}">↻ Check again</a>
+    {% endif %}
+  </div>
+  <div class="card-b">
+    {% if not result %}
+    <span class="hint">no result yet</span>
+    {% else %}
+    <div class="kv" style="gap:20px;margin-bottom:10px;">
+      <span class="badge" style="{{ 'color:var(--ok-ink);' if result.status == 'Success' else 'color:var(--danger-ink);' if result.done else '' }}">{{ result.status }}</span>
+      {% if result.exit is not none %}<span class="badge">exit {{ result.exit }}</span>{% endif %}
+      {% if result.finished %}<span class="hint">{{ result.finished }}</span>{% endif %}
+      {% if not result.done %}<span class="hint">still running — check again</span>{% endif %}
+    </div>
+    <pre class="console" style="max-height:420px;">{{ result.output or '(no output)' }}</pre>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,32 @@
+{% if section_error %}
+<div class="flash err">⚠ {{ section_error }}</div>
+{% endif %}
+<div class="card">
+  <div class="card-h">Running now <span class="hint">{{ activity|length }} session(s)</span></div>
+  <div class="card-b">
+    {% if not activity %}
+    <p class="sub" style="margin:0;">Nothing running, or this account cannot see
+      other sessions.</p>
+    {% else %}
+    <table class="jenkins">
+      <thead><tr><th class="num">pid</th><th>user</th><th>database</th><th>state</th>
+        <th>waiting on</th><th>client</th><th>for</th><th>statement</th></tr></thead>
+      <tbody>
+        {% for a in activity %}
+        <tr>
+          <td class="num">{{ a.pid }}</td>
+          <td>{{ a.user }}</td>
+          <td>{{ a.db or '—' }}</td>
+          <td>{{ a.state or '—' }}</td>
+          <td>{% if a.waiting %}<span class="badge"
+               style="color:var(--warn-ink);">{{ a.waiting }}</span>{% else %}—{% endif %}</td>
+          <td style="font-family:var(--mono);font-size:11px;">{{ a.client }}</td>
+          <td>{{ a.for or '—' }}</td>
+          <td class="sqlcell" title="{{ a.query }}">{{ a.query or '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </div>
+</div>

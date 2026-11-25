@@ -1,0 +1,136 @@
+{#- What stops working if this certificate is not renewed — the fetched body.
+
+    Separate from the shell so the window's chrome is rendered once with the
+    page and only the ANSWER travels on each open. Same split as the GitOps
+    resource panel.
+-#}
+{% if b.error %}
+  <p class="bl-note bad">{{ b.error }}</p>
+  {#- UNREACHABLE IS NOT "NOTHING USES IT", and this is the one place that
+      distinction changes a decision: an empty list would read as a
+      certificate nobody needs, on the page where somebody decides whether a
+      renewal is urgent. -#}
+  <p class="bl-note">The cluster could not be read, so this is <b>not</b> an
+    answer of “nothing uses it” — it is no answer at all. Try again, or open
+    the cluster’s Network tab.</p>
+{% elif not b.hosts and not b.internal %}
+  {#- THE EMPTY STATE HAS TO SAY WHY. "Nothing matched" reads as a broken
+      button, and on a real estate most certificates match nothing on the
+      ingress because they are not ingress certificates at all. -#}
+  <p class="bl-note warn">Nothing on <b>{{ b.cluster }}</b> answers to any of
+    this certificate’s {{ b.domains|length }}
+    name{{ '' if b.domains|length == 1 else 's' }}.</p>
+  <p class="bl-note">Checked every ingress host ({{ b.routes_seen }} route{{ '' if b.routes_seen == 1 else 's' }})
+    and every Service name ({{ b.services_seen }}) on this cluster. So this is
+    most likely a certificate used by something the cluster does not route to
+    by name — a client certificate, a signing CA, or a workload reached by
+    address — or the thing that used it has moved. The certificate is not
+    broken and neither is this answer; there is simply nothing here to point
+    at.</p>
+{% else %}
+  {#- EVERY TILE COUNTS EXACTLY WHAT IS LISTED BELOW IT. The house rule is
+      that a number must equal the rows its link opens; there is nothing to
+      link to inside one window, so the equivalent discipline is that each
+      number is the length of a list on this page and nothing else. -#}
+  <div class="bl-tiles">
+    <div class="bl-tile {{ 'act' if b.hosts else 'quiet' }}"><b>{{ b.hosts|length }}</b><span>host{{ '' if b.hosts|length == 1 else 's' }} served from outside</span></div>
+    <div class="bl-tile {{ '' if b.services_in else 'quiet' }}"><b>{{ b.services_in|length }}</b><span>in-cluster service{{ '' if b.services_in|length == 1 else 's' }}</span></div>
+    <div class="bl-tile"><b>{{ b.services|length + b.services_in|length }}</b><span>service{{ '' if (b.services|length + b.services_in|length) == 1 else 's' }} affected</span></div>
+    <div class="bl-tile {{ 'warn' if b.unmatched else 'quiet' }}"><b>{{ b.unmatched|length }}</b><span>name{{ '' if b.unmatched|length == 1 else 's' }} nothing answers to</span></div>
+  </div>
+
+  {#- Only when there IS something served from outside. Rendered
+      unconditionally it left a bare header row over nothing, which reads as a
+      table that failed to load rather than as a certificate that is not
+      ingress-served. -#}
+  {% if b.hosts %}
+  <div class="bl-sec">Served from outside — routed by an ingress on
+    <b>{{ b.cluster }}</b></div>
+  <div class="bl-wrap"><table class="jenkins bl-tbl">
+    <thead><tr>
+      <th>host</th><th>matched</th><th>routed by</th><th>to service</th>
+    </tr></thead>
+    <tbody>
+    {% for h in b.hosts %}
+      <tr>
+        <td><code>{{ h.host }}</code></td>
+        <td><span class="bl-how {{ h.how }}"
+                 title="{% if h.how == 'exact' %}the certificate lists this exact name{% else %}covered by the wildcard {{ h.san }}{% endif %}">{{ h.how }}</span></td>
+        <td>{% for r in h.routes %}<span class="bl-rt" title="{{ r.kind }}{% if r.class %} · class {{ r.class }}{% endif %}">{{ r.where }}</span>{% endfor %}</td>
+        <td>{% if h.services %}{% for s in h.services %}<span class="bl-svc">{{ s }}</span>{% endfor %}{% else %}<span class="bl-dash" title="the route names no backend service">—</span>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% endif %}
+
+  {% if b.unmatched %}
+    <p class="bl-note warn">On the certificate but nothing on this cluster
+      answers to {{ 'it' if b.unmatched|length == 1 else 'them' }}:
+      {% for d in b.unmatched %}<code>{{ d }}</code>{% if not loop.last %} {% endif %}{% endfor %}</p>
+  {% endif %}
+{% endif %}
+
+{#- IN-CLUSTER NAMES ARE THE MAJORITY CASE, and they are a different KIND of
+    answer from an ingress host: nothing outside the cluster reaches them, so
+    "what breaks" is what inside the cluster stops being able to connect. Kept
+    as its own labelled section rather than mixed into the host table, because
+    collapsing the two would make the reader think a Postgres replication cert
+    is exposed to the internet. -#}
+{% if b.services_in %}
+  <div class="bl-sec">In-cluster names — reached only from inside
+    <b>{{ b.cluster }}</b></div>
+  {#- THE MATCHED NAME GETS THE ROW'S WIDTH, not a column. An in-cluster FQDN
+      is ~50 characters; as a fourth column it either pushed the exposure chip
+      off the edge or, with `table-layout:fixed`, overlapped it — `code` does
+      not break on its own. Stacked under the service name it simply fits, and
+      the answer the reader came for (can anything outside reach this?) stays
+      at the end of the row where it is not competing for space. -#}
+  <div class="bl-wrap"><table class="jenkins bl-tbl">
+    <thead><tr><th>service</th><th>namespace</th>
+      <th class="bl-c-exp">exposure</th></tr></thead>
+    <tbody>
+    {% for r in b.services_in %}
+      <tr>
+        <td><code>{{ r.service }}</code>
+          <div class="bl-form" title="the name on the certificate that matched this Service">{{ r.form }}</div></td>
+        <td>{{ r.namespace }}</td>
+        <td>{% if r.published %}<span class="bl-how wildcard"
+              title="this Service is reachable from outside the cluster">published</span>{% else %}<span class="bl-how"
+              title="ClusterIP — nothing outside the cluster reaches this">in-cluster only</span>{% endif %}
+          {% if r.ports %}<span class="bl-svc">{{ r.ports|join(' ') }}</span>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+{% endif %}
+
+{% if b.ambiguous %}
+  {#- A bare `<name>` SAN resolves through a pod's own search list, so the
+      SAME name can be two different services in two namespaces. Picking one
+      would be exactly the overstatement this answer refuses, so it is shown
+      as undecided and counts towards nothing. -#}
+  <p class="bl-note warn">Undecidable from the certificate alone — these names
+    exist in more than one namespace, so the portal will not guess which:
+    {% for a in b.ambiguous %}<code>{{ a.san }}</code> ({{ a.could_be|join(' or ') }}){% if not loop.last %}; {% endif %}{% endfor %}</p>
+{% endif %}
+
+{% if b.environments %}
+  <p class="bl-note"><b>{{ b.cluster }}</b> serves
+    {% for e in b.environments %}<a class="bl-env" href="{{ e.url }}"
+       title="open this environment's values">{{ e.flag }} {{ e.label }}</a>{% endfor %}
+    {#- Cluster granularity, said plainly. Which values file declares the
+        workload behind a route is the checkout's answer and this walk did not
+        pay for it, so the window must not imply per-service precision. -#}
+    — that is what the <i>cluster</i> serves, not a per-service answer.</p>
+{% endif %}
+
+<p class="bl-note dim">Matched by NAME: the portal compared the names on the
+  certificate against the names an ingress answers for and the names a Service
+  is reached by. A certificate does not record what serves it, so this is
+  inference — right almost always, and worth disagreeing with if a row looks
+  wrong.
+  {% if b.routes_seen or b.services_seen %}Examined
+  {{ b.routes_seen }} route{{ '' if b.routes_seen == 1 else 's' }} and
+  {{ b.services_seen }} service{{ '' if b.services_seen == 1 else 's' }} on
+  {{ b.cluster }}.{% endif %}</p>

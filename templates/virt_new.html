@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% import "_virt_bits.html" as vb %}
+{% block crumbs %}<a href="/virt">Hypervisors</a> <span>›</span>
+  <a href="/virt/host?c={{ conn.id|urlencode }}&node={{ node|urlencode }}">{{ conn.name }}</a> <span>›</span> <b>New VM</b>{% endblock %}
+{% block content %}
+<div data-virt data-c="{{ conn.id }}" data-node="{{ node }}" data-kind="qemu" data-vm=""
+     data-prod="{{ '1' if conn.production else '0' }}" data-prodname="{{ conn.name }}">
+<div class="page-head"><div><h1>New virtual machine</h1>
+  <p class="sub">on {{ conn.name }}{% if node %} · node {{ node }}{% endif %} — an empty VM ready to install from an ISO</p></div></div>
+{% if caps.admin %}<div class="flash err">⚠ {{ caps.admin }}</div>
+{% elif error %}<div class="flash err">⚠ {{ error }}</div>
+{% else %}
+<form data-act="vm.create" data-label="Create the VM" data-then="vm.start" data-then-if="power_on"
+      {% if flavor == 'esxi' %}data-after="/virt/vm?c={c}&vm={result}"{% else %}data-after="/virt/vm?c={c}&node={node}&kind=qemu&vm={new_id}"{% endif %}>
+<div class="card"><div class="card-h">The machine</div><div class="card-b vnewgrid">
+  <div class="dfield"><label for="n_name">Name</label>
+    <input id="n_name" name="name" required maxlength="80" placeholder="app-01"
+           {% if flavor == 'proxmox' %}pattern="[A-Za-z0-9][A-Za-z0-9.\-]{0,62}" title="letters, digits, dots and dashes"{% endif %}></div>
+  {% if flavor == 'proxmox' %}
+  <div class="dfield"><label for="n_node">Node</label><select id="n_node" name="node">
+    {% for n in vopts.nodes or [node] %}<option value="{{ n }}" {% if n == node %}selected{% endif %}>{{ n }}</option>{% endfor %}</select></div>
+  {% endif %}
+  <div class="dfield"><label for="n_os">Guest operating system</label>
+    <select id="n_os" name="{{ 'guest_id' if flavor == 'esxi' else 'ostype' }}">
+      {% for gid, label, fam in vopts.guest_os or [] %}<option value="{{ gid }}">{{ label }}</option>{% endfor %}
+    </select></div>
+  <div class="dfield"><label for="n_cpus">{{ 'vCPUs' if flavor == 'esxi' else 'Cores' }}</label>
+    <input id="n_cpus" name="cpus" type="number" min="1" max="128" value="2" required></div>
+  {% if flavor == 'esxi' %}
+  <div class="dfield"><label for="n_cps">Cores per socket</label><input id="n_cps" name="cores_per_socket" type="number" min="1" max="128" value="2"></div>
+  {% else %}
+  <div class="dfield"><label for="n_sockets">Sockets</label><input id="n_sockets" name="sockets" type="number" min="1" max="8" value="1"></div>
+  {% endif %}
+  <div class="dfield"><label for="n_mem">Memory (MB)</label><input id="n_mem" name="memory_mb" type="number" min="256" step="4" value="4096" required></div>
+  <div class="dfield"><label for="n_notes">Notes</label><input id="n_notes" name="notes" maxlength="400" placeholder="what it is for, who owns it"></div>
+</div></div>
+
+<div class="card"><div class="card-h">Disk, network and install media</div><div class="card-b vnewgrid">
+  <div class="dfield"><label for="n_disk">Disk (GiB)</label><input id="n_disk" name="disk_gib" type="number" min="1" value="40" required></div>
+  <div class="dfield"><label for="n_ds">{{ 'Datastore' if flavor == 'esxi' else 'Storage' }}</label>
+    <select id="n_ds" name="{{ 'datastore' if flavor == 'esxi' else 'storage' }}" required>
+      {% for d in vopts.datastores or [] %}<option value="{{ d.name }}">{{ d.name }} · {{ d.free_gib }} GiB free</option>{% endfor %}</select></div>
+  {% if flavor == 'esxi' %}
+  <label class="chk"><input type="checkbox" name="thin" checked> thin provisioned (uses space as the guest writes)</label>
+  {% endif %}
+  <div class="dfield"><label for="n_net">{{ 'Network' if flavor == 'esxi' else 'Bridge' }}</label>
+    <select id="n_net" name="network"><option value="">— none —</option>
+      {%- set nets = vopts.networks or [] %}
+      {%- set pick = 'VM Network' if 'VM Network' in nets else ('vmbr0' if 'vmbr0' in nets else (nets[0] if nets else '')) %}
+      {% for n in nets %}<option value="{{ n }}" {% if n == pick %}selected{% endif %}>{{ n }}</option>{% endfor %}</select></div>
+  {% if flavor == 'proxmox' %}
+  <div class="dfield"><label for="n_vlan">VLAN tag</label><input id="n_vlan" name="vlan" type="number" min="1" max="4094" placeholder="none"></div>
+  {% endif %}
+  <div class="dfield"><label for="n_iso">Install from ISO</label>
+    <select id="n_iso" name="iso"><option value="">— no ISO —</option>
+      {% for i in vopts.isos or [] %}<option value="{{ i }}">{{ i }}</option>{% endfor %}</select>
+    {% if not vopts.isos %}<div class="hint" style="font-size:11.5px;">No ISO yet: upload one on the host's
+      <a href="/virt/host?c={{ conn.id|urlencode }}&node={{ node|urlencode }}&sec=storage">Storage</a> tab.</div>{% endif %}</div>
+  <div class="dfield"><label for="n_fw">Firmware</label>
+    <select id="n_fw" name="firmware"><option value="efi">UEFI</option><option value="bios">BIOS</option></select></div>
+  <label class="chk"><input type="checkbox" name="secure_boot"> Secure Boot (UEFI only)</label>
+  {% if flavor == 'proxmox' %}<label class="chk"><input type="checkbox" name="onboot"> start when the node boots</label>{% endif %}
+  <label class="chk"><input type="checkbox" name="power_on" checked> power on after creating it</label>
+</div></div>
+<div class="actions" style="margin:4px 0 20px;display:flex;gap:10px;align-items:center;">
+  <button type="submit">Create VM</button>
+  <a class="btn btn-ghost" href="/virt/host?c={{ conn.id|urlencode }}&node={{ node|urlencode }}&sec=vms">Cancel</a>
+</div>
+</form>
+{{ vb.status() }}
+{% endif %}
+{{ vb.prod_dialog() }}
+</div>
+<script src="/static/virt.js?v={{ portal_version() }}" nonce="{{ csp_nonce() }}"></script>
+{% endblock %}

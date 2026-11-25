@@ -1,0 +1,67 @@
+{% if sec and sec.conns %}
+  <div class="card" style="margin:0;">
+    <div class="card-h">🛡 <a href="/security" style="color:var(--text);">Security</a>
+      <span class="hint">{{ sec.conns }} platform{{ 's' if sec.conns != 1 }}</span>
+      <span style="flex:1"></span>
+      {% if sec.pending %}<span class="hint">sampling…</span>
+      {% elif sec.stale %}<span class="hint" style="color:var(--warn-ink);">refreshing…</span>{% endif %}
+    </div>
+    <div class="card-b">
+      {% if sec.pending %}
+      <div class="chart-empty" style="padding:34px 0;">reading scan platforms…</div>
+      {% elif sec.error %}
+      <div class="flash err" style="margin:0;">⚠ {{ sec.error }}</div>
+      {% else %}
+      <div style="display:flex;gap:20px;align-items:center;">
+        <div style="text-align:center;flex:none;">
+          {# the ring is critical's share of all open findings — a full ring for
+             "5,746 critical" would read as 100%, which is not what it means #}
+          {{ donut((sec.totals.critical / sec.open * 100) if sec.open else 0,
+                   label="{:,}".format(sec.totals.critical),
+                   sub="critical", size=112, thickness=10,
+                   color=("var(--danger)" if sec.totals.critical else "var(--ok)")) }}
+          <div class="chart-cap">of {{ "{:,}".format(sec.open) }} open
+            · {{ "%.1f"|format(sec.totals.critical / sec.open * 100) if sec.open else 0 }}%</div>
+        </div>
+        <div style="flex:1;min-width:0;">
+          <div style="margin-bottom:10px;">
+            {# `conns` counts what is REGISTERED and `platforms` what answered,
+               so the two disagree the moment a scanner is unreachable — and
+               this block renders on `conns`. Reaching for platforms[0] here
+               crashed the Overview outright whenever every scanner was behind a
+               dropped VPN: the landing page, 500, for a panel that is meant to
+               degrade. With none answering there is no platform to filter by,
+               so the link drops the filter rather than the page. #}
+            {% set first = sec.platforms[0].key if sec.platforms else '' %}
+            {% for s in severities %}
+            <a class="sv sv-{{ s }}" style="margin:0 5px 5px 0;"
+               href="/security?{% if first %}platform={{ first }}&{% endif %}tab=findings&sev={{ s }}"
+               >{{ "{:,}".format(sec.totals[s]) }}<i>{{ s[:4] }}</i></a>
+            {% endfor %}
+          </div>
+          {{ stack([('b-critical', sec.totals.critical), ('b-high', sec.totals.high),
+                    ('b-medium', sec.totals.medium), ('b-low', sec.totals.low),
+                    ('b-info', sec.totals.info)]) }}
+          <div style="margin-top:12px;">
+            {% for p in sec.platforms %}
+            <a class="badge" href="/security?platform={{ p.key }}">{{ logo(p.key, p.label, 14) }} {{ p.label }}
+              <b>{{ p.products }}</b> products</a>
+            {% endfor %}
+            {% if sec.broken %}<span class="badge" style="color:var(--warn-ink);">
+              {{ sec.broken }} unreachable</span>{% endif %}
+          </div>
+        </div>
+      </div>
+      {% if sec.incomplete %}
+      <div class="stat-note">⚠ {{ sec.incomplete|join(', ') }} could not be counted on
+        the last read — those figures are understated, not zero. Reload to retry.</div>
+      {% endif %}
+      {% endif %}
+    </div>
+  </div>
+{% else %}
+<div class="card" style="margin:0;"><div class="card-b">
+  <div class="sec-note">No scan platform connected yet — add one in
+    <a href="/settings/security">Settings → Security</a>.</div>
+</div></div>
+{% endif %}

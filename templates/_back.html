@@ -1,0 +1,6 @@
+{# One back control for every drill-down page. The breadcrumb already carries
+   the same links, but it lives in the top bar away from the content — this puts
+   the way out where the eye already is, immediately above the title. #}
+{% macro back(href, label) %}
+<a class="backlink" href="{{ href }}">← {{ label }}</a>
+{% endmacro %}

@@ -1,0 +1,135 @@
+{#- A cluster's form, in the house window.
+
+    WHY A WINDOW AND NOT A PANEL UNDER THE ROW
+        The form unfolded under the row it belonged to, one at a time. That is
+        fine until the list becomes a sortable table, and then it is unsafe:
+        sorting reorders rows, and a detail row would either be scrambled away
+        from its parent or have to disable the sorting the table exists for. It
+        was also the reason the page shipped every cluster's form expanded —
+        463K of settings page for markup nobody had asked to see.
+
+        So the list is rows only, and this fetches ONE form when it is wanted.
+        Same window chrome as the values-file editor and the log and describe
+        windows: every pop-over in the product is one shape.
+
+    WHAT IT DOES NOT DO
+        It does not submit anything itself. The fragment contains a real
+        <form> that posts and redirects the way it always did, so every server
+        gate, flash message and audit line is untouched — this only changes
+        where the form is drawn.
+-#}
+<dialog id="clDlg" class="psh clwin">
+  <div class="psh-bar">
+    <span class="psh-dots"><b title="close" data-cldot="close">✕</b><b
+      title="minimise" data-cldot="mini">–</b><b title="maximise" data-cldot="maxi">+</b></span>
+    <b id="clTitle">cluster</b>
+    <span class="psh-ns" id="clWhere"></span>
+    <span style="flex:1"></span>
+    <span class="psh-state" id="clState"></span>
+    <button type="button" class="psh-x" id="clClose">close</button>
+  </div>
+  <div class="clbody" id="clBody"></div>
+</dialog>
+
+<style>
+  dialog.clwin { width:min(1000px,96vw); height:min(780px,90vh); }
+  dialog.psh.clwin[open] { display:flex; flex-direction:column; }
+  /* the form is the part that scrolls; the window bar stays put */
+  .clwin .clbody { flex:1 1 auto; min-height:0; overflow:auto; padding:16px 18px;
+    background:var(--bg); }
+  /* Inside a window the field-row's two-column grid is the right shape but the
+     620px value cap is measured against the window, not the page — which is
+     what it should be. Nothing else to override: see CLAUDE.md on never
+     putting a third width cap on a settings form. */
+  .clwin .cl-foot { position:sticky; bottom:-16px; margin-top:14px;
+    padding:12px 0 2px; background:linear-gradient(transparent, var(--bg) 22%); }
+  .clbody .cl-loading { font-size:12px; color:var(--faint); padding:26px 2px; }
+</style>
+
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  const dlg = document.getElementById('clDlg');
+  const body = document.getElementById('clBody');
+  const title = document.getElementById('clTitle');
+  const where = document.getElementById('clWhere');
+  const state = document.getElementById('clState');
+  let seq = 0;
+
+  // Everything the fetched fragment needs waking up. The delegated listeners in
+  // set_clusters.html already cover clicks and changes on content that did not
+  // exist at load; these are the one-off passes that normally run on
+  // DOMContentLoaded, and without them the form arrives with native OS
+  // dropdowns on a dark page and an SSH binding showing the HTTPS pair.
+  function wake(root) {
+    // ddSweep, not enhanceSelect per select: it covers every themed control
+    // there is — selects AND the `input list=` comboboxes — so a control added
+    // to the house later reaches a fetched form without an edit here.
+    if (window.ddSweep) window.ddSweep(root);
+    if (window.clFormWake) window.clFormWake(root);
+  }
+
+  function open(opts) {
+    const mine = ++seq;
+    title.textContent = opts.name || 'add a cluster';
+    where.textContent = opts.context || '';
+    state.textContent = 'loading…';
+    body.innerHTML = '<div class="cl-loading">reading…</div>';
+    if (!dlg.open) dlg.showModal();
+    const q = new URLSearchParams({});
+    if (opts.cid) q.set('cid', opts.cid);
+    fetch(`/settings/project/${encodeURIComponent(opts.pid)}/cluster/form?${q}`)
+      .then(r => r.text())
+      .then(html => {
+        // Two edits opened in quick succession are two fetches, and the slower
+        // one used to land last — filling the window with one cluster's form
+        // under another cluster's title.
+        if (mine !== seq) return;
+        body.innerHTML = html;
+        state.textContent = '';
+        wake(body);
+        const first = body.querySelector('input:not([type=hidden]), textarea');
+        if (first) first.focus({preventScroll: true});
+      })
+      .catch(e => {
+        if (mine !== seq) return;
+        state.textContent = '';
+        body.innerHTML = '<div class="cl-loading">could not load the form — '
+          + String(e) + '</div>';
+      });
+  }
+
+  function shut() {
+    // A half-typed kubeconfig is worth one question. `cl-dirty` is set by the
+    // first input event on the fetched form.
+    if (body.dataset.dirty === '1'
+        && !confirm('Close without saving? What you typed is lost.')) return;
+    body.dataset.dirty = '';
+    body.innerHTML = '';
+    dlg.close();
+  }
+  body.addEventListener('input', () => { body.dataset.dirty = '1'; });
+  // Submitting is a navigation; it must not be caught by the unsaved guard.
+  body.addEventListener('submit', () => { body.dataset.dirty = ''; });
+  body.addEventListener('click', ev => {
+    if (ev.target.closest('.cl-cancel')) shut();
+  });
+  document.getElementById('clClose').addEventListener('click', shut);
+  dlg.querySelector('[data-cldot="close"]').addEventListener('click', shut);
+  dlg.querySelector('[data-cldot="mini"]').addEventListener('click', shut);
+  dlg.querySelector('[data-cldot="maxi"]').addEventListener('click',
+    () => dlg.classList.toggle('maxi'));
+  dlg.addEventListener('cancel', e => { e.preventDefault(); shut(); });
+
+  // Delegated, so a row anywhere on the page opens this by carrying data-
+  // attributes and nothing else — the contract every other window here uses.
+  document.addEventListener('click', ev => {
+    const b = ev.target.closest('[data-clform]');
+    if (!b) return;
+    ev.preventDefault();
+    open({pid: b.dataset.clpid, cid: b.dataset.clcid || '',
+          name: b.dataset.clname, context: b.dataset.clcontext});
+  });
+
+  window.openClusterForm = open;
+})();
+</script>

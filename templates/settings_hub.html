@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block crumbs %}<b>Settings</b>{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+<p class="sub">Pick what you want to configure.</p>
+
+{% if msg %}<div class="flash">✓ {{ msg }}</div>{% endif %}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+
+<style>
+  .hub-find { display:flex; align-items:center; gap:11px; flex-wrap:wrap;
+    margin:0 0 18px; }
+  .hub-find input { flex:1 1 300px; min-width:0; }
+  .hub-find .hint { white-space:nowrap; }
+  /* the shortcut, spelled the way the top bar spells its own */
+  .hub-key { font-family:var(--mono); font-size:10.5px; color:var(--muted);
+    border:1px solid var(--line); border-radius:5px; padding:1px 6px;
+    background:var(--well); }
+  .hub-card mark { background:color-mix(in srgb, var(--accent) 30%, transparent);
+    color:var(--text); border-radius:3px; padding:0 1px; }
+</style>
+
+{#- Sixteen cards is past the point where reading them all is faster than
+    typing. The haystack is the title, the description, the count line AND a
+    small alias list per card (`find` in the route) — because the words people
+    reach for are not always the words on screen: "smtp" for Email, "k8s" for
+    clusters, "cve" for security scanning, "elk" for log platforms.
+
+    It filters in the browser: the whole list is already on the page, so a
+    round-trip per keystroke would be slower than the scrolling it replaces. -#}
+<div class="hub-find">
+  <input type="search" id="hubfind" autocomplete="off"
+         placeholder="filter settings — try smtp, k8s, argo, cve, token…">
+  <span class="hint" id="hubcount">{{ cards|length }} pages</span>
+  <span class="hint"><span class="hub-key">Esc</span> clears</span>
+</div>
+
+<div class="hub-grid" style="grid-template-columns:repeat(auto-fit,minmax(330px,1fr));">
+  {% for c in cards %}
+  <a class="hub-card" href="/settings/{{ c.key }}"
+     data-find="{{ (c.title ~ ' ' ~ c.desc ~ ' ' ~ c.count ~ ' ' ~
+                    (c.find or '') ~ ' ' ~ c.key)|lower }}">
+    <div class="flag">{{ c.icon }}</div>
+    <div>
+      <div class="htitle">{{ c.title }}</div>
+      <div class="hmeta">{{ c.desc }}</div>
+      <div class="hmeta" style="margin-top:5px;color:var(--accent-ink);">{{ c.count }}</div>
+    </div>
+    <div class="arrow">→</div>
+  </a>
+  {% endfor %}
+</div>
+
+<div class="empty" id="hubnone" hidden>
+  <div class="big">{{ glyph("search", 38) }}</div>
+  <h2>Nothing matches</h2>
+  <p>No settings page matches that. User accounts, roles and the audit log live
+    under <a href="/admin/users">Administration</a>.</p>
+</div>
+
+{% if request.state.user and request.state.user.role == 'admin' %}
+<p class="sub" style="margin-top:22px;" id="hubadmin">
+  User accounts, roles and the audit log are under <a href="/admin/users">Administration</a>.</p>
+{% endif %}
+
+<script nonce="{{ csp_nonce() }}">
+(() => {
+  const find = document.getElementById('hubfind');
+  if (!find) return;
+  const cards = [...document.querySelectorAll('.hub-card')];
+  const count = document.getElementById('hubcount');
+  const none = document.getElementById('hubnone');
+  const admin = document.getElementById('hubadmin');
+  // Titles are re-highlighted from the ORIGINAL text each time, never from the
+  // marked-up version — highlighting already-highlighted HTML is how a filter
+  // starts eating its own tags.
+  const titles = new Map(cards.map(c => {
+    const el = c.querySelector('.htitle');
+    return [c, {el: el, text: el.textContent}];
+  }));
+  const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+  const paint = () => {
+    const q = find.value.trim().toLowerCase();
+    let shown = 0;
+    cards.forEach(c => {
+      const hit = !q || c.dataset.find.includes(q);
+      c.hidden = !hit;
+      if (hit) shown++;
+      const t = titles.get(c);
+      if (!q) {
+        t.el.textContent = t.text;
+      } else {
+        const i = t.text.toLowerCase().indexOf(q);
+        t.el.innerHTML = i < 0 ? t.text
+          : t.text.replace(new RegExp(esc(t.text.substr(i, q.length)), 'i'),
+                           m => '<mark>' + m + '</mark>');
+      }
+    });
+    count.textContent = q ? shown + ' of ' + cards.length : cards.length + ' pages';
+    none.hidden = shown > 0;
+    // the Administration footnote is a duplicate of what the empty state says
+    if (admin) admin.hidden = shown === 0;
+  };
+
+  find.addEventListener('input', paint);
+  find.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { find.value = ''; paint(); }
+    // one match and Enter opens it, which is the whole point of typing
+    if (e.key === 'Enter') {
+      const open = cards.filter(c => !c.hidden);
+      if (open.length === 1) open[0].click();
+    }
+  });
+  // The top bar owns "/" for the portal-wide search, so this box does NOT steal
+  // focus or that key — it is a filter for a page somebody is already looking
+  // at, not a second global search.
+})();
+</script>
+{% endblock %}

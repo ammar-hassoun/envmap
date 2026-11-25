@@ -1,0 +1,40 @@
+{% if section_error %}
+<div class="flash err">⚠ {{ section_error }}</div>
+{% endif %}
+<div class="card">
+  <div class="card-h">Tables in {{ database or '—' }}
+    <span class="hint">{{ tables|length }}, largest first</span>
+    <span style="flex:1"></span>
+  </div>
+  <div class="card-b">
+    {% if not tables %}
+    <p class="sub" style="margin:0;">No tables here, or none this account may see.</p>
+    {% else %}
+    <input type="search" id="tfilter" placeholder="filter by name…  (type to narrow)"
+           style="width:100%;margin-bottom:12px;" autocomplete="off">
+    <table class="jenkins" id="ttable">
+      <thead><tr><th>schema</th><th>table</th><th>kind</th>
+        <th class="num">rows (estimate)</th><th class="num">size</th><th></th></tr></thead>
+      <tbody>
+        {% for t in tables %}
+        <tr data-n="{{ (t.schema ~ '.' ~ t.name)|lower }}">
+          <td>{{ t.schema }}</td>
+          <td><a href="#" class="tablink" data-schema="{{ t.schema }}"
+                 data-name="{{ t.name }}"><b>{{ t.name }}</b></a></td>
+          <td>{% if t.kind != 'table' %}<span class="badge">{{ t.kind }}</span>{% else %}—{% endif %}</td>
+          <td class="num">{{ "{:,}".format(t.rows) }}</td>
+          <td class="num">{{ t.size }}</td>
+          <td class="num">
+            <button class="btn-ghost sqlfill" style="padding:4px 11px;font-size:11px;"
+              data-sql="SELECT * FROM {{ t.q }} LIMIT 100">Query</button>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div class="sec-note" style="margin-top:10px;">Row counts are the planner's
+      estimate. An exact count on a large table is a full scan, and a listing
+      page should not start one — open a table for the exact figure.</div>
+    {% endif %}
+  </div>
+</div>

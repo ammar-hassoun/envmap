@@ -1,0 +1,35 @@
+{# The headline numbers, in the house ex-tile component — the same tiles every
+   operational page opens with, so the Overview stops being the one page whose
+   numbers look different. Each one is a door, not just a number: it opens the
+   page that answers the question the tile raises, and its figure equals the
+   rows that page lists (the clickable-tiles rule). Zeroes stay quiet. #}
+<div class="ex-tiles" style="margin-bottom:22px;">
+  {# straight to the All-clusters tab (the flat list of every cluster), not the
+     project-card hub — the tile counts clusters, so it opens the cluster list #}
+  <a class="ex-tile {{ 'ok' if t.reachable == t.clusters else 'bad' }} {{ 'quiet' if not t.clusters }}"
+     href="/clusters?sec=all">
+    <span class="ico">{{ glyph("boxes", 17) }}</span>
+    <span><span class="big">{{ t.reachable }}/{{ t.clusters }}</span>
+      <span class="cap">clusters reachable</span>
+      <span class="sub">the whole estate, one list</span></span>
+  </a>
+  <a class="ex-tile {{ 'ok' if t.nodes_ready == t.nodes else 'bad' }} {{ 'quiet' if not t.nodes }}"
+     href="/nodes">
+    <span class="ico">{{ glyph("cpu", 17) }}</span>
+    <span><span class="big">{{ t.nodes_ready }}/{{ t.nodes }}</span>
+      <span class="cap">nodes ready</span>
+      <span class="sub">the capacity behind the pods</span></span>
+  </a>
+  <a class="ex-tile {{ 'quiet' if not t.pods }}" href="/pods">
+    <span class="ico">{{ glyph("activity", 17) }}</span>
+    <span><span class="big">{{ t.pods_running }}<span style="color:var(--muted);font-size:15px;">/{{ t.pods }}</span></span>
+      <span class="cap">pods healthy</span>
+      <span class="sub">running, fleet-wide</span></span>
+  </a>
+  <a class="ex-tile {{ 'bad' if t.pods_bad else 'ok quiet' }}" href="/pods?attention=1">
+    <span class="ico">{{ glyph("triangle-alert", 17) }}</span>
+    <span><span class="big">{{ t.pods_bad }}</span>
+      <span class="cap">pods needing attention</span>
+      <span class="sub">crashloops, pending, failed</span></span>
+  </a>
+</div>

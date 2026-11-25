@@ -1,0 +1,40 @@
+{#- `detail` is the URL the title opens WITH the finding id appended — the
+    in-portal detail card. Without it (platforms that have no detail document)
+    the title keeps linking out, exactly as before. -#}
+{% macro findings_table(rows, provider, home='', detail='') %}
+<table class="jenkins">
+  <thead><tr>
+    <th style="width:86px;">Severity</th><th style="min-width:300px;">Finding</th>
+    {% if home %}<th style="width:170px;">Product</th>{% endif %}
+    <th style="width:150px;">Component</th>
+    <th style="width:118px;">Reference</th><th style="width:104px;">Status</th>
+    <th style="width:88px;">Age</th><th style="width:44px;"></th></tr></thead>
+  <tbody>
+  {% for f in rows %}
+  <tr>
+    <td><span class="sv sv-{{ f.severity }}">{{ f.severity }}</span></td>
+    <td class="jname">
+      {% if detail and f.id %}<a href="{{ detail }}&finding={{ f.id }}">{{ f.title }}</a>
+      {% elif f.url %}<a href="{{ f.url }}" target="_blank" rel="noopener">{{ f.title }}</a>
+      {% else %}{{ f.title }}{% endif %}
+      {% if f.tool %}<span class="jbranch">{{ f.tool }}</span>{% endif %}
+      {% if f.branch %}<span class="jbranch">⑂ {{ f.branch }}</span>{% endif %}
+      {% if f.sla is not none and f.sla is number and f.sla < 0 %}
+      <span class="jbranch" style="color:var(--danger-ink);"
+            title="past its SLA">SLA {{ -f.sla }}d over</span>{% endif %}
+    </td>
+    {% if home %}
+    <td>{% if f.product_id %}<a href="{{ home }}&product={{ f.product_id }}">{{ f.product }}</a>
+        {% else %}{{ f.product or '—' }}{% endif %}</td>
+    {% endif %}
+    <td style="font-family:var(--mono);font-size:11.5px;max-width:170px;overflow:hidden;text-overflow:ellipsis;" title="{{ f.component }}">{{ f.component or '—' }}</td>
+    <td>{% if f.cve %}<span class="cve">{{ f.cve }}</span>{% else %}<span class="na">—</span>{% endif %}</td>
+    <td>{{ f.status }}</td>
+    <td>{{ f.when or '—' }}</td>
+    <td class="mid">{% if f.url %}<a class="jopen" href="{{ f.url }}"
+       target="_blank" rel="noopener" title="Open in {{ provider.label }}">↗</a>{% endif %}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endmacro %}

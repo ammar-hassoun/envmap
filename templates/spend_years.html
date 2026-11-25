@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block crumbs %}<a href="/spend">IT spend</a> <span class="sep">/</span>
+  <b>All years</b>{% endblock %}
+{% block content %}
+{# The calendar, one level out: a box per year instead of a box per month, in
+   the same component with the same split, so reading it needs nothing new
+   learned. A year opens its own twelve months; a month opens its lines. #}
+
+<div class="page-head">
+  <div>
+    <h1>IT spend · all years</h1>
+    <p class="sub">Everything the portal has a record of. Click a year to see
+      its months.</p>
+  </div>
+  <div style="display:flex;gap:10px;align-items:center;">
+    <form method="get" action="/spend" class="curpick">
+      <label for="showin">show in</label>
+      <select id="showin" name="in" data-submit>
+        {% for c in choices %}
+        <option value="{{ c }}" {{ 'selected' if c == av.currency }}>{{ c }}</option>
+        {% endfor %}
+      </select>
+      <input type="hidden" name="year" value="all">
+    </form>
+    <a class="btn btn-ghost" href="/spend">This year →</a>
+    <button type="button"
+            data-dlg-open="addSub">
+      ＋ Add an expense</button>
+  </div>
+</div>
+
+{% if msg %}<div class="flash">✓ {{ msg }}</div>{% endif %}
+{% if err %}<div class="flash err">⚠ {{ err }}</div>{% endif %}
+
+<div class="yearbar">
+  <div class="yearsum">
+    <div><span class="ys-k">all years</span>
+      <span class="ys-v">{{ av.currency }} {{ '{:,.0f}'.format(av.total) }}</span></div>
+    {% if av.counted %}
+    <div><span class="ys-k">typical year</span>
+      <span class="ys-v">{{ av.currency }} {{ '{:,.0f}'.format(av.average) }}</span></div>
+    {% endif %}
+    {% if av.peak %}
+    <div><span class="ys-k">heaviest</span>
+      <span class="ys-v">{{ av.peak.year }} · {{ av.currency }}
+        {{ '{:,.0f}'.format(av.peak.total) }}</span></div>
+    {% endif %}
+  </div>
+</div>
+
+{% if av.cloud_gap %}
+<div class="sec-note" style="margin:-4px 0 12px;color:var(--warn-ink);">⚠ The
+  connected cloud accounts' bills do not reach back over all of these years, so
+  the earlier boxes cover subscriptions and invoices only — not the metered
+  spend of those years.</div>
+{% endif %}
+
+{% if av.pending %}
+<div class="sec-note" style="margin:-4px 0 12px;">Still reading
+  {{ av.pending }} cloud account{{ "'s" if av.pending == 1 else "s'" }} bills — reload in a
+  moment for the metered figures.</div>
+{% endif %}
+
+<div class="ygrid" id="years">
+  {% for b in av.boxes %}
+  <a class="ybox{{ ' empty' if not b.total }}" href="/spend?year={{ b.year }}">
+    <div class="yb-top"><span class="yb-name">{{ b.year }}</span></div>
+    <div class="yb-total">{{ av.currency }} {{ '{:,.0f}'.format(b.total) }}</div>
+    <div class="yb-bar"><i style="width:{{ (b.frac * 100)|round(1) }}%"></i></div>
+    <div class="yb-split">
+      {% for key, lab in av.buckets %}
+      {% if b.by[key] %}
+      <span class="yb-s yb-{{ key }}">{{ lab|lower }}
+        <b>{{ '{:,.0f}'.format(b.by[key]) }}</b></span>
+      {% endif %}
+      {% endfor %}
+      {% if not b.total %}<span class="yb-s dim">nothing charged</span>{% endif %}
+    </div>
+  </a>
+  {% endfor %}
+
+  {# the same shape again, one level further out #}
+  <a class="ybox yall" href="/spend/manage">
+    <div class="yb-top"><span class="yb-name">Everything</span></div>
+    <div class="yb-total">{{ av.currency }} {{ '{:,.0f}'.format(av.total) }}</div>
+    <div class="yb-bar"><i style="width:100%"></i></div>
+    <div class="yb-split">
+      {% for key, lab in av.buckets %}
+      {% if av.by[key] %}
+      <span class="yb-s yb-{{ key }}">{{ lab|lower }}
+        <b>{{ '{:,.0f}'.format(av.by[key]) }}</b></span>
+      {% endif %}
+      {% endfor %}
+      {% if not av.total %}<span class="yb-s dim">nothing charged at all</span>{% endif %}
+    </div>
+  </a>
+</div>
+
+<p class="sub" style="margin-top:16px;">
+  Each year is the sum of its own twelve months, and those are the same figures
+  the month pages show — nothing is held here separately. Everything is
+  converted to {{ av.currency }}.</p>
+{% include "_spend_dialog.html" %}
+{% endblock %}

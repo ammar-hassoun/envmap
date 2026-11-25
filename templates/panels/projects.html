@@ -1,0 +1,23 @@
+{# The project cards from the fixed page. #}
+<h2 style="font-size:16px;margin:28px 0 14px;">Projects</h2>
+{# auto-FIT, not auto-fit: auto-fit keeps making empty tracks once the row
+   is wider than the items need, so on the wider measure four stat tiles sat
+   at 199px each with three phantom columns and 640px of dead space beside
+   them. auto-fit collapses the empties and lets the tiles take the room. #}
+<div class="hub-grid" style="grid-template-columns:repeat(auto-fit,minmax(310px,1fr));">
+  {% for p in f.projects %}
+  <a class="hub-card" href="/p/{{ p.id }}">
+    <div class="flag">{{ project_icon(p.icon, 26) }}</div>
+    <div>
+      <div class="htitle">{{ p.name }}</div>
+      {% if p.tagline %}<div class="hmeta">{{ p.tagline }}</div>{% endif %}
+      <div class="hmeta" style="margin-top:5px;">
+        {{ p.regions }} region{{ 's' if p.regions != 1 }} ·
+        {{ p.envs }} env{{ 's' if p.envs != 1 }} ·
+        {{ p.services }} service{{ 's' if p.services != 1 }} ·
+        {{ p.clusters }} cluster{{ 's' if p.clusters != 1 }}</div>
+    </div>
+    <div class="arrow">→</div>
+  </a>
+  {% endfor %}
+</div>
