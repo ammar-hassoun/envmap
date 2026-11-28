@@ -40,16 +40,21 @@
   /* px, not %: a percentage would resolve against the whole column — number,
      bar and label — so the tallest month would overflow its own track. And
      flex:none, or the bar shrinks to make room for the label instead. */
-  .ex-cal .bar { position:relative; flex:0 0 auto; border-radius:6px 6px 2px 2px;
-    min-height:4px; background:var(--accent); opacity:.34;
-    transition:opacity .12s; }
-  .ex-cal .col:hover .bar { opacity:.95; }
-  .ex-cal .col.has .bar { opacity:.62; }
-  .ex-cal .col.on .bar { opacity:1; }
+  /* Solid fills, not a translucent bar: dimming the whole bar dimmed the
+     amber share inside it too, which mixed with the blue into a muddy brown. */
+  .ex-cal .bar { position:relative; flex:0 0 auto; border-radius:7px 7px 3px 3px;
+    min-height:4px; background:var(--track); transition:filter .12s, box-shadow .12s; }
+  .ex-cal .col.has .bar { overflow:hidden;
+    background:linear-gradient(180deg,color-mix(in srgb,var(--accent) 80%,#fff),var(--accent));
+    box-shadow:0 8px 18px -10px color-mix(in srgb,var(--accent) 75%,transparent); }
+  .ex-cal .col:hover .bar { filter:brightness(1.12); }
+  .ex-cal .col.on .bar { box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 55%,transparent),
+    0 8px 18px -8px color-mix(in srgb,var(--accent) 80%,transparent); }
   /* the part of the month that will not happen by itself, drawn inside the
      bar rather than beside it: the eye compares the share at a glance */
   .ex-cal .bar .man { position:absolute; left:0; right:0; bottom:0;
-    background:var(--warn); border-radius:0 0 2px 2px; }
+    background:linear-gradient(180deg,color-mix(in srgb,var(--warn) 78%,#fff),var(--warn));
+    border-radius:0 0 3px 3px; }
   /* a month where nothing renews itself is amber all the way up, so it takes
      the bar's own corners rather than showing 2px of blue above itself */
   .ex-cal .bar .man.full { border-radius:inherit; }
@@ -61,15 +66,16 @@
      eye does not read it as the month before this one */
   .ex-cal .col.past { border-right:1px dashed var(--line); padding-right:7px;
     margin-right:3px; }
-  .ex-cal .col.past .bar { background:var(--danger); }
+  .ex-cal .col.past .bar { background:linear-gradient(180deg,color-mix(in srgb,var(--danger) 78%,#fff),var(--danger));
+    box-shadow:0 8px 18px -10px color-mix(in srgb,var(--danger) 75%,transparent); }
   .ex-cal .col.past .lbl { color:var(--danger-ink); font-weight:700;
     border-top-color:var(--danger-line); }
   .ex-cal .col.past .n { color:var(--danger-ink); }
   .ex-legend { display:flex; gap:15px; flex-wrap:wrap; font-size:11px;
     color:var(--muted); margin-top:11px; }
-  .ex-legend i { display:inline-block; width:9px; height:9px; border-radius:3px;
+  .ex-legend i { display:inline-block; width:8px; height:8px; border-radius:50%;
     margin-right:5px; font-style:normal; vertical-align:baseline; }
-  .ex-legend .a { background:var(--accent); opacity:.62; }
+  .ex-legend .a { background:var(--accent); }
   .ex-legend .m { background:var(--warn); }
   .ex-legend .p { background:var(--danger); }
 
@@ -169,8 +175,10 @@
   .ex-tag { display:inline-flex; align-items:center; gap:4px; font-size:10px;
     text-transform:uppercase; letter-spacing:.04em; font-weight:700;
     padding:2px 7px; border-radius:999px; white-space:nowrap; }
-  .ex-tag.automatic { background:var(--ok-on-wash); color:var(--ink-on-ok); }
-  .ex-tag.manual { background:var(--warn-on-wash); color:var(--ink-on-warn); }
+  .ex-tag.automatic { background:var(--ok-wash); color:var(--ok-ink);
+    box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--ok) 30%,transparent); }
+  .ex-tag.manual { background:var(--warn-wash); color:var(--warn-ink);
+    box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--warn) 32%,transparent); }
   .ex-tag.unknown { background:var(--panel3); color:var(--muted); }
   .ex-filters { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
   /* Targets the `.dd` WRAPPER, not `select`: base.html hides the native
@@ -179,7 +187,11 @@
      to fix stayed broken. */
   .ex-filters .dd, .ex-filters select { width:auto; min-width:140px;
     flex:0 0 auto; }
-  .ex-filters input[type=search] { flex:1 1 220px; min-width:160px; }
+  /* The search box has the first row to itself, as on Hypervisors and Server
+     hardware: with project, cluster and region all offered there are six
+     controls, and sharing a row squeezed the box until its placeholder was cut
+     and pushed Clear all onto a line of its own. */
+  .ex-filters input[type=search] { flex:1 1 100%; min-width:0; }
   @media (max-width:700px) {
     .ex-row { grid-template-columns:88px 26px minmax(0,1fr); }
     .ex-row .ex-act { grid-column:3; justify-self:start; }

@@ -141,6 +141,14 @@ def _pct(used, total) -> float | None:
         return None
 
 
+def _secs(seconds) -> int:
+    """Uptime as a number, for sorting the guest list: the text is "3d 4h"."""
+    try:
+        return max(int(seconds or 0), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _uptime(seconds) -> str:
     try:
         s = int(seconds or 0)
@@ -193,6 +201,7 @@ def _proxmox(c: dict) -> dict:
                     "mem_pct": _pct(g.get("mem"), g.get("maxmem")),
                     "disk_gib": round((g.get("maxdisk") or 0) / 1024**3, 1),
                     "uptime": _uptime(g.get("uptime")),
+                    "uptime_s": _secs(g.get("uptime")),
                     "url": f"{base}/#v1:0:={kind}%2F{g.get('vmid', '')}",
                 })
     return {"hosts": hosts, "guests": guests, "kind": "Proxmox"}
@@ -575,6 +584,7 @@ def _esxi(c: dict, svc: dict) -> dict:
             if state == "On" else None,
             "disk_gib": round(committed / 1024**3, 1) if committed else None,
             "uptime": _uptime(p.get("summary.quickStats.uptimeSeconds")),
+            "uptime_s": _secs(p.get("summary.quickStats.uptimeSeconds")),
             "url": f"{base}/ui/#/host/vms/{urllib.parse.quote(moid)}",
             "uuid": p.get("config.uuid", ""),
             "ip": p.get("guest.ipAddress", ""),

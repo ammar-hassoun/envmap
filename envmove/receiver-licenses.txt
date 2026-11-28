@@ -1,0 +1,23 @@
+EnvMap Move: the receiver CD
+
+When EnvMap moves a running Linux virtual machine, the new machine starts once
+from a small CD that EnvMap writes for that move. The CD carries, unchanged,
+these parts of Alpine Linux 3.22.2 (x86_64), taken from its release ISO
+alpine-standard-3.22.2-x86_64.iso (SHA-256
+f6a265f0696d328c8f87814a0d6bfa362d1434e500cb80a48796b1c9d204cee0):
+
+  vmlinuz, initrd        Linux 6.12.51-0-lts and Alpine's initramfs   GPL-2.0
+  mods/*.ko              eleven Linux network drivers (virtio, vmxnet3,
+                         e1000, e1000e and what they need)             GPL-2.0
+  isolinux.bin,
+  ldlinux.c32            SYSLINUX (BIOS boot loader)                   GPL-2.0
+  efi.img, bootx64.efi   GRUB (UEFI boot loader)                       GPL-3.0
+
+Their complete corresponding source is published by the Alpine Linux project:
+https://gitlab.alpinelinux.org/alpine/aports (branch 3.22-stable, packages
+linux-lts, syslinux and grub) and the source mirror at
+https://dl-cdn.alpinelinux.org/alpine/v3.22/. The publisher of this image
+provides the same sources on request.
+
+The engine on the CD (envmove) is EnvMap's own and is under the licence of
+this image (Apache-2.0).

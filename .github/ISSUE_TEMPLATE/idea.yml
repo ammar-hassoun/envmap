@@ -1,0 +1,31 @@
+name: An idea or a request
+description: Something EnvMap should do, or do differently.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do, and what gets in the way today?
+    validations:
+      required: true
+  - type: textarea
+    id: wish
+    attributes:
+      label: What would help
+      description: What you would like EnvMap to do. A sketch of the screen or the steps is welcome.
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: The system it concerns
+      description: For example a CI system, an identity provider, a hypervisor. Leave empty if none.
+  - type: dropdown
+    id: help
+    attributes:
+      label: Would you help build or test it?
+      options:
+        - I can test it
+        - I can send a pull request
+        - Neither, but I would use it

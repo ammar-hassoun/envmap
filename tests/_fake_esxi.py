@@ -94,6 +94,7 @@ class FakeEsxi:
         self.old = old                    # an ESXi older than 6.7: no serial property
         self.calls: list[tuple] = []
         self.encodings_seen: list[list[int]] = []
+        self.pings_seen = 0
         self.tickets: set = set()
         self.maintenance = False
         self.fail_next: dict = {}
@@ -916,10 +917,27 @@ class FakeEsxi:
                 await ws.close(1008, "bad ticket")
                 return
             vm = self.vms.get(hit[1], {})
-            await self._rfb(ws, vm.get("name", "vm"), vm)
+            try:
+                await self._rfb(ws, vm.get("name", "vm"), vm)
+            except Exception:                                 # noqa: BLE001
+                pass                                          # the other side went away: nothing to say
+
+        fake = self
+
+        class NoPings(wss.ServerConnection):
+            """What ESXi 8.0.3 does (measured 27 November 2026): a websocket
+            ping is not answered, the console connection is closed."""
+
+            def process_event(self, event):
+                if getattr(event, "opcode", None) == 9:
+                    fake.pings_seen += 1
+                    asyncio.get_running_loop().create_task(self.close(1000))
+                    return
+                super().process_event(event)
 
         async def main():
-            async with wss.serve(handler, "127.0.0.1", 0, subprotocols=["binary"], max_size=None) as srv:
+            async with wss.serve(handler, "127.0.0.1", 0, subprotocols=["binary"], max_size=None,
+                                 create_connection=NoPings) as srv:
                 self.wmks_port = list(srv.sockets)[0].getsockname()[1]
                 ready.set()
                 await asyncio.Future()

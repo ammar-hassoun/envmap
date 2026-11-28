@@ -143,12 +143,14 @@
     @media (max-width:900px){ .apanels { grid-template-columns:1fr; } }
     .amix { display:flex; gap:16px; align-items:center; flex-wrap:wrap; }
     .amix .keys { flex:1 1 130px; min-width:0; }
-    .amix .akey { display:flex; align-items:center; gap:8px; font-size:12px;
-      padding:3px 7px; margin:0 -7px; border-radius:7px; color:var(--text2); text-decoration:none; }
+    .amix { gap:22px; }
+    .amix .akey { display:flex; align-items:center; gap:9px; font-size:12.5px;
+      padding:6px 9px; margin:0 -9px; border-radius:9px; color:var(--text2); text-decoration:none; }
     .amix .akey:hover { background:var(--overlay); color:var(--text); }
-    .amix .akey i { width:9px; height:9px; border-radius:3px; flex:0 0 auto; }
-    .amix .akey .v { margin-left:auto; font-family:var(--mono); font-size:11.5px;
-      color:var(--muted); font-variant-numeric:tabular-nums; }
+    .amix .akey i { width:8px; height:8px; border-radius:50%; flex:0 0 auto;
+      box-shadow:0 0 0 3px color-mix(in srgb, currentColor 0%, transparent); }
+    .amix .akey .v { margin-left:auto; font-size:12.5px; font-weight:650;
+      color:var(--text); font-variant-numeric:tabular-nums; }
   
   /* ── A SECTION THAT ARRIVES SHUT, and a form that unfolds under its row ──
      GLOBAL because two pages use it (the account page and Users & audit) and a

@@ -8,7 +8,7 @@
 {# ── what is connected ── #}
 <div class="page-head">
   <div>
-    <h1>🌍 Edge &amp; DNS</h1>
+    <h1 class="withico">{{ glyph('globe', 24) }}Edge &amp; DNS</h1>
     <p class="sub">The layer every request passes through before it reaches
       anything else — {{ conns|length }} provider{{ 's' if conns|length != 1 }}
       connected.</p>
@@ -329,7 +329,7 @@
                           background:var(--well); }
   .dns-act .dns-del:hover { color:var(--danger-ink);
                             border-color:color-mix(in srgb, var(--danger-ink) 40%, transparent);
-                            background:var(--danger-on-wash); }
+                            background:var(--danger-wash); }
   .dns-act button:focus-visible { outline:none; border-color:var(--accent); }
   .dns-form { padding:12px 14px 14px;
               background:color-mix(in srgb, var(--text) 4%, transparent);

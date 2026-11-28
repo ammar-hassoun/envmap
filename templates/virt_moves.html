@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block crumbs %}<a href="/virt">Hypervisors</a> <span>›</span> <b>Moves</b>{% endblock %}
+{% block content %}
+<div class="page-head"><div>
+  <h1 style="display:flex;align-items:center;gap:10px;">Moves <span class="badge">preview</span></h1>
+  <p class="sub">Running VMs moved to another hypervisor or host with EnvMap Move. Start one from a VM's page.</p></div></div>
+{% if not jobs %}
+<div class="card"><div class="card-b" style="text-align:center;padding:40px 20px;">
+  <p style="margin:0 0 6px;font-weight:600;">No moves yet</p>
+  <p class="hint" style="margin:0;">Open a running VM on a hypervisor and choose Move.</p></div></div>
+{% else %}
+<div class="card"><div class="card-b" style="padding:0;overflow-x:auto;">
+<table class="jenkins">
+  <thead><tr><th>VM</th><th>From</th><th>To</th><th>State</th><th>Started</th><th>By</th></tr></thead>
+  <tbody>
+  {% for j in jobs %}
+  <tr>
+    <td><a href="/virt/moves/job?id={{ j.id|urlencode }}"><b>{{ j.src.name }}</b></a></td>
+    <td>{{ j.src.conn_name }}{% if j.src.node %} · {{ j.src.node }}{% endif %}</td>
+    <td>{{ j.dst.conn_name }}{% if j.dst.node %} · {{ j.dst.node }}{% endif %}</td>
+    <td><span class="mv-state" data-s="{{ j.state }}">{{ j.state }}</span></td>
+    <td class="mono" data-when="{{ j.created }}">{{ j.created|int }}</td>
+    <td>{{ j.by.name or '' }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table></div></div>
+{% endif %}
+<script src="/static/vmmove.js?v={{ portal_version() }}" nonce="{{ csp_nonce() }}"></script>
+{% endblock %}

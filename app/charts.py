@@ -11,6 +11,7 @@ caller hands in is the page. The cloud network map once put provider names in
 raw: a VPC or an instance called `<b onmouseover=x>` became an element, and
 the CSP refusing the handler did not stop an injected `<img src>` fetching.
 """
+import itertools
 import math
 from html import escape
 
@@ -18,6 +19,28 @@ from markupsafe import Markup
 
 # severity of a utilisation figure — one place, so gauges and bars agree
 WARM, HOT = 65, 85
+
+
+# Gradients need an id, and two charts on one page must not share one: the
+# second definition wins and the first chart is painted in the second's
+# colour. A process-wide counter is enough — ids only have to differ within
+# a page.
+_ids = itertools.count(1)
+
+
+def _gid(kind: str) -> str:
+    return f"{kind}{next(_ids)}"
+
+
+def _grad(gid: str, colour: str, x2: str = "1", y2: str = "0",
+          a: float = .55, b: float = 1.0) -> str:
+    """A two-stop gradient in one colour, from `a` to `b` opacity. Stops take
+    the colour through style=: a CSS variable in a presentation attribute is
+    not resolved, which is how a gradient silently paints black."""
+    return (f'<linearGradient id="{gid}" x1="0" y1="0" x2="{x2}" y2="{y2}">'
+            f'<stop offset="0" style="stop-color:{colour};stop-opacity:{a}"/>'
+            f'<stop offset="1" style="stop-color:{colour};stop-opacity:{b}"/>'
+            f'</linearGradient>')
 
 
 def load_color(pct: float) -> str:
@@ -29,7 +52,7 @@ def load_color(pct: float) -> str:
 
 
 def donut(pct: float, label: str = "", sub: str = "", size: int = 132,
-          thickness: int = 11, color: str = "var(--ok-ink)") -> Markup:
+          thickness: int = 10, color: str = "var(--ok-ink)") -> Markup:
     """Ring gauge with the figure in the middle."""
     pct = max(0.0, min(100.0, float(pct or 0)))
     r = (size - thickness) / 2
@@ -42,15 +65,20 @@ def donut(pct: float, label: str = "", sub: str = "", size: int = 132,
     # already escapes, so the inconsistency is the hazard.
     label, sub = escape(str(label)), escape(str(sub))
     color = escape(str(color))
+    gid = _gid("dg")
+    # a round cap at 0% still paints a dot, which reads as a real slice of
+    # something that is not there
+    arc = (f'<circle cx="{mid}" cy="{mid}" r="{r:.2f}" fill="none" '
+           f'stroke="url(#{gid})" stroke-width="{thickness}" stroke-linecap="round" '
+           f'stroke-dasharray="{on:.2f} {c - on:.2f}" '
+           f'transform="rotate(-90 {mid} {mid})"/>') if pct >= 1 else ""
     return Markup(f"""
 <svg class="chart-donut" viewBox="0 0 {size} {size}" width="{size}" height="{size}"
      role="img" aria-label="{label} {pct:.0f}%">
+  <defs>{_grad(gid, color, x2="1", y2="1", a=.7)}</defs>
   <circle cx="{mid}" cy="{mid}" r="{r:.2f}" fill="none"
-          stroke="var(--well)" stroke-width="{thickness}"/>
-  <circle cx="{mid}" cy="{mid}" r="{r:.2f}" fill="none"
-          stroke="{color}" stroke-width="{thickness}" stroke-linecap="round"
-          stroke-dasharray="{on:.2f} {c - on:.2f}"
-          transform="rotate(-90 {mid} {mid})"/>
+          stroke="var(--track)" stroke-width="{thickness}"/>
+  {arc}
   <text x="{mid}" y="{mid - 1}" class="donut-n" text-anchor="middle"
         dominant-baseline="middle">{label}</text>
   {f'<text x="{mid}" y="{mid + 19}" class="donut-s" text-anchor="middle">{sub}</text>' if sub else ''}
@@ -58,7 +86,7 @@ def donut(pct: float, label: str = "", sub: str = "", size: int = 132,
 
 
 def ring(segments: list, centre: str = "", sub: str = "", size: int = 122,
-         thickness: int = 14) -> Markup:
+         thickness: int = 11) -> Markup:
     """A donut of several parts — the mix, where donut() shows one fraction.
 
     segments: [(label, value, colour), …] in drawing order. Empty parts are
@@ -76,16 +104,21 @@ def ring(segments: list, centre: str = "", sub: str = "", size: int = 122,
     r = (size - thickness) / 2
     circ = 2 * math.pi * r
     mid = size / 2
-    gap = 2.5 if len(parts) > 1 else 0.0
+    # Rounded ends, so each part is a capsule; a round cap reaches half the
+    # thickness past each end of its dash, so the dash is shortened by the
+    # thickness and the gap is what is left between two caps.
+    many = len(parts) > 1
+    gap = 4.0 if many else 0.0
     arcs, done = [], 0.0
     for label, value, colour in parts:
         length = circ * value / total
-        drawn = max(length - gap, 0.8)
+        drawn = max(length - gap - (thickness if many else 0), 0.01)
         arcs.append(
             f'<circle cx="{mid}" cy="{mid}" r="{r:.2f}" fill="none" '
             f'stroke="{escape(str(colour))}" stroke-width="{thickness}" '
+            f'stroke-linecap="{"round" if many else "butt"}" '
             f'stroke-dasharray="{drawn:.2f} {circ - drawn:.2f}" '
-            f'stroke-dashoffset="{-done:.2f}" '
+            f'stroke-dashoffset="{-(done + (gap + thickness) / 2 if many else done):.2f}" '
             f'transform="rotate(-90 {mid} {mid})">'
             f'<title>{escape(label)}: {value:g}</title></circle>')
         done += length
@@ -94,7 +127,7 @@ def ring(segments: list, centre: str = "", sub: str = "", size: int = 122,
 <svg class="chart-donut" viewBox="0 0 {size} {size}" width="{size}" height="{size}"
      role="img" aria-label="{escape(', '.join(f'{l} {v:g}' for l, v, _c in parts))}">
   <circle cx="{mid}" cy="{mid}" r="{r:.2f}" fill="none"
-          stroke="var(--well)" stroke-width="{thickness}"/>
+          stroke="var(--track)" stroke-width="{thickness}"/>
   {''.join(arcs)}
   {f'<text x="{mid}" y="{mid - (2 if sub else -5)}" class="donut-n" text-anchor="middle" dominant-baseline="middle">{centre}</text>' if centre else ''}
   {f'<text x="{mid}" y="{mid + 20}" class="donut-s" text-anchor="middle">{sub}</text>' if sub else ''}
@@ -104,20 +137,25 @@ def ring(segments: list, centre: str = "", sub: str = "", size: int = 122,
 def gauge(pct: float, caption: str = "", detail: str = "") -> Markup:
     """Half-circle load gauge — reads faster than a bar for 'how full is this'."""
     pct = max(0.0, min(100.0, float(pct or 0)))
-    w, h, r, sw = 108, 62, 44, 9
+    w, h, r, sw = 108, 62, 44, 8
     cx, cy = w / 2, h - 8
     arc = math.pi * r                     # arc length of the semicircle
     on = arc * pct / 100
     col = load_color(pct)
     caption, detail = escape(str(caption)), escape(str(detail))
+    gid = _gid("gg")
+    # Under 1% there is no arc at all: a round cap on a near-zero dash is the
+    # lone dot at the left end that read as a rendering fault.
+    value = (f'<path d="M {cx - r} {cy} A {r} {r} 0 0 1 {cx + r} {cy}" fill="none" '
+             f'stroke="url(#{gid})" stroke-width="{sw}" stroke-linecap="round" '
+             f'stroke-dasharray="{on:.2f} {arc:.2f}"/>') if pct >= 1 else ""
     return Markup(f"""
 <svg class="chart-gauge" viewBox="0 0 {w} {h}" width="{w}" height="{h}"
      role="img" aria-label="{caption} {pct:.0f}%">
+  <defs>{_grad(gid, col, a=.55)}</defs>
   <path d="M {cx - r} {cy} A {r} {r} 0 0 1 {cx + r} {cy}" fill="none"
-        stroke="var(--well)" stroke-width="{sw}" stroke-linecap="round"/>
-  <path d="M {cx - r} {cy} A {r} {r} 0 0 1 {cx + r} {cy}" fill="none"
-        stroke="{col}" stroke-width="{sw}" stroke-linecap="round"
-        stroke-dasharray="{on:.2f} {arc:.2f}"/>
+        stroke="var(--track)" stroke-width="{sw}" stroke-linecap="round"/>
+  {value}
   <text x="{cx}" y="{cy - 12}" class="gauge-n" text-anchor="middle">{pct:.0f}%</text>
   <text x="{cx}" y="{cy - 1}" class="gauge-c" text-anchor="middle">{caption}</text>
 </svg>
@@ -158,18 +196,25 @@ def sparkline(values: list, height: int = 40, color: str = "var(--accent-ink)",
     line = " ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
     area = f"{line} {w:.1f},{height} 0,{height}"
     color = escape(str(color))
+    gid = _gid("sg")
+    # The end point is drawn in HTML over the SVG rather than inside it: the
+    # viewBox stretches non-uniformly to the card's width, which turns a
+    # circle into an ellipse, and a halo into a smear.
+    ex, ey = pts[-1][0] / w * 100, pts[-1][1] / height * 100
     return Markup(f"""
+<div class="spark-wrap" style="position:relative;">
 <svg class="chart-spark" viewBox="0 0 {w} {height}" width="100%" height="{height}"
      preserveAspectRatio="none" role="img"
      aria-label="trend, latest {vals[-1]:g}{', steady' if flat else ''}">
-  {f'<polygon points="{area}" fill="{color}" opacity=".13"/>' if fill and not flat else ''}
-  <polyline points="{line}" fill="none" stroke="{color}" stroke-width="1.6"
+  <defs>{_grad(gid, color, x2="0", y2="1", a=.32, b=0)}</defs>
+  {f'<polygon points="{area}" fill="url(#{gid})"/>' if fill and not flat else ''}
+  <polyline points="{line}" fill="none" stroke="{color}" stroke-width="1.8"
             stroke-linejoin="round" stroke-linecap="round"
-            {'stroke-dasharray="3 3" opacity=".65"' if flat else ''}
+            {'stroke-dasharray="3 4" opacity=".6"' if flat else ''}
             vector-effect="non-scaling-stroke"/>
-  <circle cx="{pts[-1][0]:.1f}" cy="{pts[-1][1]:.1f}" r="2.2" fill="{color}"
-          vector-effect="non-scaling-stroke"/>
-</svg>""")
+</svg>
+<i class="spark-dot" style="left:{ex:.2f}%;top:{ey:.2f}%;background:{color};color:{color};"></i>
+</div>""")
 
 
 def hbars(items: list, unit: str = "") -> Markup:

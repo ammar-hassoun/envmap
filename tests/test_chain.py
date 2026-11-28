@@ -446,10 +446,10 @@ def test_pages(esx: FakeEsxi, esx_c: dict, old_c: dict, bmc_c: dict, bmc2_c: dic
                           + r'&sec=runs">no hypervisor matches</a>', r.text))
         check("a server whose iDRAC reports an OS shows it in the cell, with its host name under it",
               _re3.search(r'<a class="runs-os" href="/bmc\?device=' + S3
-                          + r'&sec=runs"\s+title="[^"]*">Ubuntu 22\.04\.4 LTS</a><div class="runs-sub"[^>]*>app-node-05</div>',
+                          + r'&sec=runs"\s+title="[^"]*"[^>]*>Ubuntu 22\.04\.4 LTS</a><div class="runs-sub"[^>]*>app-node-05</div>',
                           r.text))
         check("an ESXi the iDRAC reports, not connected, says so under it",
-              _re3.search(r'href="/bmc\?device=' + S4 + r'&sec=runs"\s+title="[^"]*">ESXi 7\.0 U3</a>'
+              _re3.search(r'href="/bmc\?device=' + S4 + r'&sec=runs"\s+title="[^"]*"[^>]*>ESXi 7\.0 U3</a>'
                           r'<div class="runs-sub"[^>]*>not connected</div>', r.text))
         r = adm.get(f"/bmc?device={S}")
         check("the Overview carries one line of it", "See what runs here" in r.text)

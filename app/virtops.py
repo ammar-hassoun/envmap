@@ -142,9 +142,11 @@ ACTIONS = {
     "ds.delete": ("admin", "host", "delete a file"),
     "ds.upload": ("admin", "host", "upload a file"),
     "console.open": ("console", "vm", "open the console"),
+    "vm.move": ("admin", "vm", "move to another hypervisor while it runs"),
 }
-# gated and audited here, but carried out by their own routes (a stream, a socket)
-NOT_RUN = {"ds.upload", "console.open"}
+# gated and audited here, but carried out by their own routes (a stream, a
+# socket, a move that runs for minutes: app/vmmove.py, gated on both ends)
+NOT_RUN = {"ds.upload", "console.open", "vm.move"}
 ESXI_ONLY = {"vm.unregister", "vm.boot", "vm.snapshot_delete_all",
              "vm.snapshot_rename", "host.maintenance_enter",
              "host.maintenance_exit", "host.service_policy",

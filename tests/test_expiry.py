@@ -174,12 +174,22 @@ def main() -> int:
     dashes = [float(d.split()[0]) for d in
               _re.findall(r'stroke-dasharray="([^"]+)"', svg)]
     offs = [float(o) for o in _re.findall(r'stroke-dashoffset="(-?[\d.]+)"', svg)]
-    circ = 2 * _math.pi * ((122 - 14) / 2)
+    # Since 0.7.71 each part is a capsule: a round cap reaches half the
+    # ring's thickness past each end of its dash, so the dash starts that far
+    # (plus half the gap) into its share and is shortened to match. What must
+    # hold is the same as before: a part starts at its boundary, ends at the
+    # next, and none overlaps another.
+    t = float(_re.search(r'stroke-width="([\d.]+)"', svg).group(1))
+    circ = 2 * _math.pi * ((122 - t) / 2)
+    lead = -offs[0] if offs else -1
     check(f"one arc per part that has a value ({len(dashes)})", len(dashes) == 2)
-    check("the first part starts at the top", offs and offs[0] == 0)
+    check(f"the first part starts at the top, its rounded end inside its share ({lead:.1f})",
+          t / 2 <= lead <= t)
     check(f"the second starts where the first ended "
-          f"({-offs[1]:.1f} vs {circ * 0.75:.1f})",
-          abs(-offs[1] - circ * 0.75) < 1.0)
+          f"({-offs[1]:.1f} vs {circ * 0.75 + lead:.1f})",
+          abs(-offs[1] - (circ * 0.75 + lead)) < 1.0)
+    check("a part with its two caps and its gap fills exactly its share",
+          abs(dashes[0] + t + 2 * (lead - t / 2) - circ * 0.75) < 1.0)
     check("no part overruns the circle", all(d <= circ + 0.01 for d in dashes))
     solo = str(charts.ring([("all of it", 5, "var(--ok)")]))
     check("a single part closes the circle rather than leaving a seam",

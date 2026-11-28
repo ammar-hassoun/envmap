@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block crumbs %}<a href="/virt">Hypervisors</a> <span>›</span> <a href="/virt/moves">Moves</a> <span>›</span>
+  <b>{{ job.src.name }}</b>{% endblock %}
+{% block content %}
+<div data-move-job data-id="{{ job.id }}" data-prod="{{ '1' if (job.src.production or job.dst.production) else '0' }}">
+<div class="page-head"><div>
+  <h1 style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">Moving {{ job.src.name }}
+    <span class="mv-state" data-job-state>{{ job.state }}</span></h1>
+  <p class="sub">{{ job.src.conn_name }}{% if job.src.node %} · {{ job.src.node }}{% endif %}
+    <span class="mv-arrow">→</span> {{ job.dst.conn_name }}{% if job.dst.node %} · {{ job.dst.node }}{% endif %}
+    · started by {{ job.by.name or 'someone' }} <span data-job-started data-t="{{ job.created }}"></span></p></div>
+  <div><a class="btn btn-ghost" href="/virt/moves" style="white-space:nowrap;">All moves</a></div>
+</div>
+
+<div class="mv-steps" data-job-steps>
+  {% for key, label in [('preparing', 'New VM ready'), ('copying', 'Disks and memory copied while it runs'),
+                        ('frozen', 'Last changes cross'), ('finishing', 'Running on the new VM'), ('done', 'Done')] %}
+  <div class="mv-step" data-step="{{ key }}"><span class="dot"></span><span>{{ label }}</span></div>
+  {% endfor %}
+</div>
+
+<div class="flash" data-job-banner hidden></div>
+
+<div class="card" data-job-decide hidden><div class="card-h">The VM is waiting</div><div class="card-b">
+  <p style="margin:0 0 10px;">It is frozen and has not shown up on the new VM yet. Look at the new VM's console first.</p>
+  <div style="display:flex;gap:10px;flex-wrap:wrap;">
+    <button type="button" data-decide="back">Bring it back</button>
+    <button type="button" class="abtn" data-decide="keep">It runs on the new VM: keep it there</button>
+  </div>
+  <p class="hint" style="margin:10px 0 0;">Bring it back restarts the new VM: its receiver finds the VM still waiting and
+    tells it to carry on where it was. Keep it there powers the old copy off, which is all it was waiting for.</p>
+</div></div>
+
+<div class="card"><div class="card-h">What happened</div><div class="card-b">
+  <ol class="mv-log" data-job-log></ol>
+</div></div>
+</div>
+<script src="/static/vmmove.js?v={{ portal_version() }}" nonce="{{ csp_nonce() }}"></script>
+{% endblock %}

@@ -1,0 +1,74 @@
+# DevOps EnvMap on one machine with Docker Compose. No Kubernetes needed.
+#
+#   docker compose up -d                     the whole of EnvMap
+#   ENVMAP_MODE=pam docker compose up -d     Privileged Access only
+#
+# Then open http://localhost:8471 and create the first administrator.
+#
+# What you get: the portal and the session gateway (guacd), sharing one volume
+# that holds the database, the session recordings and the secret files.
+# Everything about your estate is entered in the portal afterwards and stored
+# in that volume, never in this file.
+#
+# What a Compose install cannot do: recorded WEB sessions. The browser for one
+# is started as a pod, so it needs a Kubernetes cluster registered in the
+# portal. SSH, RDP and VNC sessions need nothing more than this.
+
+name: envmap
+
+services:
+  envmap:
+    image: ghcr.io/ammar-hassoun/devops-portal:${ENVMAP_VERSION:-latest}
+    restart: unless-stopped
+    ports:
+      # Published on this machine only. The portal holds credentials, so it
+      # is not put on your network by a default. To reach it from elsewhere,
+      # put a reverse proxy with TLS in front of it and set
+      # ENVMAP_COOKIE_SECURE=1: do not change this to 0.0.0.0 on its own.
+      - "${ENVMAP_BIND:-127.0.0.1}:${ENVMAP_PORT:-8471}:8471"
+    environment:
+      # Inside a container the portal has to listen on the container's own
+      # address, which is not loopback, so it must be told that is intended.
+      PORTAL_ALLOW_NETWORK: "1"
+      # full: everything.  pam: Privileged Access and nothing else.
+      PORTAL_MODE: ${ENVMAP_MODE:-full}
+      # 1 when people reach the portal over HTTPS; 0 for http://localhost.
+      PORTAL_COOKIE_SECURE: ${ENVMAP_COOKIE_SECURE:-0}
+      # Encrypts the credentials the portal stores and keys the audit log's
+      # hash chain. Left empty, the portal makes a key file beside the
+      # database. Setting your own, BEFORE the first start, keeps the key
+      # apart from the data:  openssl rand -hex 32
+      PORTAL_SECRET_KEY: ${ENVMAP_SECRET_KEY:-}
+    volumes:
+      - data:/data
+    # The image needs no writable filesystem beyond its data volume.
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /home/portal:uid=10001,gid=10001
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+  # Apache Guacamole's gateway: draws RDP and VNC sessions in the browser and
+  # writes their recordings. It shares the portal's network, so the portal
+  # reaches it on 127.0.0.1:4822 and it is not published anywhere, and it
+  # shares the volume, so the recordings land where the portal serves them.
+  guacd:
+    image: guacamole/guacd:${GUACD_VERSION:-1.6.0}
+    restart: unless-stopped
+    depends_on: [envmap]
+    network_mode: "service:envmap"
+    user: "10001:10001"
+    environment:
+      HOME: /home/guacd
+    volumes:
+      - data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /home/guacd:uid=10001,gid=10001
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+volumes:
+  data:

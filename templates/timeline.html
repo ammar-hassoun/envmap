@@ -13,17 +13,18 @@
     padding:0 2px; }
   .tl-strip a { flex:1; min-width:2px; display:flex; align-items:flex-end;
     height:100%; text-decoration:none; }
-  .tl-strip .b { width:100%; border-radius:2px 2px 0 0;
-    background:var(--accent); opacity:.30; min-height:2px;
-    transition:opacity .12s, transform .12s; transform-origin:bottom; }
-  .tl-strip .b.has { opacity:.75; }
-  .tl-strip .b.warn { background:var(--warn); opacity:.85; }
-  .tl-strip .b.bad  { background:var(--danger); opacity:.9; }
-  .tl-strip a:hover .b { opacity:1; transform:scaleY(1.08); }
+  .tl-strip .b { width:100%; border-radius:3px 3px 1px 1px;
+    background:var(--track); min-height:2px;
+    transition:filter .12s, transform .12s; transform-origin:bottom; }
+  .tl-strip .b.has { --c:var(--accent);
+    background:linear-gradient(180deg,color-mix(in srgb,var(--c) 78%,#fff),var(--c)); }
+  .tl-strip .b.has.warn { --c:var(--warn); }
+  .tl-strip .b.has.bad  { --c:var(--danger); }
+  .tl-strip a:hover .b { filter:brightness(1.12); transform:scaleY(1.08); }
   .tl-strip a:focus-visible { outline:2px solid var(--accent-ink);
     outline-offset:2px; border-radius:3px; }
   .tl-scale { display:flex; justify-content:space-between; font-size:10.5px;
-    color:var(--faint); font-family:var(--mono); padding:5px 2px 0; }
+    color:var(--faint); font-variant-numeric:tabular-nums; padding:5px 2px 0; }
   .tl-hint { font-size:10.5px; color:var(--faint); text-align:center;
     padding-top:2px; }
 
@@ -65,6 +66,8 @@
   .tl-title b { font-size:13px; font-weight:600; }
   .tl-title a { text-decoration:none; }
   .tl-title a:hover b { text-decoration:underline; }
+  .tl-title a.tl-ext { font-size:11px; color:var(--muted); white-space:nowrap; }
+  .tl-title a.tl-ext:hover { color:var(--accent-ink); text-decoration:underline; }
   .tl-meta { font-size:11.5px; color:var(--muted); margin-top:2px;
     overflow-wrap:anywhere; }
   .tl-meta .m { font-family:var(--mono); font-size:11px; }
@@ -74,9 +77,12 @@
   .tl-chip { font-size:9.5px; text-transform:uppercase; letter-spacing:.05em;
     font-weight:700; padding:1px 5px; border-radius:4px; white-space:nowrap;
     background:var(--panel3); color:var(--muted); }
-  .tl-chip.ok   { background:var(--ok-on-wash);     color:var(--ink-on-ok); }
-  .tl-chip.bad  { background:var(--danger-on-wash); color:var(--ink-on-danger); }
-  .tl-chip.warn { background:var(--warn-on-wash);   color:var(--ink-on-warn); }
+  .tl-chip.ok   { background:var(--ok-wash);     color:var(--ok-ink);
+    box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--ok) 30%,transparent); }
+  .tl-chip.bad  { background:var(--danger-wash); color:var(--danger-ink);
+    box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--danger) 32%,transparent); }
+  .tl-chip.warn { background:var(--warn-wash);   color:var(--warn-ink);
+    box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--warn) 32%,transparent); }
   .tl-src { font-size:10px; color:var(--faint); white-space:nowrap;
     padding-top:3px; }
 
@@ -209,10 +215,12 @@
         <div class="tl-dot {{ e.tone }}">{{ sources[e.kind].icon }}</div>
         <div class="tl-body">
           <div class="tl-title">
-            {% if e.url %}<a href="{{ e.url }}"
-              {% if not e.url.startswith('/') %}target="_blank" rel="noopener"{% endif %}
-              ><b>{{ e.what }}</b></a>{% else %}<b>{{ e.what }}</b>{% endif %}
+            {#- the title opens the row inside the portal; the system's own page
+                is the small link after it (app/timeline.py, _ev) #}
+            {% if e.url %}<a href="{{ e.url }}"><b>{{ e.what }}</b></a>{% else %}<b>{{ e.what }}</b>{% endif %}
             {% if e.status %}<span class="tl-chip {{ e.tone }}">{{ e.status }}</span>{% endif %}
+            {% if e.ext %}<a class="tl-ext" href="{{ e.ext }}" target="_blank" rel="noopener"
+              title="open in {{ e.ext_label or 'its own interface' }}">{{ e.ext_label or 'open' }} ↗</a>{% endif %}
           </div>
           <div class="tl-meta">
             {%- if e.where %}{{ e.where }}{% endif -%}

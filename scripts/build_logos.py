@@ -116,6 +116,9 @@ LUCIDE = [
     # cluster furniture
     "boxes", "git-merge", "activity", "receipt", "circle-check",
     "triangle-alert",
+    # used by pages but missing until 0.7.71, so those spots drew an empty box
+    "bell", "chevron-down", "filter", "folder", "info", "link", "loader", "tag",
+    "unplug",
 ]
 
 

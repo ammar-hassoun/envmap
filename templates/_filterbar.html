@@ -1,0 +1,77 @@
+{#- The search and filter bar over a long list. app/listfilter.py builds `fb`
+    and filters the first paint; static/listfilter.js takes the bar over and
+    filters as you type, with no reload. A form, so it works before and
+    without the script: a segment button submits its own value, Enter submits
+    the search, Apply sends the selects. The hidden copies of the segments'
+    values sit in <noscript>, before the buttons: with no script the clicked
+    button is the later value and wins, and with one they do not exist. -#}
+
+{%- macro counted(fb, nouns, gnouns=none) -%}
+{%- if fb.active %}{{ fb.shown }} of {% endif %}{{ fb.total }} {{ nouns[0] if fb.total == 1 else nouns[1] }}
+{%- if gnouns %} on {% if fb.active %}{{ fb.gshown }} of {% endif %}{{ fb.gtotal }} {{ gnouns[0] if fb.gtotal == 1 else gnouns[1] }}{% endif %}
+{%- endmacro -%}
+
+{%- macro bar(fb, action, nouns, placeholder, keep={}, gnouns=none, extra='') -%}
+<form method="get" action="{{ action }}" class="fbar" data-fbar role="search"
+      data-noun="{{ nouns[0] }}" data-nouns="{{ nouns[1] }}"
+      {%- if gnouns %} data-gnoun="{{ gnouns[0] }}" data-gnouns="{{ gnouns[1] }}"{% endif %}>
+  {%- for k, v in keep.items() if v %}
+  <input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}
+  <noscript>{% for k, fc in fb.facets.items() if fc.seg and fc.value %}<input type="hidden" name="{{ k }}" value="{{ fc.value }}">{% endfor %}</noscript>
+  <div class="fbar-top">
+    <label class="fsearch">{{ glyph('search', 15) }}
+      <input type="search" name="q" value="{{ fb.q }}" data-fq autocomplete="off"
+             spellcheck="false" placeholder="{{ placeholder }}" aria-label="{{ placeholder }}">
+      <kbd aria-hidden="true" title="press / to search">/</kbd></label>
+    {{ extra }}
+  </div>
+  <div class="fbar-row">
+    {%- for k, fc in fb.facets.items() if fc.seg %}
+    <div class="fseg" role="group" aria-label="{{ fc.label }}" data-fk="{{ k }}">
+      {%- for o in fc.options %}{% set n = fc.counts.get(o.v, 0) %}
+      <button type="submit" name="{{ k }}" value="{{ o.v }}" data-fv="{{ o.v }}"
+              class="{{ 'on' if o.v == fc.value }}{{ ' zero' if not n }}"
+              aria-pressed="{{ 'true' if o.v == fc.value else 'false' }}">{{ o.label }}
+        <span class="n" data-fn>{{ n }}</span></button>
+      {%- endfor %}
+    </div>
+    {%- endfor %}
+    {%- for k, fc in fb.facets.items() if not fc.seg %}
+    <select name="{{ k }}" data-fk="{{ k }}" aria-label="{{ fc.label }}" title="{{ fc.label }}">
+      <option value="" data-fl="{{ fc.any }}">{{ fc.any }} ({{ fc.counts.get('', 0) }})</option>
+      {%- for o in fc.options %}
+      <option value="{{ o.v }}" data-fl="{{ o.label }}"{{ ' selected' if o.v == fc.value }}>{{ o.label }} ({{ fc.counts.get(o.v, 0) }})</option>
+      {%- endfor %}
+    </select>
+    {%- endfor %}
+    <noscript><button class="btn-ghost tbtn" type="submit">Apply</button></noscript>
+  </div>
+  <div class="fsum">
+    <span data-fcount aria-live="polite">{{ counted(fb, nouns, gnouns) }}</span>
+    <a class="flink" href="{{ fb.reset }}" data-fclear{{ ' hidden' if not fb.active }}>Clear filters</a>
+    <span class="fhint">Enter opens a single match · click a column title to sort</span>
+  </div>
+</form>
+{%- endmacro -%}
+
+{#- What the list says when nothing matches, in the list's place. -#}
+{%- macro empty(fb, nouns) -%}
+<div class="card fempty" data-fempty{{ ' hidden' if not (fb.active and not fb.shown) }}>
+  <div class="card-b">
+    <div class="fempty-t">No {{ nouns[0] }} matches <span data-fempty-q>{{ ('“' ~ fb.q ~ '”') if fb.q.strip() else 'these filters' }}</span>.</div>
+    <a class="flink" href="{{ fb.reset }}" data-fclear>Clear filters</a>
+  </div>
+</div>
+{%- endmacro -%}
+
+{#- A column title that sorts. `first` is the direction of the first click:
+    a number is wanted biggest first, a name A to Z. `no-sort` keeps base.html's
+    sort-every-table script off it: that one sorts by the cell's text, forgets
+    on the page's own reloads, and with both on one click sorted twice. -#}
+{%- macro th(label, key, kind='text', style='', fb=none, first=none) -%}
+{%- set d = first or ('desc' if kind == 'num' else 'asc') -%}
+{%- set on = fb and fb.sort == key -%}
+<th class="no-sort" style="{{ style }}" data-fsort="{{ key }}" data-ftype="{{ kind }}" data-fdir="{{ d }}"
+    aria-sort="{{ ('ascending' if fb.dir == 'asc' else 'descending') if on else 'none' }}"><button
+    type="button" class="fsort" title="sort by {{ label|lower }}">{{ label }}</button></th>
+{%- endmacro -%}

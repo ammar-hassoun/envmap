@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: A question, or "how do I…"
+    url: https://github.com/ammar-hassoun/envmap/discussions/categories/q-a
+    about: Ask in Discussions. Answers stay findable for the next person.
+  - name: A security problem
+    url: https://github.com/ammar-hassoun/envmap/security/advisories/new
+    about: Report it privately. Please do not open a public issue for anything exploitable.
+  - name: The docs
+    url: https://envmap.tech/docs/
+    about: Install, first run, and a page for every screen.

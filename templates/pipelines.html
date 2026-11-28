@@ -320,6 +320,7 @@
    against the workflow name, health as a bar rather than a percentage, and the
    stages folded away until asked for. */
 .pl { display:flex; flex-direction:column; }
+.pl-row.pl-target { background:rgba(91,141,239,.10); box-shadow:inset 3px 0 0 var(--accent); }
 .pl-head, .pl-row {
   display:grid;
   grid-template-columns:56px minmax(240px, 1fr) 150px 150px 96px 40px;
@@ -534,6 +535,25 @@
         + (doc.failed.step ? ' → ' + doc.failed.step : '');
     }
   });
+
+  // ?open=<ref> is how the Timeline links a build: that pipeline's stages are
+  // opened and it is brought into view and marked, the way its CI's own page
+  // would show it. A failing one is already being read above.
+  const want = new URLSearchParams(location.search).get('open');
+  const target = want && [...document.querySelectorAll('.pl-row')]
+    .find(r => r.dataset.ref === want);
+  if (target) {
+    const box = target.nextElementSibling, btn = target.querySelector('.pl-open');
+    target.classList.add('pl-target');
+    if (btn && !btn.disabled && box && box.hidden) {
+      if (failing.includes(target)) {
+        box.hidden = false;
+        btn.setAttribute('aria-expanded', 'true');
+        btn.title = 'Hide stages';
+      } else btn.click();
+    }
+    target.scrollIntoView({block: 'center'});
+  }
 })();
 </script>
 

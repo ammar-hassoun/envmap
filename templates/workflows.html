@@ -200,7 +200,7 @@
           </tr></thead>
           <tbody>
           {% for r in g.rows %}
-          <tr>
+          <tr data-wfrow="{{ e.conn.id }}/{{ r.name }}">
             <td class="jname" style="font-family:var(--mono);font-size:11.5px;">
               {% if r.href %}<a href="{{ r.href }}">{{ r.name }}</a>{% else %}{{ r.name }}{% endif %}</td>
             <td>{{ r.kind }}</td>
@@ -225,6 +225,23 @@
   </div>
 </div>
 {% endfor %}
+{# ?open=<connection>/<name> is how the Timeline links a run that has no page
+   of its own here (an Airflow DAG): it is brought into view and marked. #}
+<style>
+tr.wf-target td { background:rgba(91,141,239,.10); }
+tr.wf-target td:first-child { box-shadow:inset 3px 0 0 var(--accent); }
+</style>
+<script nonce="{{ csp_nonce() }}">
+(function () {
+  var want = new URLSearchParams(location.search).get('open');
+  if (!want) return;
+  var row = Array.prototype.find.call(document.querySelectorAll('tr[data-wfrow]'),
+    function (r) { return r.getAttribute('data-wfrow') === want; });
+  if (!row) return;
+  row.classList.add('wf-target');
+  row.scrollIntoView({block: 'center'});
+})();
+</script>
 {% endif %}
 {% endif %}
 {% endblock %}

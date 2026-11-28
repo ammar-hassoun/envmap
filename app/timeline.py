@@ -74,6 +74,7 @@ from __future__ import annotations
 
 import re
 import time
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 
 from . import (auth, certs, ci, cluster as clusterview, fleet, gather,
@@ -182,7 +183,7 @@ def at(raw, clock: str = "utc") -> datetime | None:
 
 def _ev(when, kind: str, what: str, where: str = "", who: str = "",
         detail: str = "", url: str = "", tone: str = "",
-        status: str = "") -> dict | None:
+        status: str = "", ext: str = "", ext_label: str = "") -> dict | None:
     """One row. None when the source gave no usable time — a change that cannot
     be placed on the axis does not belong on a timeline, and guessing "now"
     would put it at the top of every incident.
@@ -190,12 +191,44 @@ def _ev(when, kind: str, what: str, where: str = "", who: str = "",
     `status` is a word or two that fits in a pill — "failed", "Succeeded",
     "critical". `detail` is prose and gets a line of its own. They were one
     field to begin with, which put "issued for 90 days" inside a pill.
+
+    `url` is where the row opens INSIDE this portal, always: a build opens its
+    pipeline on the Pipelines page, not in Jenkins (asked for on 25 November
+    2026 — the title used to be the CI's, Argo's or Grafana's own link, which
+    left the portal on the one click the page invites). `ext` is that system's
+    own page, offered beside it as "<ext_label> ↗" for when it is wanted.
     """
     if when is None:
         return None
     return {"at": when, "kind": kind, "what": what, "where": where, "who": who,
-            "detail": detail, "url": url, "tone": tone, "status": status,
+            "detail": detail, "url": url if str(url).startswith("/") else "",
+            "ext": ext if str(ext).startswith(("https://", "http://")) else "",
+            "ext_label": ext_label, "tone": tone, "status": status,
             "day": when.strftime("%Y-%m-%d"), "time": when.strftime("%H:%M:%S")}
+
+
+def _here(path: str, **params) -> str:
+    """An address inside the portal, its values quoted and the empty ones left
+    out."""
+    q = urllib.parse.urlencode({k: v for k, v in params.items()
+                                if v not in (None, "")})
+    return f"{path}?{q}" if q else path
+
+
+def _label(providers: dict, kind: str) -> str:
+    return (providers.get(kind) or {}).get("label") or kind or ""
+
+
+def _config_page(pid: str, rgid: str, env: str) -> str:
+    """Where a commit to an environment's GitOps repository is read and edited:
+    the GitOps repo tab of the cluster serving it, or the environment's own
+    page when no cluster is mapped yet."""
+    cluster = store.cluster_for_env(pid, rgid, env)
+    if cluster:
+        return _here("/clusters", project=pid, cluster=cluster.get("id", ""),
+                     tab="config", env=env)
+    q = urllib.parse.quote
+    return f"/p/{q(pid, safe='')}/{q(rgid, safe='')}/{q(env, safe='')}?stay=1"
 
 
 # ── the sources ────────────────────────────────────────────────
@@ -229,11 +262,12 @@ def _commits(user, since: datetime, refresh: bool = False) -> tuple[list, list]:
                                  f"{rg.get('name', rgid)}: could not read the "
                                  f"working copy ({e})")
                     continue
+                page = _config_page(pid, rgid, env)
                 for c in rows:
                     out.append(_ev(at(c["at"]), "commit", c["subject"],
                                    where=f"{p.get('name', pid)} / "
                                          f"{rg.get('name', rgid)}",
-                                   who=c["who"], detail=c["sha"]))
+                                   who=c["who"], detail=c["sha"], url=page))
     return out, notes
 
 
@@ -256,9 +290,13 @@ def _actions(user, since: datetime, refresh: bool = False) -> tuple[list, list]:
         action = (r.get("action") or "").lower()
         if any(q in action for q in _QUIET):
             continue
+        # the audit log, narrowed to this action by this person on that day
+        day = when.strftime("%Y-%m-%d")
         out.append(_ev(when, "action", r.get("action") or "?",
                        where=r.get("target") or "", who=r.get("user") or "",
                        detail=r.get("detail") or "",
+                       url=_here("/admin/audit", action=r.get("action") or "",
+                                 user=r.get("user") or "", since=day, until=day),
                        tone="bad" if any(l in action for l in _LOUD) else ""))
     return out, []
 
@@ -287,12 +325,18 @@ def _builds(user, since: datetime, refresh: bool = False) -> tuple[list, list]:
             status = (j.get("status") or "").lower()
             tone = ("bad" if status in ("failed", "failure")
                     else "ok" if status == "success" else "")
+            # the pipeline's own row on the Pipelines page, its stages opened
             out.append(_ev(at(j.get("started_at") or j.get("started")),
                            "build",
                            f"{j.get('name', '?')}"
                            + (f" #{j['number']}" if j.get("number") else ""),
                            where=c.get("name", ""), who=j.get("branch") or "",
-                           status=status, url=j.get("url") or "", tone=tone))
+                           status=status, tone=tone,
+                           url=_here("/pipelines", provider=c.get("type", ""),
+                                     conn=c.get("id", ""), q=j.get("name") or "",
+                                     open=j.get("ref") or ""),
+                           ext=j.get("url") or "",
+                           ext_label=_label(ci.PROVIDERS, c.get("type", ""))))
     return out, notes
 
 
@@ -341,7 +385,10 @@ def _deploys(user, since: datetime, refresh: bool = False) -> tuple[list, list]:
                                who=a.get("revision") or "",
                                status=a.get("op_phase") or "",
                                detail=(a.get("op_message") or "")[:160],
-                               url=a.get("url") or "",
+                               url=_here("/gitops/app", conn=c.get("id", ""),
+                                         name=a.get("name") or ""),
+                               ext=a.get("url") or "",
+                               ext_label=_label(gitops.PROVIDERS, c.get("type", "")),
                                tone=_phase_tone(a.get("op_phase"))))
 
     if rbac.may_area(user, "clusters"):
@@ -358,6 +405,8 @@ def _deploys(user, since: datetime, refresh: bool = False) -> tuple[list, list]:
                 # deployment, not two
                 if when is None or (a.get("name"), when) in seen:
                     continue
+                # no registered controller to show it: what it deployed, in
+                # the namespace it deploys to
                 out.append(_ev(when, "deploy", a.get("name", "?"),
                                where=f"{r.get('cluster', '')}"
                                      f"{' · ' + a['dest'] if a.get('dest') else ''}",
@@ -365,6 +414,9 @@ def _deploys(user, since: datetime, refresh: bool = False) -> tuple[list, list]:
                                status=a.get("phase") or a.get("sync") or "",
                                detail=f"{a.get('sync', '')} · {a.get('health', '')}"
                                       .strip(" ·"),
+                               url=_here("/clusters", project=r.get("pid", ""),
+                                         cluster=r.get("cid", ""), tab="workloads",
+                                         ns=a.get("dest") or ""),
                                tone=_phase_tone(a.get("phase"))))
     return out, notes
 
@@ -436,6 +488,9 @@ def _events(user, since: datetime, refresh: bool = False) -> tuple[list, list]:
         for (namespace, reason, _minute), g in best:
             objects = g["objects"]
             out.append(_ev(g["at"], "event", reason or "?",
+                           url=_here("/clusters", project=r.get("pid", ""),
+                                     cluster=r.get("cid", ""), tab="events",
+                                     ns=namespace),
                            where=f"{r.get('cluster', '')}"
                                  f"{' · ' + namespace if namespace else ''}",
                            who=(objects[0] if len(objects) == 1
@@ -476,7 +531,13 @@ def _flows(user, since: datetime, refresh: bool = False) -> tuple[list, list]:
                                      .strip(" ·"),
                                who=row.get("kind") or "",
                                status=row.get("state") or "",
-                               url=row.get("href") or row.get("url") or "",
+                               # its run page; a run with none (an Airflow
+                               # DAG) marked in the engine's list
+                               url=(row.get("href") or _here(
+                                   "/workflows", sec="namespaces",
+                                   open=f"{c.get('id', '')}/{row.get('name', '')}")),
+                               ext=row.get("url") or "",
+                               ext_label=_label(workflows.PROVIDERS, c.get("type", "")),
                                tone=("bad" if state in ("failed", "terminated",
                                                         "timedout")
                                      else "ok" if state in ("completed",
@@ -509,7 +570,10 @@ def _scans(user, since: datetime, refresh: bool = False) -> tuple[list, list]:
                            where=f"{c.get('name', '')}"
                                  f"{' · ' + s['product'] if s.get('product') else ''}",
                            who=s.get("engagement") or "",
-                           url=s.get("url") or ""))
+                           url=_here("/security", platform=c.get("type", ""),
+                                     conn=c.get("id", ""), tab="scans"),
+                           ext=s.get("url") or "",
+                           ext_label=_label(security.PROVIDERS, c.get("type", ""))))
     return out, notes
 
 
@@ -527,7 +591,7 @@ def _certs(user, since: datetime, refresh: bool = False) -> tuple[list, list]:
                        "cert", o.get("name") or "certificate",
                        where=o.get("ca") or "", status=status,
                        detail=o.get("note") or "",
-                       url=f"/certs/{o.get('id', '')}",
+                       url=_here("/certs", id=o.get("id", "")),
                        tone=("bad" if status in ("failed", "cancelled")
                              else "ok" if status == "ready" else "")))
     return out, []
@@ -558,7 +622,11 @@ def _alerts(user, since: datetime, refresh: bool = False) -> tuple[list, list]:
             out.append(_ev(at(a.get("at")), "alert", a.get("name", "?"),
                            where=a.get("source") or c.get("name", ""),
                            status=sev, detail=a.get("summary") or "",
-                           url=a.get("url") or "",
+                           url=_here("/monitoring", platform=c.get("type", ""),
+                                     conn=c.get("id", ""), sec="firing",
+                                     q=a.get("name") or ""),
+                           ext=a.get("url") or "",
+                           ext_label=_label(monitoring.PROVIDERS, c.get("type", "")),
                            tone="bad" if sev in ("critical", "high") else "warn"))
     return out, notes
 

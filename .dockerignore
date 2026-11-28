@@ -5,6 +5,7 @@ certs/
 **/__pycache__/
 *.pyc
 deploy/
+docs/
 scripts/
 *.md
 !VERSION

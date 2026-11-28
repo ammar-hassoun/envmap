@@ -299,7 +299,7 @@
 <div class="page-head">
   <div>
     {{ back('/clusters?project=' ~ pid, proj.name) }}
-    <h1>☸ {{ sel.name }}
+    <h1 class="withico">{{ glyph('hexagon', 24) }}{{ sel.name }}
       {% if s.get('nodes_total') %}
       <span class="sv {{ 'sv-clean' if s.get('healthy') else 'sv-critical' }}"
             style="vertical-align:middle;font-size:11px;">

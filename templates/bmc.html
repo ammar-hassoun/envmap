@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% import "_bits.html" as bits %}
+{% import "_filterbar.html" as fbar %}
 {% block crumbs %}{% if sel %}<a href="/bmc">Server hardware</a> <span>›</span>
   <b>{{ sel.name }}</b>{% else %}<b>Server hardware</b>{% endif %}{% endblock %}
 {% block content %}
@@ -26,7 +27,7 @@
       {% if unhealthy %} · <span style="color:var(--danger-ink);">{{ unhealthy }} reporting a fault</span>{% endif %}
       {% if unreachable %} · <span style="color:var(--warn-ink);">{{ unreachable }} unreachable</span>{% endif %}</p></div>
   <div style="display:flex;gap:10px;">
-    <a class="btn btn-ghost" href="/bmc?refresh=1">↻ Refresh</a>
+    <a class="btn btn-ghost" href="/bmc?refresh=1" data-fkeep>↻ Refresh</a>
     <a class="btn btn-ghost" href="/settings/conns/bmc">⚙ Manage</a>
   </div>
 </div>
@@ -35,15 +36,15 @@
 {%- set pw = ov.power or {} %}
 <div class="apanels">
   {{ bits.donut_panel('Server health',
-       [{'label': 'healthy', 'value': ov.healthy or 0, 'color': 'var(--ok)'},
-        {'label': 'reporting a fault', 'value': ov.faulty or 0, 'color': 'var(--danger)'},
-        {'label': 'unreachable', 'value': ov.unreachable or 0, 'color': 'var(--warn)'}],
+       [{'label': 'healthy', 'value': ov.healthy or 0, 'color': 'var(--ok)', 'href': '/bmc?health=ok'},
+        {'label': 'reporting a fault', 'value': ov.faulty or 0, 'color': 'var(--danger)', 'href': '/bmc?health=fault'},
+        {'label': 'unreachable', 'value': ov.unreachable or 0, 'color': 'var(--warn)', 'href': '/bmc?health=unreachable'}],
        centre=((ov.healthy or 0) ~ '/' ~ conns|length), sub='healthy', icon='activity',
        hint='as each BMC reports it') }}
   {{ bits.donut_panel('Power',
-       [{'label': 'on', 'value': pw.get('On', 0), 'color': 'var(--ok)'},
-        {'label': 'off', 'value': pw.get('Off', 0), 'color': 'var(--muted)'},
-        {'label': 'other', 'value': (pw.values()|sum) - pw.get('On', 0) - pw.get('Off', 0), 'color': 'var(--warn)'}],
+       [{'label': 'on', 'value': pw.get('On', 0), 'color': 'var(--ok)', 'href': '/bmc?power=on'},
+        {'label': 'off', 'value': pw.get('Off', 0), 'color': 'var(--muted)', 'href': '/bmc?power=off'},
+        {'label': 'other', 'value': (pw.values()|sum) - pw.get('On', 0) - pw.get('Off', 0), 'color': 'var(--warn)', 'href': '/bmc?power=other'}],
        centre=pw.get('On', 0), sub='powered on', icon='zap',
        hint=((ov.total_watts ~ ' W drawn in all') if ov.total_watts else '')) }}
 </div>
@@ -54,26 +55,41 @@
        icon='zap', empty='No power readings yet.', unit=' W') }}
 </div>
 
-<div class="card">
-  <div class="card-h">Servers <span class="hint">read over Redfish · faults first</span></div>
+{{ fbar.bar(fb, '/bmc', ('server', 'servers'), 'Search servers by name, serial, model, OS, host name or address') }}
+
+<div class="card" data-flist>
+  <div class="card-h">Servers <span class="hint">read over Redfish · faults first until a column is sorted</span></div>
   <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
     <table class="jenkins">
       <thead><tr>
-        <th style="min-width:170px;">BMC</th><th style="min-width:180px;">Model</th>
-        <th style="min-width:110px;">Serial</th><th style="width:80px;">Power</th>
-        <th style="width:100px;">Health</th><th style="width:90px;">Hottest</th>
-        <th style="width:80px;">Draw</th><th style="min-width:150px;">Runs</th>
-        <th style="min-width:140px;">Linked asset</th>
+        {{ fbar.th('BMC', 'name', style='min-width:170px;', fb=fb) }}
+        {{ fbar.th('Model', 'model', style='min-width:180px;', fb=fb) }}
+        {{ fbar.th('Serial', 'serial', style='min-width:110px;', fb=fb) }}
+        {{ fbar.th('Power', 'power', style='width:80px;', fb=fb) }}
+        {{ fbar.th('Health', 'health', 'num', style='width:100px;', fb=fb, first='asc') }}
+        {{ fbar.th('Hottest', 'hot', 'num', style='width:90px;', fb=fb) }}
+        {{ fbar.th('Draw', 'watts', 'num', style='width:80px;', fb=fb) }}
+        {{ fbar.th('Runs', 'runs', style='min-width:150px;', fb=fb) }}
+        {{ fbar.th('Linked asset', 'asset', style='min-width:140px;', fb=fb) }}
       </tr></thead>
       <tbody>
       {% for r in rows %}
-      <tr>
+      {%- set ran = runs.get(r.conn.id) if runs else '' %}
+      {%- set w = runs_why.get(r.conn.id) or {} %}
+      {%- set an = asset_names.get(r.conn.asset, '') if r.conn.asset else '' %}
+      <tr data-fr data-hay="{{ r.hay }}"{% for k, v in r.f.items() %} data-f-{{ k }}="{{ v }}"{% endfor %}
+          data-s-name="{{ r.conn.name|lower }}" data-s-model="{{ (r.info.vendor ~ ' ' ~ r.info.model)|trim|lower }}"
+          data-s-serial="{{ (r.info.serial or '')|lower }}" data-s-power="{{ (r.info.power or '')|lower }}"
+          data-s-health="{{ {'fault': 0, 'unreachable': 1}.get(r.health, 2) }}"
+          data-s-hot="{{ r.info.hottest if r.info.hottest is not none else '' }}"
+          data-s-watts="{{ r.info.watts or '' }}" data-s-runs="{{ (ran or w.text or '')|lower }}"
+          data-s-asset="{{ an|lower }}"{{ ' hidden' if not r.show }}>
         <td class="jname">
           <span class="dot {{ '' if r.ok else 'dirty' }}"></span>
-          <a href="/bmc?device={{ r.conn.id }}"><b>{{ r.conn.name }}</b></a>
+          <a href="/bmc?device={{ r.conn.id }}"><b data-fhl>{{ r.conn.name }}</b></a>
           {% if r.error %}<div class="hint" style="color:var(--danger-ink);white-space:normal;">{{ r.error }}</div>{% endif %}</td>
-        <td>{{ r.info.vendor }} {{ r.info.model }}</td>
-        <td style="font-family:var(--mono);font-size:11.5px;">{{ r.info.serial }}</td>
+        <td data-fhl>{{ r.info.vendor }} {{ r.info.model }}</td>
+        <td style="font-family:var(--mono);font-size:11.5px;" data-fhl>{{ r.info.serial }}</td>
         <td>{% if r.info.power %}<span class="sv {{ 'sv-ok' if r.info.power == 'On' else 'sv-medium' }}"
               style="{{ 'color:var(--ok-ink);' if r.info.power == 'On' }}">{{ r.info.power }}</span>{% endif %}</td>
         <td>{% if r.info.health %}<span class="sv {{ 'sv-ok' if r.info.health|upper == 'OK' else 'sv-high' }}"
@@ -81,25 +97,27 @@
         <td>{% if r.info.hottest is not none %}{{ r.info.hottest }} °C{% endif %}</td>
         <td>{% if r.info.watts %}{{ r.info.watts }} W{% endif %}</td>
         <td class="hint">{% if runs is none %}<span title="EnvMap is reading the hypervisors and clusters; it shows on the next look">…</span>
-          {%- elif runs.get(r.conn.id) %}<a href="/bmc?device={{ r.conn.id|urlencode }}&sec=runs">{{ runs.get(r.conn.id) }}</a>
-          {%- elif runs_why.get(r.conn.id) %}{% set w = runs_why[r.conn.id] %}
+          {%- elif ran %}<a href="/bmc?device={{ r.conn.id|urlencode }}&sec=runs" data-fhl>{{ ran }}</a>
+          {%- elif w %}
             {%- if w.os %}<a class="runs-os" href="/bmc?device={{ r.conn.id|urlencode }}&sec=runs"
-              title="the operating system this server's own agent reported to its BMC; EnvMap is not connected to it">{{ w.text }}</a>
-              {%- if w.sub %}<div class="runs-sub" style="font-size:10.5px;color:var(--muted);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ w.sub }}</div>{% endif %}
+              title="the operating system this server's own agent reported to its BMC; EnvMap is not connected to it" data-fhl>{{ w.text }}</a>
+              {%- if w.sub %}<div class="runs-sub" style="font-size:10.5px;color:var(--muted);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" data-fhl>{{ w.sub }}</div>{% endif %}
             {%- else %}<a class="runs-why" style="color:var(--muted);text-decoration:underline dotted;" href="/bmc?device={{ r.conn.id|urlencode }}&sec=runs">{{ w.text }}</a>{% endif %}
           {%- else %}—{% endif %}</td>
-        <td class="hint">{{ asset_names.get(r.conn.asset, '—') if r.conn.asset else '—' }}</td>
+        <td class="hint">{% if an %}<span data-fhl>{{ an }}</span>{% else %}—{% endif %}</td>
       </tr>
       {% endfor %}
       </tbody>
     </table>
   </div>
 </div>
+{{ fbar.empty(fb, ('server', 'servers')) }}
+<script src="/static/listfilter.js?v={{ portal_version() }}" nonce="{{ csp_nonce() }}"></script>
 
 {% else %}
 {# ── one server ── #}
 <div class="page-head">
-  <div><h1>🔌 {{ sel.name }}</h1>
+  <div><h1 class="withico">{{ glyph('server', 24) }}{{ sel.name }}</h1>
     <p class="sub">{{ info.vendor }} {{ info.model }}
       {% if info.serial %} · serial {{ info.serial }}{% endif %}
       {% if info.hostname %} · {{ info.hostname }}{% endif %}

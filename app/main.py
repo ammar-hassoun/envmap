@@ -41,8 +41,10 @@ memtrim.limit_arenas()
 from . import scene
 from . import city
 from . import virtops
+from . import vmmove
 from . import bmcops
 from . import chain
+from . import listfilter
 from . import urlguard
 from .virt import VirtError
 from .bmc import BmcError
@@ -5051,9 +5053,7 @@ async def provision_console_ws(ws: WebSocket, session: str = ""):
     await ws.accept()
     proxmox_ws = None
     try:
-        proxmox_ws = await websockets.connect(
-            up["url"], additional_headers=up["headers"], subprotocols=["binary"],
-            ssl=ctx, max_size=None, open_timeout=12)
+        proxmox_ws = await _console_dial(up["url"], up["headers"], ctx, None)
 
         async def to_proxmox():
             try:
@@ -7896,7 +7896,7 @@ def settings(request: Request, msg: str = "", err: str = ""):
                      "who is connected, and which tunnels are up.",
              "count": f"{len(store.all_vpn())} portal"
                       + ("s" if len(store.all_vpn()) != 1 else "")},
-            {"key": "conns/virt", "icon": "🧱", "title": "Hypervisors",
+            {"key": "conns/virt", "icon": logos.glyph("layers", 30), "title": "Hypervisors",
              "desc": "Proxmox VE, vCenter or a standalone ESXi host.",
              "count": f"{len(store.all_virt())} connection"
                       + ("s" if len(store.all_virt()) != 1 else "")},
@@ -10949,7 +10949,7 @@ def wf_run(request: Request, cid: str, ns: str, id: str = "", run: str = "",
 
 @app.get("/bmc", response_class=HTMLResponse)
 def bmc_page(request: Request, device: str = "", refresh: str = "",
-             sec: str = "overview", log: str = "sel"):
+             sec: str = "overview", log: str = "sel", q: str = ""):
     if refresh:
         bmc.invalidate()
     me = getattr(request.state, "user", None)
@@ -11024,15 +11024,87 @@ def bmc_page(request: Request, device: str = "", refresh: str = "",
     rows.sort(key=lambda r: (r["ok"] and not r["error"],
                              r["conn"].get("name", "")))
     seen = chain.peek()
+    runs = chain.summary_for_servers(me, g=seen) if seen else None
+    runs_why = chain.why_empty(me, g=seen) if seen else {}
+    fb = _bmc_filters(request, rows, q, runs, runs_why, asset_names)
     return templates.TemplateResponse(
         request, "bmc.html",
         ctx(request, conns=conns, sel=None, rows=rows, asset_names=asset_names,
-            pending=pending,
+            pending=pending, fb=fb,
             unhealthy=sum(1 for r in rows if not r["ok"] and not r["error"]),
             unreachable=sum(1 for r in rows if r["error"]),
             info={}, error="", overview=_bmc_overview(rows),
-            runs=chain.summary_for_servers(me, g=seen) if seen else None,
-            runs_why=chain.why_empty(me, g=seen) if seen else {}))
+            runs=runs, runs_why=runs_why))
+
+
+def _host_of(url) -> str:
+    """A connection address's host, for the search; "" for one it cannot read."""
+    try:
+        return urllib.parse.urlsplit(str(url or "")).hostname or ""
+    except ValueError:
+        return ""
+
+
+BMC_POWER = {"on": "Powered on", "off": "Powered off", "other": "Another power state",
+             listfilter.NONE: "Power not known"}
+BMC_RUNS = {"vms": "A connected hypervisor", "os": "Only the OS reported",
+            "none": "Nothing known"}
+
+
+def _bmc_filters(request, rows, q, runs, runs_why, asset_names) -> dict:
+    """The Server hardware list's search and filters (app/listfilter.py).
+    The search reaches everything a row shows and a few things it does not:
+    the BMC's address, the SKU, the reason it could not be read."""
+    projects = store.projects()
+    for r in rows:
+        i, c = r["info"], r["conn"]
+        why = runs_why.get(c["id"]) or {}
+        pw = (i.get("power") or "").lower()
+        r["health"] = "unreachable" if r["error"] else ("ok" if r["ok"] else "fault")
+        r["hay"] = listfilter.hay(
+            c.get("name"), _host_of(c.get("base_url")),
+            i.get("vendor"), i.get("model"), i.get("serial"), i.get("sku"),
+            i.get("hostname"), i.get("os"), (runs or {}).get(c["id"]),
+            why.get("text"), why.get("sub"),
+            asset_names.get(c.get("asset")) if c.get("asset") else "",
+            i.get("power"), i.get("health"), r["error"])
+        r["f"] = {"health": r["health"],
+                  "power": pw if pw in ("on", "off") else ("other" if pw else listfilter.NONE),
+                  "vendor": i.get("vendor") or listfilter.NONE,
+                  "model": i.get("model") or listfilter.NONE,
+                  "os": i.get("os") or listfilter.NONE,
+                  "project": c.get("pid") or listfilter.NONE}
+        if runs is not None:
+            r["f"]["runs"] = "vms" if runs.get(c["id"]) else ("os" if why.get("os") else "none")
+    unknown = lambda v: "Not known" if v == listfilter.NONE else v
+    facets = {
+        "health": {"label": "Health", "seg": True, "fixed": True, "options": [
+            {"v": "", "label": "All"}, {"v": "ok", "label": "Healthy"},
+            {"v": "fault", "label": "Fault"}, {"v": "unreachable", "label": "Unreachable"}]},
+        "power": {"label": "Power", "any": "Power: any",
+                  "options": listfilter.options(rows, "power", BMC_POWER.get)},
+        "vendor": {"label": "Vendor", "any": "Vendor: any",
+                   "options": listfilter.options(rows, "vendor", unknown)},
+        "model": {"label": "Model", "any": "Model: any",
+                  "options": listfilter.options(rows, "model", unknown)},
+        "os": {"label": "Operating system", "any": "OS: any",
+               "options": listfilter.options(
+                   rows, "os", lambda v: "None reported" if v == listfilter.NONE else v)},
+        "project": {"label": "Project", "any": "Project: any",
+                    "options": listfilter.options(
+                        rows, "project", lambda v: "No project" if v == listfilter.NONE
+                        else (projects.get(v) or {}).get("name", v))},
+    }
+    if runs is not None:
+        facets["runs"] = {"label": "Runs", "any": "Runs: any",
+                          "options": sorted(listfilter.options(rows, "runs", BMC_RUNS.get),
+                                            key=lambda o: list(BMC_RUNS).index(o["v"]))}
+    # the questions asked most come first: what is off, what runs what
+    order = ("health", "power", "os", "runs", "vendor", "model", "project")
+    facets = {k: facets[k] for k in order if k in facets}
+    sort, sdir = _sort_param(request)
+    return listfilter.bar(rows, q, request.query_params, facets,
+                          sort=sort, dir=sdir, reset="/bmc")
 
 
 def _bmc_overview(rows: list) -> dict:
@@ -11327,15 +11399,26 @@ async def bmc_console_ws(ws: WebSocket, session: str = ""):
         with contextlib.suppress(Exception):
             await ws.close()
 
+VIEW_COOKIE = "virt_view"
+LIVE = ("running", "on", "poweredon")
+
+
+def _sort_param(request: Request) -> tuple[str, str]:
+    """The list's sort as the address asks for it; the script does the
+    sorting, the server only marks the column so the first paint agrees."""
+    key = str(request.query_params.get("sort") or "")[:20]
+    d = request.query_params.get("dir") or ""
+    return (key, d if d in ("asc", "desc") else "asc") if key.isalnum() else ("", "")
+
+
 @app.get("/virt", response_class=HTMLResponse)
 def virt_page(request: Request, q: str = "", stopped_only: str = "",
-              refresh: str = ""):
+              refresh: str = "", view: str = ""):
     if refresh:
         virt.invalidate()
     me = getattr(request.state, "user", None)
     conns = [c for c in store.all_virt()
              if rbac.may_project(me, c.get("pid") or "", "virt")]
-    needle = q.strip().lower()
 
     def one(c):
         try:
@@ -11344,34 +11427,79 @@ def virt_page(request: Request, q: str = "", stopped_only: str = "",
         except Exception as e:                                # noqa: BLE001
             data, err = {"hosts": [], "guests": [], "running": 0, "stopped": 0}, \
                 str(e)[:200]
-        keep = []
-        for g in data["guests"]:
-            live = (g["state"] or "").lower() in ("running", "on", "poweredon")
-            if stopped_only and live:
-                continue
-            if needle and needle not in " ".join(
-                    [g["name"], g["host"], g["id"]]).lower():
-                continue
-            keep.append(g)
-        return {"conn": c, "data": data, "guests": keep, "error": err,
+        return {"conn": c, "data": data, "error": err,
                 "provider": virt.PROVIDERS.get(c.get("type"))}
     engines, pending = gather.across("virt", conns, one, refresh=bool(refresh),
                                      first_paint=1.5, workers=16)
-    me = getattr(request.state, "user", None)
+    projects = store.projects()
+    rows: list = []
     for e in engines:
         # what this person may do on this connection, and what it is: the
         # page offers a console or a power button only where all gates are
         # open, and says why where they are not
         e["caps"] = virtops.capabilities(me, e["conn"]) if not e["error"] else {}
         e["flavor"] = virtops.flavor(e["conn"]) if not e["error"] else ""
-    return templates.TemplateResponse(
+        e["platform"] = {"esxi": "ESXi", "proxmox": "Proxmox VE", "vcenter": "vCenter"}.get(
+            e["flavor"], (e["provider"] or {}).get("label") or e["conn"].get("type", ""))
+        e["rows"] = []
+        if e["error"]:
+            continue
+        for g in e["data"]["guests"]:
+            live = (g["state"] or "").lower() in LIVE
+            r = {"g": g, "e": e, "live": live,
+                 "hay": listfilter.hay(g["name"], g["id"], g["host"], g.get("ip"),
+                                       g.get("guest_host"), e["conn"].get("name"),
+                                       g["kind"], g["state"], e["platform"]),
+                 "f": {"state": "running" if live else "stopped",
+                       "conn": e["conn"]["id"], "type": e["platform"],
+                       "kind": g["kind"] or listfilter.NONE,
+                       "project": e["conn"].get("pid") or listfilter.NONE}}
+            e["rows"].append(r)
+            rows.append(r)
+    ok = [e for e in engines if not e["error"]]
+    params = dict(request.query_params)
+    if stopped_only and not params.get("state"):
+        params["state"] = "stopped"           # the address before 0.7.71
+    pname = lambda v: "No project" if v == listfilter.NONE else \
+        (projects.get(v) or {}).get("name", v)
+    facets = {
+        "state": {"label": "State", "seg": True, "fixed": True, "options": [
+            {"v": "", "label": "All"}, {"v": "running", "label": "Running"},
+            {"v": "stopped", "label": "Not running"}]},
+        "conn": {"label": "Hypervisor", "any": "Hypervisor: any", "options": sorted(
+            ({"v": e["conn"]["id"], "label": e["conn"].get("name", "")} for e in ok),
+            key=lambda o: o["label"].lower())},
+        "type": {"label": "Platform", "any": "Platform: any",
+                 "options": listfilter.options(rows, "type")},
+        "kind": {"label": "Kind", "any": "Kind: any",
+                 "options": listfilter.options(rows, "kind", lambda v: v[:1].upper() + v[1:])},
+        "project": {"label": "Project", "any": "Project: any",
+                    "options": listfilter.options(rows, "project", pname)},
+    }
+    view = view if view in ("group", "list") else \
+        ("list" if request.cookies.get(VIEW_COOKIE) == "list" else "group")
+    sort, sdir = _sort_param(request)
+    fb = listfilter.bar(rows, q, params, facets, sort=sort, dir=sdir, reset="/virt")
+    for e in engines:
+        e["shown"] = sum(1 for r in e["rows"] if r["show"])
+    fb["gtotal"] = len(ok)
+    fb["gshown"] = sum(1 for e in ok if e["shown"])
+    flat = sorted(rows, key=lambda r: (r["g"]["name"].lower(),
+                                       r["e"]["conn"].get("name", "").lower()))
+    resp = templates.TemplateResponse(
         request, "virt.html",
-        ctx(request, conns=conns, engines=engines, q=q, pending=pending,
-            stopped_only=bool(stopped_only), overview=_virt_overview(engines),
+        ctx(request, conns=conns, engines=engines, pending=pending, fb=fb,
+            view=view, flat=flat, overview=_virt_overview(engines),
             hosts=sum(len(e["data"]["hosts"]) for e in engines),
             guests=sum(len(e["data"]["guests"]) for e in engines),
             running=sum(e["data"].get("running", 0) for e in engines),
             stopped=sum(e["data"].get("stopped", 0) for e in engines)))
+    if request.query_params.get("view") in ("group", "list"):
+        # the view somebody picked is the one they come back to
+        resp.set_cookie(VIEW_COOKIE, view, max_age=365 * 86400, path="/virt",
+                        httponly=True, samesite="lax",
+                        secure=request.url.scheme == "https")
+    return resp
 
 
 def _virt_overview(engines: list) -> dict:
@@ -11445,6 +11573,29 @@ def _console_click_first(request) -> bool:
 
 
 CONSOLE_RECHECK, CONSOLE_MAX = 30, 12 * 3600
+
+
+async def _console_dial(url: str, headers, ctx, max_size):
+    """The relay's own connection to a hypervisor's console websocket.
+
+    Without the websocket library's keepalive ping, which it sends every 20
+    seconds unless told otherwise: ESXi's console closes the connection when
+    it is sent one. Measured against ESXi 8.0.3 on 27 November 2026: every
+    console ended at 21 seconds, with the ping switched off the same console
+    stayed open. A console is never idle anyway (the browser asks for the
+    screen continuously), and a hypervisor that vanishes without a word is
+    noticed by TCP keepalive instead."""
+    up = await websockets.connect(
+        url, additional_headers=headers, subprotocols=["binary"], ssl=ctx,
+        max_size=max_size, open_timeout=12, ping_interval=None)
+    with contextlib.suppress(Exception):
+        import socket as _socket
+        sock = up.transport.get_extra_info("socket")
+        sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)
+        for name, value in (("TCP_KEEPIDLE", 30), ("TCP_KEEPINTVL", 10), ("TCP_KEEPCNT", 3)):
+            if hasattr(_socket, name):                       # Linux; elsewhere the system's own timing
+                sock.setsockopt(_socket.IPPROTO_TCP, getattr(_socket, name), value)
+    return up
 
 
 async def _console_watch(ws, uid: str, still) -> str:
@@ -11740,6 +11891,172 @@ async def virt_upload(request: Request, c: str = "", node: str = "", ds: str = "
     return JSONResponse({"ok": True, "done": True})
 
 
+# ── EnvMap Move ────────────────────────────────────────────────
+# A running VM moved to another hypervisor in one click (app/vmmove.py). The
+# person needs Administer on both connections and both must allow management;
+# production asks for the VM's name; every start, decision and outcome is
+# audited as virt_vm_move*.
+
+def _move_targets(me) -> list[dict]:
+    """The connections a VM may be moved to by this person."""
+    out = []
+    for c in virt.store_all():
+        if virtops.flavor(c) in ("esxi", "proxmox") and not virtops.manage_why(c) \
+                and virtops.may(me, "admin", c.get("pid") or "") \
+                and rbac.may_project(me, c.get("pid") or "", "virt"):
+            out.append({"id": c["id"], "name": c.get("name", ""), "flavor": virtops.flavor(c),
+                        "production": bool(c.get("production")),
+                        "nodes": [h["name"] for h in (virt.read(c).get("hosts") or [])]
+                        if virtops.flavor(c) == "proxmox" else []})
+    return sorted(out, key=lambda c: c["name"].lower())
+
+
+@app.get("/virt/move", response_class=HTMLResponse)
+async def virt_move_page(request: Request, c: str = "", vm: str = "", node: str = ""):
+    conn = _virt_conn(request, c)
+    if not conn:
+        return back(err="that hypervisor connection is gone", to="/virt")
+    me = getattr(request.state, "user", None)
+    caps = await run_in_threadpool(virtops.capabilities, me, conn)
+    try:
+        data, error = await run_in_threadpool(virtops.vm, conn, vm, node, "qemu"), ""
+    except VirtError as e:
+        data, error = {}, str(e)
+    targets = await run_in_threadpool(_move_targets, me) if not caps.get("admin") else []
+    src_networks = []
+    if targets and data:
+        try:
+            src_networks = (await run_in_threadpool(vmmove.side(conn, node).choices))["networks"]
+        except VirtError:
+            src_networks = []
+    ready, why = vmmove.moveiso.parts()
+    return templates.TemplateResponse(
+        request, "virt_move.html",
+        ctx(request, conn=conn, vm=data, vmid=vm, node=node, error=error, caps=caps,
+            targets=targets, src_networks=src_networks, flavor=virtops.flavor(conn),
+            engine_why="" if ready else why))
+
+
+@app.get("/virt/move/choices")
+async def virt_move_choices(request: Request, to: str = "", node: str = ""):
+    conn = _virt_conn(request, to)
+    me = getattr(request.state, "user", None)
+    if not conn:
+        return JSONResponse({"ok": False, "error": "unknown connection"}, 404)
+    why = virtops.manage_why(conn) or virtops.may_why(me, "admin", conn.get("pid") or "")
+    if why:
+        return JSONResponse({"ok": False, "error": why}, 403)
+    try:
+        s = vmmove.side(conn, node)
+        got = await run_in_threadpool(s.choices)
+    except VirtError as e:
+        return JSONResponse({"ok": False, "error": str(e)})
+    return JSONResponse({"ok": True, "flavor": s.flavor, **got})
+
+
+async def _move_body(request):
+    if not _json_body(request):
+        return None
+    try:
+        p = await request.json()
+    except ValueError:
+        return None
+    return p if isinstance(p, dict) else None
+
+
+def _move_where(p: dict) -> str:
+    src, dst = virtops.find_conn(str(p.get("c", ""))), virtops.find_conn(str(p.get("to", "")))
+    return f"{(src or {}).get('name', '?')}/{str(p.get('vm', ''))[:60]} -> {(dst or {}).get('name', '?')}"
+
+
+@app.post("/virt/move/check")
+async def virt_move_check(request: Request):
+    """Everything that can be known before anything is created. Asks the guest
+    read-only questions through its agent, so it is audited."""
+    me = getattr(request.state, "user", None)
+    p = await _move_body(request)
+    if p is None:
+        return JSONResponse({"ok": False, "error": "a JSON body"}, 415)
+    if not _virt_conn(request, p.get("c", "")) or not _virt_conn(request, p.get("to", "")):
+        return JSONResponse({"ok": False, "error": "unknown connection"}, 404)
+    try:
+        plan = await run_in_threadpool(vmmove.check, me, p)
+    except VirtError as e:
+        auth.audit(me, "virt_vm_move_check_refused", _move_where(p), str(e)[:200], _client_ip(request))
+        return JSONResponse({"ok": False, "error": str(e)})
+    auth.audit(me, "virt_vm_move_check", _move_where(p),
+               "ready" if plan["ok"] else "; ".join(plan["problems"])[:300], _client_ip(request))
+    plan.pop("facts", None)
+    return JSONResponse({"ok": True, "plan": plan})
+
+
+@app.post("/virt/move/start")
+async def virt_move_start(request: Request):
+    me = getattr(request.state, "user", None)
+    p = await _move_body(request)
+    if p is None:
+        return JSONResponse({"ok": False, "error": "a JSON body"}, 415)
+    if not _virt_conn(request, p.get("c", "")) or not _virt_conn(request, p.get("to", "")):
+        return JSONResponse({"ok": False, "error": "unknown connection"}, 404)
+    try:
+        job = await run_in_threadpool(vmmove.start, me, p)
+    except VirtError as e:
+        auth.audit(me, "virt_vm_move_refused", _move_where(p), str(e)[:300], _client_ip(request))
+        return JSONResponse({"ok": False, "error": str(e)})
+    auth.audit(me, "virt_vm_move", _move_where(p), f"move {job['id']}", _client_ip(request))
+    return JSONResponse({"ok": True, "id": job["id"]})
+
+
+@app.get("/virt/moves", response_class=HTMLResponse)
+async def virt_moves_page(request: Request):
+    me = getattr(request.state, "user", None)
+    jobs = [vmmove.public(j) for j in await run_in_threadpool(vmmove.all_jobs)
+            if await run_in_threadpool(vmmove.visible, me, j)]
+    return templates.TemplateResponse(request, "virt_moves.html", ctx(request, jobs=jobs))
+
+
+@app.get("/virt/moves/job", response_class=HTMLResponse)
+async def virt_move_job_page(request: Request, id: str = ""):
+    me = getattr(request.state, "user", None)
+    job = vmmove.load(id)
+    if not job or not await run_in_threadpool(vmmove.visible, me, job):
+        return back(err="that move is not known", to="/virt/moves")
+    return templates.TemplateResponse(request, "virt_move_job.html", ctx(request, job=vmmove.public(job)))
+
+
+@app.get("/virt/moves/state")
+async def virt_move_state(request: Request, id: str = ""):
+    me = getattr(request.state, "user", None)
+    job = vmmove.load(id)
+    if not job or not await run_in_threadpool(vmmove.visible, me, job):
+        return JSONResponse({"ok": False, "error": "unknown move"}, 404)
+    return JSONResponse({"ok": True, "job": vmmove.public(job)})
+
+
+@app.post("/virt/moves/decide")
+async def virt_move_decide(request: Request):
+    """While a move waits frozen: bring it back, or keep it on the new VM."""
+    me = getattr(request.state, "user", None)
+    p = await _move_body(request)
+    if p is None:
+        return JSONResponse({"ok": False, "error": "a JSON body"}, 415)
+    job = vmmove.load(str(p.get("id", "")))
+    if not job or not await run_in_threadpool(vmmove.visible, me, job):
+        return JSONResponse({"ok": False, "error": "unknown move"}, 404)
+    what = str(p.get("what", ""))
+    if what not in ("back", "keep"):
+        return JSONResponse({"ok": False, "error": "back or keep"}, 400)
+    where = f"{job['src']['conn_name']}/{job['src']['name']} -> {job['dst']['conn_name']}"
+    try:
+        fn = vmmove.bring_back if what == "back" else vmmove.keep_new
+        await run_in_threadpool(fn, me, job["id"], str(p.get("confirm", "")))
+    except VirtError as e:
+        auth.audit(me, f"virt_vm_move_{what}_refused", where, str(e)[:200], _client_ip(request))
+        return JSONResponse({"ok": False, "error": str(e)})
+    auth.audit(me, f"virt_vm_move_{what}", where, f"move {job['id']}", _client_ip(request))
+    return JSONResponse({"ok": True})
+
+
 @app.get("/virt/console", response_class=HTMLResponse)
 def virt_console_page(request: Request, c: str = "", vm: str = "", node: str = "",
                       kind: str = "qemu", name: str = ""):
@@ -11824,10 +12141,8 @@ async def virt_console_ws(ws: WebSocket, session: str = ""):
         # the guard speaks http(s); a console socket is the same host and port
         # as the connection's own address, so it is checked as that
         urlguard.check(url.replace("wss://", "https://", 1).replace("ws://", "http://", 1))
-        up = await websockets.connect(
-            url, additional_headers=s["up"]["headers"], subprotocols=["binary"],
-            ssl=ctx_ if url.startswith("wss://") else None,
-            max_size=64 * 1024 * 1024, open_timeout=12)
+        up = await _console_dial(url, s["up"]["headers"],
+                                 ctx_ if url.startswith("wss://") else None, 64 * 1024 * 1024)
 
         async def to_hypervisor():
             try:
@@ -14688,6 +15003,13 @@ def _check_tools():
         if not t["found"]:
             log.warning("%s is unavailable (%s) — %s will not work",
                         t["name"], t["error"], t["purpose"])
+
+
+@app.on_event("startup")
+def _resume_moves():
+    """A move EnvMap was restarted in the middle of goes on being watched: the
+    guest carried on with it meanwhile."""
+    threading.Thread(target=vmmove.resume_all, daemon=True, name="moves").start()
 
 
 @app.on_event("startup")

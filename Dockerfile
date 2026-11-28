@@ -68,6 +68,50 @@ RUN curl -fsSL -o tofu.tar.gz \
  && mv LICENSE opentofu-LICENSE.txt \
  && rm tofu.tar.gz tofu.sums
 
+# ── EnvMap Move: the engine, built here from envmove/ ──────────
+# It runs inside the guest being moved, never in this container, and every
+# guest it moves is x86-64: so it is built for linux/amd64 on whatever machine
+# builds the image, for both image architectures alike. envmove-core, the part
+# that runs while the guest is frozen, is committed prebuilt (envmove/coreimg)
+# because it is the exact binary the lab tested; envmove/core/build.sh rebuilds
+# it from core.c, and tests/test_vmmove.py holds the two together by hash.
+FROM --platform=$BUILDPLATFORM golang:1.25.7-bookworm AS envmove
+WORKDIR /src
+COPY envmove/ /src/
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o /out/envmove . \
+ && test "$(head -c 4 /out/envmove | od -An -tx1 | tr -d ' ')" = "7f454c46"
+
+# ── EnvMap Move: the receiver the new machine starts from ──────
+# Alpine Linux's kernel, initramfs, network drivers and boot loaders, taken
+# from its release ISO and checked against Alpine's published checksum. At
+# move time app/moveiso.py adds the engine and that move's settings and writes
+# one small CD (BIOS and UEFI). Pinned: the receiver was tested with exactly
+# these files, and its drivers are named by this kernel's version.
+FROM --platform=$BUILDPLATFORM debian:12-slim AS envmove-rx
+ARG ALPINE_BRANCH=v3.22
+ARG ALPINE_ISO=alpine-standard-3.22.2-x86_64.iso
+ARG ALPINE_ISO_SHA256=f6a265f0696d328c8f87814a0d6bfa362d1434e500cb80a48796b1c9d204cee0
+ARG ALPINE_KERNEL=6.12.51-0-lts
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates libarchive-tools squashfs-tools \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /work
+RUN curl -fsSL -o alpine.iso "https://dl-cdn.alpinelinux.org/alpine/${ALPINE_BRANCH}/releases/x86_64/${ALPINE_ISO}" \
+ && echo "${ALPINE_ISO_SHA256}  alpine.iso" | sha256sum -c - \
+ && bsdtar -xf alpine.iso boot/vmlinuz-lts boot/initramfs-lts boot/modloop-lts \
+      boot/syslinux/isolinux.bin boot/syslinux/ldlinux.c32 boot/grub/efi.img efi/boot/bootx64.efi \
+ && mkdir -p /out/rx/mods \
+ && cp boot/vmlinuz-lts /out/rx/vmlinuz && cp boot/initramfs-lts /out/rx/initrd \
+ && cp boot/syslinux/isolinux.bin boot/syslinux/ldlinux.c32 boot/grub/efi.img efi/boot/bootx64.efi /out/rx/ \
+ && k="modules/${ALPINE_KERNEL}/kernel"; order="net/core/failover drivers/net/net_failover drivers/virtio/virtio \
+      drivers/virtio/virtio_ring drivers/virtio/virtio_pci_legacy_dev drivers/virtio/virtio_pci_modern_dev \
+      drivers/virtio/virtio_pci drivers/net/virtio_net drivers/net/vmxnet3/vmxnet3 \
+      drivers/net/ethernet/intel/e1000/e1000 drivers/net/ethernet/intel/e1000e/e1000e"; \
+    for m in $order; do unsquashfs -q -n -f -d mods boot/modloop-lts "$k/$m.ko" > /dev/null; \
+      cp "mods/$k/$m.ko" /out/rx/mods/ && basename "$m.ko" >> /out/rx/mods/order; done \
+ && echo "${ALPINE_ISO} ${ALPINE_ISO_SHA256}" > /out/rx/SOURCE \
+ && rm -rf /work
+
 # ── python dependencies ────────────────────────────────────────
 FROM python:3.13-slim AS deps
 ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
@@ -110,6 +154,11 @@ COPY --from=tools /out/kubectl /out/kubeseal /out/tofu /usr/local/bin/
 # vendored noVNC and guacamole-common-js already follow in static/.
 COPY --from=tools /out/opentofu-LICENSE.txt /usr/local/share/licenses/
 COPY --from=deps /venv /venv
+# EnvMap Move. Alpine's kernel and boot loaders are GPL software carried
+# unchanged; where their sources are is in the notice beside them.
+COPY --from=envmove /out/envmove /opt/envmove/envmove
+COPY --from=envmove-rx /out/rx/ /opt/envmove/rx/
+COPY envmove/receiver-licenses.txt /usr/local/share/licenses/envmove-receiver.txt
 
 WORKDIR /app
 COPY app/ /app/app/

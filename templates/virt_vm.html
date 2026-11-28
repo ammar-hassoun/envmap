@@ -75,6 +75,11 @@
   <button type="button" class="abtn" data-dlg-open="vclonedlg" {{ vb.no(caps, 'admin') }}>⧉ Clone</button>
   <button type="button" class="abtn" data-dlg-open="vmigdlg" {{ vb.no(caps, 'admin') }}>⇄ Migrate</button>
   {% endif %}
+  {% if kind == 'qemu' and not vm.template %}
+  {% if caps.admin %}<button type="button" class="abtn" disabled title="{{ caps.admin }}">⇢ Move while running</button>
+  {% else %}<a class="abtn" href="/virt/move?c={{ conn.id|urlencode }}&vm={{ vmid|urlencode }}&node={{ node|urlencode }}"
+     title="{{ 'to another hypervisor or host, while it runs' if on else 'EnvMap Move moves running VMs' }}">⇢ Move while running</a>{% endif %}
+  {% endif %}
   <span style="flex:1"></span>
   {% if flavor == 'esxi' %}
   <button type="button" class="abtn" data-act="vm.unregister" data-impact="{{ vimp }}" data-target="{{ vm.name }}" data-label="Remove {{ vm.name }} from the inventory"

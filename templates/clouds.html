@@ -51,7 +51,7 @@
       {% else %}
       <div class="kv" style="flex-wrap:wrap;gap:7px;">
         {% for g in c.inv.groups %}
-        <span class="badge">{{ g.icon }} {{ g.rows|length }} {{ g.label|lower }}</span>
+        <span class="badge"><b>{{ g.rows|length }}</b> {{ g.label|lower }}</span>
         {% endfor %}
         {% if c.inv.collecting %}<span class="badge">collecting…</span>
         {% elif not c.inv.groups %}<span class="badge">registered · not inventoried</span>{% endif %}
@@ -299,7 +299,7 @@
      href="{{ ('/clouds/bills?account=' ~ sel.id) if g.key == 'billing'
               else ('/clouds/r/' ~ sel.id ~ '/' ~ g.key ~ '?region=' ~ inv.region) }}"><div class="card-b">
     <div class="stat">{{ g.rows|length }}</div>
-    <div class="statsub">{{ g.icon }} {{ g.label|lower }} <span class="tile-go">→</span></div>
+    <div class="statsub">{{ g.label|lower }} <span class="tile-go">→</span></div>
   </div></a>
   {% endfor %}
 </div>
@@ -361,7 +361,7 @@
 
 {% for g in inv.groups %}
 <div class="card">
-  <div class="card-h">{{ g.icon }} {{ g.label }}
+  <div class="card-h">{{ glyph('layers', 15) }} {{ g.label }}
     <span class="hint">{{ g.rows|length }}</span></div>
   <div class="card-b" style="padding:0 0 6px;overflow-x:auto;">
     <table class="jenkins">

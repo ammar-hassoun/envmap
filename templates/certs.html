@@ -51,7 +51,7 @@
                .get(order.status, 'pill-running') %}
 <div class="page-head">
   <div>
-    <h1>🔐 {{ order.domains[0] }}</h1>
+    <h1 class="withico">{{ glyph('shield-check', 24) }}{{ order.domains[0] }}</h1>
     <p class="sub">
       <span class="{{ pill }}">{{ order.state_label }}</span>
       {% if order.domains|length > 1 %}
@@ -401,7 +401,7 @@
 {% elif show_new %}
 <div class="page-head">
   <div>
-    <h1>🔐 New certificate</h1>
+    <h1 class="withico">{{ glyph('shield-check', 24) }}New certificate</h1>
     <p class="sub" style="max-width:72ch;">Domain validation happens over DNS, so
       this works for a name that is not reachable from the internet and for
       wildcards — the only thing you have to do by hand is paste one TXT record
@@ -595,7 +595,7 @@
 {% set soon = orders|selectattr('expiring')|selectattr('status', 'equalto', 'ready')|list %}
 <div class="page-head">
   <div>
-    <h1>🔐 Certificates</h1>
+    <h1 class="withico">{{ glyph('shield-check', 24) }}Certificates</h1>
     <p class="sub">{{ orders|length }} order{{ 's' if orders|length != 1 }} ·
       {{ issued|length }} issued
       {% if inflight %}· {{ inflight|length }} in progress{% endif %}</p>

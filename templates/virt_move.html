@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block crumbs %}<a href="/virt">Hypervisors</a> <span>›</span>
+  <a href="/virt/host?c={{ conn.id|urlencode }}&node={{ node|urlencode }}">{{ conn.name }}</a> <span>›</span>
+  <a href="/virt/vm?c={{ conn.id|urlencode }}&vm={{ vmid|urlencode }}&node={{ node|urlencode }}&kind=qemu">{{ vm.name or vmid }}</a> <span>›</span>
+  <b>Move</b>{% endblock %}
+{% block content %}
+<div data-move data-c="{{ conn.id }}" data-vm="{{ vmid }}" data-node="{{ node }}" data-flavor="{{ flavor }}"
+     data-name="{{ vm.name or '' }}" data-targets='{{ targets|tojson }}'>
+<div class="page-head"><div>
+  <h1 style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">Move {{ vm.name or vmid }} while it runs
+    <span class="badge">preview</span></h1>
+  <p class="sub">To another hypervisor, or another host of this one. The VM keeps running while its disks and memory
+    are copied; at the end it pauses for a moment while the last changes cross, and carries on on the new VM with
+    the same addresses, connections and processes.</p></div>
+  <div><a class="btn btn-ghost" href="/virt/moves" style="white-space:nowrap;">All moves</a></div>
+</div>
+{% if error %}<div class="flash err">⚠ {{ error }}</div>
+{% elif caps.admin %}<div class="flash err">⚠ {{ caps.admin }}</div>
+{% elif engine_why %}<div class="flash err">⚠ {{ engine_why }}</div>
+{% elif not targets %}<div class="flash err">⚠ There is no hypervisor connection you may move a VM to: a target needs
+  “Allow management from EnvMap” ticked and your roles must include Administer for it.</div>
+{% else %}
+{%- set on = vm.power in ('poweredOn', 'running') -%}
+{% if not on %}<div class="flash warn">⚠ {{ vm.name }} is not running. EnvMap Move moves running VMs.</div>{% endif %}
+
+<div class="card"><div class="card-h">What moves</div><div class="card-b mv-facts">
+  <div><span>Now on</span><b>{{ conn.name }}{% if node %} · {{ node }}{% endif %}</b></div>
+  <div><span>Processors</span><b>{{ vm.cpus or vm.cores or '?' }}</b></div>
+  <div><span>Memory</span><b>{{ vm.memory_mb or '?' }} MB</b></div>
+  <div><span>Firmware</span><b>{{ 'UEFI' if (vm.firmware == 'efi' or vm.bios == 'ovmf') else 'BIOS' }}</b></div>
+  {%- set mdisks = (vm.disks or [])|rejectattr('resizable', 'sameas', false)|list %}
+  <div><span>Disks</span><b>{{ mdisks|length }}{% if mdisks %} · {{ mdisks|sum(attribute='gib')|round(1) }} GiB{% endif %}</b></div>
+  <div><span>Network cards</span><b>{{ (vm.nics or [])|length }}</b></div>
+</div></div>
+
+<form data-move-form autocomplete="off">
+<div class="card"><div class="card-h">Where to</div><div class="card-b vnewgrid">
+  <div class="dfield"><label for="mv_to">Hypervisor</label>
+    <select id="mv_to" name="to" required>
+      {% for t in targets %}<option value="{{ t.id }}" data-flavor="{{ t.flavor }}">{{ t.name }} · {{ 'Proxmox' if t.flavor == 'proxmox' else 'ESXi' }}{{ ' · production' if t.production }}</option>{% endfor %}
+    </select></div>
+  <div class="dfield" data-pve-only><label for="mv_node">Node</label><select id="mv_node" name="dst_node"></select></div>
+  <div class="dfield"><label for="mv_store" data-store-label>Disks go on</label><select id="mv_store" name="storage" required></select></div>
+  <div class="dfield" data-pve-only><label for="mv_iso">Receiver CD on</label><select id="mv_iso" name="iso_storage"></select></div>
+</div></div>
+
+<div class="card"><div class="card-h">Network cards</div><div class="card-b">
+  <p class="hint" style="margin:0 0 10px;">Each card keeps its own address (MAC) and the guest keeps its IP settings:
+    put it on the network that carries the same addresses there.</p>
+  <div class="mv-nics">
+  {% for n in vm.nics or [] %}
+    <div class="mv-nic">
+      <div class="mv-nic-what"><b>{{ n.label or n.key }}</b><span class="mono">{{ n.mac }}</span>
+        <span class="hint">now {{ n.network or n.bridge or '?' }}{% if n.vlan %} · VLAN {{ n.vlan }}{% endif %}</span></div>
+      <label>Network <select name="net{{ loop.index0 }}" data-net data-was="{{ n.network or n.bridge or '' }}"></select></label>
+      <label data-pve-only>VLAN tag <input name="vlan{{ loop.index0 }}" type="number" min="1" max="4094" placeholder="none" value="{{ n.vlan or '' }}"></label>
+    </div>
+  {% endfor %}
+  </div>
+</div></div>
+
+{% if flavor == 'esxi' %}
+<div class="card"><div class="card-h">The guest's sign-in</div><div class="card-b vnewgrid">
+  <p class="hint" style="grid-column:1/-1;margin:0;">ESXi reaches into a guest through VMware Tools with the guest's own
+    account: root, or a user who may use sudo without a password. It is used for this move only and is never stored.</p>
+  <div class="dfield"><label for="mv_gu">User</label><input id="mv_gu" name="guest_user" value="root" autocomplete="off" spellcheck="false"></div>
+  <div class="dfield"><label for="mv_gp">Password</label><input id="mv_gp" name="guest_password" type="password" autocomplete="new-password" data-nosave></div>
+</div></div>
+{% endif %}
+
+<details class="card mv-adv"><summary class="card-h">Transfer network <span class="hint">· how the two VMs reach each other during the move</span></summary>
+  <div class="card-b vnewgrid">
+  <p class="hint" style="grid-column:1/-1;margin:0;">Each side gets a transfer card for the move only. By default both go
+    on the network of the first card and use link-local addresses EnvMap picks (169.254.x.x): nothing on the network is
+    asked for an address. When the two hypervisors do not share that network, give routed addresses.</p>
+  <label class="chk" style="grid-column:1/-1;"><input type="radio" name="transfer_mode" value="auto" checked> same network, link-local addresses (automatic)</label>
+  <label class="chk" style="grid-column:1/-1;"><input type="radio" name="transfer_mode" value="routed"> routed addresses</label>
+  <div class="dfield"><label for="mv_stn">VM's transfer network</label><select id="mv_stn" name="src_tnet" data-src-net>
+    <option value="">same as its first card</option>{% for n in src_networks or [] %}<option>{{ n }}</option>{% endfor %}</select></div>
+  <div class="dfield"><label for="mv_dtn">New VM's transfer network</label><select id="mv_dtn" name="dst_tnet" data-tnet>
+    <option value="">same as its first card</option></select></div>
+  <div class="dfield" data-routed><label for="mv_sc">VM's transfer address (IP/bits)</label><input id="mv_sc" name="src_cidr" placeholder="10.20.0.5/24"></div>
+  <div class="dfield" data-routed><label for="mv_sg">its gateway</label><input id="mv_sg" name="src_gw" placeholder="optional"></div>
+  <div class="dfield" data-routed><label for="mv_dc">New VM's transfer address</label><input id="mv_dc" name="dst_cidr" placeholder="10.30.0.5/24"></div>
+  <div class="dfield" data-routed><label for="mv_dg">its gateway</label><input id="mv_dg" name="dst_gw" placeholder="optional"></div>
+  </div>
+</details>
+
+<div class="actions" style="margin:4px 0 14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+  <button type="button" data-move-check>Check</button>
+  <span class="hint" data-move-say></span>
+</div>
+</form>
+
+<div class="card" data-move-plan hidden><div class="card-h">Before anything is created</div><div class="card-b">
+  <ul class="mv-list" data-plan-problems></ul>
+  <ul class="mv-list mv-notes" data-plan-notes></ul>
+  <div class="mv-facts" data-plan-facts></div>
+  <div data-plan-go hidden style="margin-top:14px;">
+    <div data-plan-prod hidden class="dfield" style="max-width:340px;margin-bottom:10px;">
+      <label for="mv_confirm">A production hypervisor is involved: type <b data-plan-name></b> to confirm</label>
+      <input id="mv_confirm" autocomplete="off" spellcheck="false" data-nosave></div>
+    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+      <button type="button" class="go" data-move-start>Move it now</button>
+      <span class="hint">It runs on its own from here; you can leave this page.</span></div>
+  </div>
+</div></div>
+{% endif %}
+</div>
+<script src="/static/vmmove.js?v={{ portal_version() }}" nonce="{{ csp_nonce() }}"></script>
+{% endblock %}

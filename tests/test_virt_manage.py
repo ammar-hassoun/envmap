@@ -509,6 +509,50 @@ def test_pages_and_gates(esx: dict, esx_ro: dict, pve_c: dict, host: FakeEsxi, p
         check(f"the console relay works: {type(e).__name__}: {e}", False)
     seen = host.encodings_seen[before:]
     check(f"the host never saw Zlib: {seen}", seen and 6 not in seen[-1] and 16 in seen[-1])
+
+    # the console must not be sent keepalive pings: ESXi answers one by closing
+    # the console (every console on a real host ended at 21 seconds, 27 November 2026)
+    import asyncio as _aio
+    import websockets as _ws
+
+    async def with_pings() -> float:
+        with host.lock:
+            host.tickets.add(("pingtest", "1"))
+        t0 = time.time()
+        async with _ws.connect(f"ws://127.0.0.1:{host.wmks_port}/ticket/pingtest", subprotocols=["binary"],
+                               ping_interval=0.3, ping_timeout=5) as c:
+            try:
+                async for _ in c:
+                    pass
+            except Exception:                                 # noqa: BLE001
+                pass
+        return time.time() - t0
+
+    pings = host.pings_seen
+    lived = _aio.run(with_pings())
+    check(f"the stand-in host ends a console that pings it, as the real one does ({lived:.1f}s, {host.pings_seen - pings} ping)",
+          host.pings_seen > pings and lived < 3)
+    dialled = []
+    real_connect = portal.websockets.connect
+
+    def recording(*a, **k):
+        dialled.append(k)
+        return real_connect(*a, **k)
+    portal.websockets.connect = recording
+    pings = host.pings_seen
+    s_keep = opr.post("/virt/console/open", json={"c": E, "vm": "1"}).json()
+    try:
+        with opr.websocket_connect(f"/virt/console.ws?session={s_keep['session']}") as ws:
+            ws.receive_bytes()
+            ws.send_bytes(b"RFB 003.008\n")
+            ws.receive_bytes()
+            time.sleep(1.2)
+    except Exception as e:                                    # noqa: BLE001
+        check(f"the console stays open: {type(e).__name__}: {e}", False)
+    finally:
+        portal.websockets.connect = real_connect
+    check(f"the relay dials the host's console without keepalive pings: {[k.get('ping_interval', 'default') for k in dialled]}",
+          dialled and all(k.get("ping_interval", "default") is None for k in dialled) and host.pings_seen == pings)
     try:
         with opr.websocket_connect(f"/virt/console.ws?session={s_open['session']}") as ws:
             ws.receive_bytes()

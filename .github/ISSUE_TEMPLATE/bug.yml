@@ -1,0 +1,54 @@
+name: Something is broken
+description: A page, a connection or an action does not do what it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting it. Remove hostnames, tokens and anything else private before you post.
+        A security problem does not belong here: use **Security → Report a vulnerability**.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you saw instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: EnvMap version
+      description: The sidebar shows it, and so does /healthz.
+      placeholder: "0.7.75"
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How it is installed
+      options:
+        - Helm
+        - Docker Compose
+        - From source
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      options:
+        - full
+        - pam (Privileged Access only)
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: The system involved
+      description: For example Argo CD 3.1, Proxmox 9, an RDP target, a k3s cluster.
+  - type: textarea
+    id: logs
+    attributes:
+      label: The message or the log lines
+      description: The text on the page, or the portal's log around the time it happened.
+      render: text

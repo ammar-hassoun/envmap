@@ -6,7 +6,7 @@
 {% block content %}
 <div class="page-head">
   <div>
-    <h1>💳 Bills</h1>
+    <h1 class="withico">{{ glyph('receipt', 24) }}Bills</h1>
     <p class="sub">{{ sel.name }} · {{ bills.months|length }} month{{ 's' if bills.months|length != 1 }}
       {% if bills.currency %} · {{ bills.currency }}{% endif %}
       {% if bills.total %} · {{ bills.currency }} {{ bills.total }} over the period{% endif %}</p>

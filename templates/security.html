@@ -30,7 +30,7 @@
 
 {% macro sevchips(t) %}
 {% for s in severities %}{% if t.get(s) %}
-<span class="sv sv-{{ s }}">{{ t[s] }}<i>{{ s[:4] }}</i></span>
+<span class="sv sv-{{ s }}">{{ t[s] }}<i>{{ {'critical': 'crit', 'medium': 'med', 'warning': 'warn'}.get(s, s[:4]) }}</i></span>
 {% endif %}{% endfor %}
 {% endmacro %}
 
