@@ -452,6 +452,20 @@ def test_move() -> None:
         vmmove.update(dict(fake), lambda c: c.update(state="undone"))
         del pve.guests[300]
 
+        # a move tidied a second time (EnvMap stopped during the first): the
+        # new VM is gone already, and that is no reason to keep its receiver CD
+        pve.content.setdefault("local", []).append({"volid": "local:iso/envmove-0a0b0c0d0e0f.iso", "content": "iso",
+                                                     "size": 1, "format": "iso", "ctime": 1762500000})
+        again = {**fake, "id": "0a0b0c0d0e0f", "state": "preparing",
+                 "built": {"vm": "999", "iso": "local:iso/envmove-0a0b0c0d0e0f.iso"}}
+        vmmove.save(dict(again))
+        vmmove._after_failure(dict(again), "EnvMap restarted")
+        j = vmmove.load(again["id"]) or {}
+        said = [e["text"] for e in j.get("log", [])]
+        check(f"a new VM that is already gone does not keep its receiver CD ({j.get('state')}: {said})",
+              j.get("state") == "failed" and "the new VM was already gone" in said
+              and not any("envmove-0a0b0c0d0e0f" in c["volid"] for c in pve.content.get("local", [])))
+
         # pages
         for path in ("/virt/moves", f"/virt/moves/job?id={jid}", "/virt/move?c=" + cid + "&vm=100&node=pve-01"):
             g = admin.get(path)

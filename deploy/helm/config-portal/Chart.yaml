@@ -7,8 +7,8 @@ type: application
 # version is the chart's own version; appVersion is the portal release it
 # installs. They move together — scripts/release.sh sets both from ./VERSION —
 # so "which portal is this?" has one answer.
-version: 0.7.75
-appVersion: "0.7.75"
+version: 0.7.76
+appVersion: "0.7.76"
 
 kubeVersion: ">=1.24.0-0"
 home: https://github.com/ammar-hassoun/envmap

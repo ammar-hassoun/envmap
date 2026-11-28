@@ -40,6 +40,15 @@
     s.textContent = LABEL[s.dataset.s] || s.dataset.s;
   });
 
+  $$('[data-forget-key]').forEach(function (b) {
+    b.addEventListener('click', async function () {
+      if (!window.confirm('Forget the SSH key of ' + b.dataset.forgetWhat + '? The next contact is trusted as a first one.')) return;
+      b.disabled = true;
+      var r = await post('/virt/moves/forget-key', { id: b.dataset.forgetKey });
+      if (r.ok) location.reload(); else { b.disabled = false; window.alert(r.error || 'refused'); }
+    });
+  });
+
   /* ── the form ─────────────────────────────────────────────── */
   var box = $('[data-move]');
   var form = $('[data-move-form]');
@@ -109,7 +118,9 @@
     async function check() {
       var btn = $('[data-move-check]');
       btn.disabled = true;
-      say('checking: reading the VM, asking the guest, looking at the target…');
+      var isOff = box.dataset.off === '1';
+      say(isOff ? 'checking: reading the VM and looking at the two hosts…'
+        : 'checking: reading the VM, asking the guest, looking at the target…');
       var r = await post('/virt/move/check', body());
       btn.disabled = false;
       if (!r.ok) { say('✕ ' + (r.error || 'the check failed'), 'err'); plan.hidden = true; return; }
@@ -121,10 +132,12 @@
       var f = $('[data-plan-facts]');
       f.textContent = '';
       var rows = [
-        ['Guest', (p.src.os || '?') + (p.src.kernel ? ' · kernel ' + p.src.kernel : '')],
+        p.mode === 'off' ? ['Moved', 'powered off: its disks are copied and read back; it is not started']
+          : ['Guest', (p.src.os || '?') + (p.src.kernel ? ' · kernel ' + p.src.kernel : '')],
         ['New VM', p.dst.conn_name + (p.dst.node ? ' · ' + p.dst.node : '') + ' · disks on ' + p.dst.storage],
         ['Disks', (p.src.disks || []).map(function (d) { return d.key + ' ' + d.gib + ' GiB'; }).join(', ') || '—'],
-        ['Disk controllers', p.cross ? 'change type: storage re-pointed on arrival' : 'the same, kept through the move'],
+        ['Disk controllers', p.mode === 'off' ? (p.cross ? 'the nearest types the other hypervisor has' : 'the same as now')
+          : (p.cross ? 'change type: storage re-pointed on arrival' : 'the same, kept through the move')],
         ['Transfer', p.transfer.src_ip + ' → ' + p.transfer.dst_ip + (p.transfer.mode === 'auto' ? ' (link-local, for the move only)' : '')]
       ];
       rows.forEach(function (row) {
@@ -162,7 +175,13 @@
   var job = $('[data-move-job]');
   if (job) {
     var id = job.dataset.id, seen = 0, t0 = null;
-    var ORDER = ['preparing', 'copying', 'frozen', 'finishing', 'done'];
+    var isOffJob = job.dataset.mode === 'off';
+    var ORDER = isOffJob ? ['preparing', 'copying', 'finishing', 'done']
+      : ['preparing', 'copying', 'frozen', 'finishing', 'done'];
+    function size(n) {
+      n = +n || 0;
+      return n >= 1073741824 ? (n / 1073741824).toFixed(1) + ' GiB' : Math.round(n / 1048576) + ' MiB';
+    }
     var started = $('[data-job-started]');
     if (started) started.textContent = '· ' + when(+started.dataset.t);
     function stamp(t) {
@@ -181,13 +200,30 @@
           i < reached ? 'past' : i === reached ? (j.state === 'done' ? 'past' : 'now') : 'later';
       });
       var ban = $('[data-job-banner]');
-      var msg = { done: '✓ Moved: it runs on the new VM, which now carries its name. The old VM is kept, powered off and renamed, until you delete it.',
+      var msg = (isOffJob ? {
+        done: '✓ Moved: the new VM carries its name and is powered off, as the VM was. Every byte of its disks was read back from the new storage. The old VM is kept, renamed, until you delete it.',
+        undone: '↺ Undone: the VM is powered off where it was. What was made for the move was removed.',
+        failed: '✕ The move did not complete; nothing changed for the VM. See what is left below.' } : {
+        done: '✓ Moved: it runs on the new VM, which now carries its name. The old VM is kept, powered off and renamed, until you delete it.',
         undone: '↺ Undone: the VM carries on where it was. What was built for the move was removed.',
         failed: '✕ The move could not start; nothing changed for the VM.',
-        stuck: '⚠ The move needs you: see below.' }[j.state];
+        stuck: '⚠ The move needs you: see below.' })[j.state];
+      var copy = $('[data-job-copy]');
+      if (copy) {
+        var g = j.progress || {}, going = ['starting', 'preparing', 'copying'].indexOf(j.state) !== -1;
+        copy.hidden = !(going || (j.state === 'finishing' && g.total));
+        $('[data-job-stop]').hidden = !going;
+        var frac = g.total ? Math.min(1, ((+g.done || 0) + (+g.checked || 0)) / (2 * g.total)) : 0;
+        $('[data-job-bar]').style.width = (Math.round(frac * 1000) / 10) + '%';
+        $('[data-job-numbers]').textContent = g.total
+          ? (g.step ? g.step.charAt(0).toUpperCase() + g.step.slice(1) + ' · ' : '') + size(g.done) + ' of ' + size(g.total) +
+            ' read on the old host, ' + size(g.sent) + ' sent (zeros are not sent), ' + size(g.checked) + ' read back on the new host' +
+            (g.breaks ? ' · ' + g.breaks + ' connection break' + (g.breaks > 1 ? 's' : '') + ', carried on' : '')
+          : 'The two helpers are being made and started.';
+      }
       ban.hidden = !msg;
       if (msg) { ban.textContent = msg; ban.className = 'flash' + (j.state === 'done' ? '' : j.state === 'undone' ? ' warn' : ' err'); }
-      $('[data-job-decide]').hidden = !(j.state === 'stuck' || j.state === 'frozen');
+      $('[data-job-decide]').hidden = isOffJob || !(j.state === 'stuck' || j.state === 'frozen');
       var ol = $('[data-job-log]');
       // follow the newest line, unless the person scrolled up to read
       var follow = !seen || ol.scrollHeight - ol.scrollTop - ol.clientHeight < 40;
@@ -212,11 +248,12 @@
     $$('[data-decide]').forEach(function (b) {
       b.addEventListener('click', async function () {
         var what = b.dataset.decide;
-        var ask = what === 'back' ? 'Restart the new VM so the VM carries on where it was?' :
+        var ask = what === 'stop' ? 'Stop the move? It is undone: the helpers and the new VM are removed, and the VM stays as it is.' :
+          what === 'back' ? 'Restart the new VM so the VM carries on where it was?' :
           'Power the old copy off and keep the VM on the new one?';
         if (!window.confirm(ask)) return;
         var confirmName = '';
-        if (job.dataset.prod === '1') {
+        if (job.dataset.prod === '1' && what !== 'stop') {
           confirmName = window.prompt('A production hypervisor is involved: type the VM name to confirm') || '';
           if (!confirmName) return;
         }

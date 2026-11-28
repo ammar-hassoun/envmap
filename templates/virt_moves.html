@@ -3,11 +3,14 @@
 {% block content %}
 <div class="page-head"><div>
   <h1 style="display:flex;align-items:center;gap:10px;">Moves <span class="badge">preview</span></h1>
-  <p class="sub">Running VMs moved to another hypervisor or host with EnvMap Move. Start one from a VM's page.</p></div></div>
+  <p class="sub">VMs moved to another hypervisor or host with EnvMap Move: running ones without stopping,
+    powered-off ones without being started. Start one on the VM migration page, or from a VM's own page.</p></div>
+  <div><a class="btn" href="/virt/migrate">⇄ VM migration</a></div></div>
 {% if not jobs %}
 <div class="card"><div class="card-b" style="text-align:center;padding:40px 20px;">
   <p style="margin:0 0 6px;font-weight:600;">No moves yet</p>
-  <p class="hint" style="margin:0;">Open a running VM on a hypervisor and choose Move.</p></div></div>
+  <p class="hint" style="margin:0;">Open <a href="/virt/migrate">VM migration</a>, or open a VM on a
+    hypervisor and choose Move.</p></div></div>
 {% else %}
 <div class="card"><div class="card-b" style="padding:0;overflow-x:auto;">
 <table class="jenkins">
@@ -15,12 +18,34 @@
   <tbody>
   {% for j in jobs %}
   <tr>
-    <td><a href="/virt/moves/job?id={{ j.id|urlencode }}"><b>{{ j.src.name }}</b></a></td>
+    <td><a href="/virt/moves/job?id={{ j.id|urlencode }}"><b>{{ j.src.name }}</b></a>{% if j.mode == 'off' %}
+      <span class="hint" title="It was powered off: its disks were copied and read back, and it was not started">· powered off</span>{% endif %}</td>
     <td>{{ j.src.conn_name }}{% if j.src.node %} · {{ j.src.node }}{% endif %}</td>
     <td>{{ j.dst.conn_name }}{% if j.dst.node %} · {{ j.dst.node }}{% endif %}</td>
     <td><span class="mv-state" data-s="{{ j.state }}">{{ j.state }}</span></td>
     <td class="mono" data-when="{{ j.created }}">{{ j.created|int }}</td>
     <td>{{ j.by.name or '' }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table></div></div>
+{% endif %}
+{% if pins %}
+<div class="card" style="margin-top:16px;"><div class="card-h">SSH keys written down for moves</div>
+<div class="card-b" style="padding:0;overflow-x:auto;">
+<p class="hint" style="margin:12px 16px;">On a host with the free ESXi licence EnvMap works through the host's shell and
+  reaches the guest over SSH. The key each one showed at its first contact is kept, and a different key is refused.
+  Forget one when the machine was reinstalled: the next contact is then a first one again.</p>
+<table class="jenkins">
+  <thead><tr><th>Where</th><th>Address</th><th>Key</th><th>Since</th><th class="no-sort"></th></tr></thead>
+  <tbody>
+  {% for k in pins %}
+  <tr>
+    <td>{{ k.what }}</td>
+    <td class="mono">{{ k.host }}{% if k.port and k.port != 22 %}:{{ k.port }}{% endif %}</td>
+    <td class="mono" style="font-size:12px;">{{ k.fingerprints|join(', ') }}</td>
+    <td>{{ k.pinned[:10] }}{% if k.by %} · {{ k.by }}{% endif %}</td>
+    <td><button type="button" class="btn btn-ghost" data-forget-key="{{ k.id }}" data-forget-what="{{ k.what }}">Forget</button></td>
   </tr>
   {% endfor %}
   </tbody>

@@ -9,9 +9,10 @@ requests from people who run EnvMap move things up.
 
 - **Generic single sign-on.** OIDC, so Keycloak, Authentik, Okta and Google
   work beside Microsoft Entra ID.
-- **EnvMap Move out of preview.** Moving a running Linux VM between Proxmox VE
-  and ESXi is a preview today. Next are runs on more real hosts and moving a
-  VM that is powered off.
+- **EnvMap Move out of preview.** Moving a VM between Proxmox VE and ESXi is
+  a preview today: a running Linux VM without stopping it, a powered-off VM
+  without starting it. Next are runs on more real hosts, and a running
+  Windows VM.
 - **Recorded web sessions that reach more than one host**, for applications
   whose API or sign-in lives on a second name.
 - **An easier first hour.** A live demo, a shorter first run, and a starting

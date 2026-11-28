@@ -76,9 +76,10 @@
   <button type="button" class="abtn" data-dlg-open="vmigdlg" {{ vb.no(caps, 'admin') }}>⇄ Migrate</button>
   {% endif %}
   {% if kind == 'qemu' and not vm.template %}
-  {% if caps.admin %}<button type="button" class="abtn" disabled title="{{ caps.admin }}">⇢ Move while running</button>
+  {%- set moff = vm.power in ('poweredOff', 'stopped') %}
+  {% if caps.admin %}<button type="button" class="abtn" disabled title="{{ caps.admin }}">{{ '⇢ Move to another host' if moff else '⇢ Move while running' }}</button>
   {% else %}<a class="abtn" href="/virt/move?c={{ conn.id|urlencode }}&vm={{ vmid|urlencode }}&node={{ node|urlencode }}"
-     title="{{ 'to another hypervisor or host, while it runs' if on else 'EnvMap Move moves running VMs' }}">⇢ Move while running</a>{% endif %}
+     title="{{ 'to another hypervisor or host, while it runs' if on else ('to another hypervisor or host: its disks are copied and it stays powered off' if moff else 'resume it, or power it off, and it can be moved') }}">{{ '⇢ Move to another host' if moff else '⇢ Move while running' }}</a>{% endif %}
   {% endif %}
   <span style="flex:1"></span>
   {% if flavor == 'esxi' %}

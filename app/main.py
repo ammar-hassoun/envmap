@@ -11401,6 +11401,7 @@ async def bmc_console_ws(ws: WebSocket, session: str = ""):
 
 VIEW_COOKIE = "virt_view"
 LIVE = ("running", "on", "poweredon")
+OFF = ("stopped", "off", "poweredoff")
 
 
 def _sort_param(request: Request) -> tuple[str, str]:
@@ -11926,14 +11927,24 @@ async def virt_move_page(request: Request, c: str = "", vm: str = "", node: str 
     src_networks = []
     if targets and data:
         try:
-            src_networks = (await run_in_threadpool(vmmove.side(conn, node).choices))["networks"]
+            # `side` reads the host's licence: a round trip that is not for the event loop
+            src_networks = (await run_in_threadpool(lambda: vmmove.side(conn, node).choices()))["networks"]
         except VirtError:
             src_networks = []
     ready, why = vmmove.moveiso.parts()
+    flavor = virtops.flavor(conn)
+    # the free ESXi licence: the guest is reached over SSH, not through VMware Tools
+    src_free = False
+    if flavor == "esxi":
+        try:
+            src_free = await run_in_threadpool(vmmove.esxshell.restricted, conn)
+        except VirtError:
+            src_free = False                    # the check itself says what could not be read
     return templates.TemplateResponse(
         request, "virt_move.html",
         ctx(request, conn=conn, vm=data, vmid=vm, node=node, error=error, caps=caps,
-            targets=targets, src_networks=src_networks, flavor=virtops.flavor(conn),
+            targets=targets, src_networks=src_networks, flavor=flavor, src_free=src_free,
+            saved_signin=bool(flavor == "esxi" and vmmove.saved_signin(conn)),
             engine_why="" if ready else why))
 
 
@@ -11947,7 +11958,7 @@ async def virt_move_choices(request: Request, to: str = "", node: str = ""):
     if why:
         return JSONResponse({"ok": False, "error": why}, 403)
     try:
-        s = vmmove.side(conn, node)
+        s = await run_in_threadpool(vmmove.side, conn, node)
         got = await run_in_threadpool(s.choices)
     except VirtError as e:
         return JSONResponse({"ok": False, "error": str(e)})
@@ -12007,12 +12018,207 @@ async def virt_move_start(request: Request):
     return JSONResponse({"ok": True, "id": job["id"]})
 
 
+# ── VM migration: two hosts side by side, and an arrow ─────────
+# The same move as above, asked for the simple way (27 November 2026: "i can
+# select on the left box host1 so it will list the VMs ... then i can click the
+# arrow and i can see the VM moving"). The page decides nothing the server
+# does not: what goes where is filled in by vmmove.autofill, and anything it
+# cannot be certain of comes back as a question instead of a guess.
+
+def _migrate_hosts(me) -> list[dict]:
+    """Every ESXi host and Proxmox node this person may see, for the two lists.
+    `why` says why a VM may not be moved from or to it (the arrows then say
+    so); `off` says why it cannot be chosen at all."""
+    out = []
+    for c in virt.store_all():
+        if not rbac.may_project(me, c.get("pid") or "", "virt"):
+            continue
+        f = virtops.flavor(c)
+        base = {"conn": c["id"], "flavor": f, "production": bool(c.get("production")), "off": "", "node": "",
+                "why": "" if f not in ("esxi", "proxmox") else
+                       (virtops.manage_why(c) or virtops.may_why(me, "admin", c.get("pid") or "")),
+                "signin": bool(vmmove.saved_signin(c)), "key": f"{c['id']}|", "name": c.get("name", "")}
+        if f == "proxmox":
+            try:
+                nodes = [h["name"] for h in (virt.read(c).get("hosts") or [])]
+            except Exception:                                     # noqa: BLE001
+                nodes = []
+            if not nodes:
+                out.append({**base, "off": "it is not answering"})
+            for n in nodes:
+                out.append({**base, "node": n, "key": f"{c['id']}|{n}", "name": f"{c.get('name', '')} · {n}"})
+        elif f == "esxi":
+            out.append(base)
+        elif f == "vcenter":
+            out.append({**base, "off": "a vCenter: moves are between standalone ESXi hosts and Proxmox"})
+        else:
+            out.append({**base, "off": "it is not answering"})
+    return sorted(out, key=lambda h: h["name"].lower())
+
+
+def _migrate_job(j: dict) -> dict:
+    """A move as the migration page draws it: no log but its last line."""
+    log = j.get("log") or []
+    return {"id": j["id"], "state": j.get("state", ""), "running": j["id"] in vmmove._running,
+            "created": j.get("created", 0), "times": j.get("times") or {},
+            "name": j["src"].get("name", ""), "vm": j["src"].get("vm", ""),
+            "from": {"key": f"{j['src']['conn']}|{j['src'].get('node', '')}", "name": j["src"].get("conn_name", "")
+                     + (f" · {j['src']['node']}" if j["src"].get("node") else "")},
+            "to": {"key": f"{j['dst']['conn']}|{j['dst'].get('node', '')}", "name": j["dst"].get("conn_name", "")
+                   + (f" · {j['dst']['node']}" if j["dst"].get("node") else "")},
+            "last": (log[-1]["text"] if log else "")[:300],
+            "last_kind": (log[-1].get("kind") if log else "") or "",
+            "mode": j.get("mode") or "live", "progress": j.get("progress") or {},
+            "passes": sum(1 for e in log if e.get("kind") == "guest" and e.get("text", "").startswith("disks: pass"))}
+
+
+@app.get("/virt/migrate", response_class=HTMLResponse)
+async def virt_migrate_page(request: Request, a: str = "", b: str = ""):
+    me = getattr(request.state, "user", None)
+    hosts = await run_in_threadpool(_migrate_hosts, me)
+    ready, why = vmmove.moveiso.parts()
+    return templates.TemplateResponse(
+        request, "virt_migrate.html",
+        ctx(request, hosts=hosts, a=a[:200], b=b[:200], engine_why="" if ready else why))
+
+
+@app.get("/virt/migrate/vms")
+async def virt_migrate_vms(request: Request, c: str = "", node: str = "", refresh: str = ""):
+    """The VMs of one host, for one of the two lists."""
+    conn = _virt_conn(request, c)
+    if not conn:
+        return JSONResponse({"ok": False, "error": "unknown connection"}, 404)
+
+    def read():
+        if refresh:
+            virt.forget(conn)
+        return virt.read(conn, refresh=bool(refresh))
+    try:
+        data = await run_in_threadpool(read)
+    except Exception as e:                                        # noqa: BLE001
+        return JSONResponse({"ok": False, "error": str(e)[:300]})
+    moving, arriving = {}, {}
+    for j in await run_in_threadpool(vmmove.all_jobs):
+        if j.get("state") in vmmove.DONE:
+            continue
+        if j["src"]["conn"] == conn["id"]:
+            moving[str(j["src"]["vm"])] = j["id"]
+        if j["dst"]["conn"] == conn["id"] and (j.get("built") or {}).get("vm"):
+            # the new VM of a move under way: it is this host's already, and not yet a VM to move
+            arriving[str(j["built"]["vm"])] = j["id"]
+    vms = []
+    for g in data.get("guests") or []:
+        if node and g.get("host") != node:
+            continue
+        state = (g.get("state") or "").lower()
+        live, off = state in LIVE, state in OFF
+        why = "" if g.get("kind") == "VM" else f"a {g.get('kind') or 'guest'}: EnvMap Move moves virtual machines"
+        if arriving.get(str(g["id"])):
+            why = "it is arriving here: its move is still under way"
+        elif vmmove.coldside._NAME.match(g.get("name") or ""):
+            why = "EnvMap Move's own helper: it is removed when its move ends"
+        elif not why and not live and not off:
+            why = f"{state or 'in a state that could not be read'}: resume it, or power it off, and it can be moved"
+        vms.append({"id": str(g["id"]), "name": g.get("name", ""), "live": live, "off": off, "why": why,
+                    "cores": g.get("cores"), "mem_gib": g.get("mem_gib"), "ip": g.get("ip") or "",
+                    "moving": moving.get(str(g["id"]), ""), "arriving": arriving.get(str(g["id"]), "")})
+    vms.sort(key=lambda v: (not v["live"], v["name"].lower()))
+    return JSONResponse({"ok": True, "vms": vms})
+
+
+@app.get("/virt/migrate/active")
+async def virt_migrate_active(request: Request):
+    """The moves under way, and the ones that ended in the last two minutes."""
+    me = getattr(request.state, "user", None)
+    now, out = time.time(), []
+    for j in await run_in_threadpool(vmmove.all_jobs):
+        ended = max((j.get("times") or {}).get(s, 0) for s in vmmove.DONE)
+        if j.get("state") in vmmove.DONE and now - ended > 120:
+            continue
+        if await run_in_threadpool(vmmove.visible, me, j):
+            out.append(_migrate_job(j))
+    return JSONResponse({"ok": True, "jobs": out})
+
+
+def _migrate_go(me, p: dict, ip: str) -> dict:
+    fill = vmmove.autofill(me, p)
+    form, needs = fill["form"], dict(fill["needs"])
+    out = {k: fill[k] for k in ("cards", "networks", "iso_storages", "name", "flavors", "signin", "disks_gib",
+                                "saved_for", "power")}
+    out["storages"] = [{"name": s["name"], "free_gib": s.get("free_gib")} for s in fill["storages"]]
+    out["chosen"] = {"storage": form.get("storage", ""), "iso_storage": form.get("iso_storage", "")}
+    if fill["power"] not in ("running", "stopped"):
+        raise vmmove.MoveError(f"the VM is {fill['power'] or 'in a state that could not be read'}: resume it, "
+                               "or power it off, and it can be moved")
+    if needs or p.get("ask"):
+        # something only the person can say, or they asked to see the choices first
+        return {"ok": True, "started": False, "needs": needs, "problems": [], "notes": [], **out}
+    plan = vmmove.check(me, form)
+    where = _move_where(form)
+    if not plan["ok"]:
+        auth.audit(me, "virt_vm_move_check", where, "; ".join(plan["problems"])[:300], ip)
+        if plan["src"].get("signin_refused"):
+            needs["signin"] = "refused"
+        return {"ok": True, "started": False, "needs": needs, "problems": plan["problems"],
+                "notes": plan["notes"], **out}
+    src_conn = virtops.find_conn(form["c"]) or {}
+    if fill["signin"] == "typed" and p.get("save_signin"):
+        # it has just been seen to work on this VM: kept for the host's other VMs
+        store.update_virt(src_conn.get("pid") or "", src_conn["id"], guest_user=form["guest_user"],
+                          guest_password=form["guest_password"])
+        auth.audit(me, "virt_guest_signin_saved", src_conn.get("name", ""),
+                   f"user {form['guest_user']}, from the migration page", ip)
+    job = vmmove.start(me, form, plan)
+    auth.audit(me, "virt_vm_move", where, f"move {job['id']}", ip)
+    dst_conn = virtops.find_conn(form["to"]) or {}
+    for card in fill["cards"]:
+        if card["how"] == "chosen":
+            store.remember_move_net(vmmove.net_key(src_conn, form["node"], card["now"], dst_conn, form["dst_node"]),
+                                    card["network"], card["vlan"])
+    return {"ok": True, "started": True, "id": job["id"], "notes": plan["notes"], **out}
+
+
+@app.post("/virt/migrate/go")
+async def virt_migrate_go(request: Request):
+    """The arrow: fill in what can be decided, check, and start. What cannot
+    be decided comes back as `needs`, and nothing has started."""
+    me = getattr(request.state, "user", None)
+    p = await _move_body(request)
+    if p is None:
+        return JSONResponse({"ok": False, "error": "a JSON body"}, 415)
+    if not _virt_conn(request, p.get("c", "")) or not _virt_conn(request, p.get("to", "")):
+        return JSONResponse({"ok": False, "error": "unknown connection"}, 404)
+    try:
+        return JSONResponse(await run_in_threadpool(_migrate_go, me, p, _client_ip(request)))
+    except VirtError as e:
+        auth.audit(me, "virt_vm_move_refused", _move_where(p), str(e)[:300], _client_ip(request))
+        return JSONResponse({"ok": False, "error": str(e)})
+
+
 @app.get("/virt/moves", response_class=HTMLResponse)
 async def virt_moves_page(request: Request):
     me = getattr(request.state, "user", None)
     jobs = [vmmove.public(j) for j in await run_in_threadpool(vmmove.all_jobs)
             if await run_in_threadpool(vmmove.visible, me, j)]
-    return templates.TemplateResponse(request, "virt_moves.html", ctx(request, jobs=jobs))
+    pins = await run_in_threadpool(vmmove.ssh_pins, me)
+    return templates.TemplateResponse(request, "virt_moves.html", ctx(request, jobs=jobs, pins=pins))
+
+
+@app.post("/virt/moves/forget-key")
+async def virt_move_forget_key(request: Request):
+    """Drop an SSH key written down for moves, so the next contact with that
+    host or guest is a first one again."""
+    me = getattr(request.state, "user", None)
+    p = await _move_body(request)
+    if p is None:
+        return JSONResponse({"ok": False, "error": "a JSON body"}, 415)
+    try:
+        gone = await run_in_threadpool(vmmove.forget_ssh_pin, me, str(p.get("id", "")))
+    except VirtError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, 403)
+    auth.audit(me, "virt_move_ssh_key_forgotten", gone["what"],
+               f"{gone['host']}: {', '.join(gone['fingerprints'])}"[:300], _client_ip(request))
+    return JSONResponse({"ok": True})
 
 
 @app.get("/virt/moves/job", response_class=HTMLResponse)
@@ -12044,12 +12250,17 @@ async def virt_move_decide(request: Request):
     if not job or not await run_in_threadpool(vmmove.visible, me, job):
         return JSONResponse({"ok": False, "error": "unknown move"}, 404)
     what = str(p.get("what", ""))
-    if what not in ("back", "keep"):
-        return JSONResponse({"ok": False, "error": "back or keep"}, 400)
+    if what not in ("back", "keep", "stop"):
+        return JSONResponse({"ok": False, "error": "back, keep or stop"}, 400)
     where = f"{job['src']['conn_name']}/{job['src']['name']} -> {job['dst']['conn_name']}"
     try:
-        fn = vmmove.bring_back if what == "back" else vmmove.keep_new
-        await run_in_threadpool(fn, me, job["id"], str(p.get("confirm", "")))
+        if what == "stop":
+            # a powered-off move, stopped while it copies: undone, the VM was never changed
+            from . import coldmove
+            await run_in_threadpool(coldmove.cancel, me, job["id"])
+        else:
+            fn = vmmove.bring_back if what == "back" else vmmove.keep_new
+            await run_in_threadpool(fn, me, job["id"], str(p.get("confirm", "")))
     except VirtError as e:
         auth.audit(me, f"virt_vm_move_{what}_refused", where, str(e)[:200], _client_ip(request))
         return JSONResponse({"ok": False, "error": str(e)})
@@ -13157,6 +13368,22 @@ async def conn_update(request: Request, kind: str, cid: str):
     fields.pop("type", None)
     if str(f.get("token", "")):
         fields["token"] = str(f.get("token"))
+    if kind == "virt" and existing.get("type") == "vsphere":
+        # the sign-in VM migration uses inside this host's VMs: kept with the
+        # connection, never shown again, and taken away with "forget it"
+        me_ = getattr(request.state, "user", None)
+        if f.get("guest_forget"):
+            store.clear_conn_fields("virt", cid, "guest_user", "guest_password")
+            if existing.get("guest_password"):
+                auth.audit(me_, "virt_guest_signin_forgotten", existing.get("name", cid), "", _client_ip(request))
+        else:
+            gu, gp = str(f.get("guest_user", "")).strip(), str(f.get("guest_password", ""))
+            if gp:
+                fields["guest_user"], fields["guest_password"] = gu or "root", gp
+                auth.audit(me_, "virt_guest_signin_saved", existing.get("name", cid),
+                           f"user {gu or 'root'}, from Settings", _client_ip(request))
+            elif gu and existing.get("guest_password"):
+                fields["guest_user"] = gu
     getattr(store, f"update_{spec['store']}")(pid, cid, **fields)
     for key in [k for k, _l, _n in spec.get("flags", [])] + ["skip_tls"]:
         if key in fields and bool(existing.get(key)) != bool(fields.get(key)):

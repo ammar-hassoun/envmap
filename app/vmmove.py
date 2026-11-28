@@ -52,7 +52,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import moveiso, moveside, rbac, virt, virtops
+from . import coldside, esxshell, moveiso, moveside, rbac, store, virt, virtops
 from .paths import DATA
 from .virt import VirtError
 
@@ -176,14 +176,22 @@ def _audit_outcome(job: dict, state: str, text: str) -> None:
 
 
 # ── sides ──────────────────────────────────────────────────────
-def side(conn: dict, where: str = "", vm=None, guest: dict | None = None):
+def side(conn: dict, where: str = "", vm=None, guest: dict | None = None, road: str = ""):
+    """`road`: "shell" or "api" for an ESXi host whose road a move already
+    settled (it is kept in the job, and never asked of the host again while
+    that move lives); empty to read it from the host's licence now."""
     f = virtops.flavor(conn)
     if f == "proxmox":
         return moveside.Pve(conn, where, vm)
     if f == "esxi":
         g = guest or {}
-        return moveside.Esxi(conn, str(vm) if vm not in (None, "") else None,
-                             g.get("user", ""), g.get("password", ""))
+        moid = str(vm) if vm not in (None, "") else None
+        if (road or ("shell" if esxshell.restricted(conn) else "api")) == "shell":
+            # the free licence: VMware's API only reads there, so the host is
+            # worked through its shell and the guest over SSH (esxshell.py)
+            return esxshell.EsxiShell(conn, moid, g.get("user", ""), g.get("password", ""),
+                                      g.get("host", ""), g.get("who", ""), bool(g.get("fixed")))
+        return moveside.Esxi(conn, moid, g.get("user", ""), g.get("password", ""))
     raise MoveError("moves are between standalone ESXi hosts and Proxmox; "
                     "this connection is neither, or is not answering")
 
@@ -195,6 +203,30 @@ def may_move(user, src_conn: dict, dst_conn: dict) -> str:
         if why:
             return f"{what} connection {c.get('name', '')}: {why}"
     return ""
+
+
+# ── the guest's own sign-in ────────────────────────────────────
+def saved_signin(conn: dict | None) -> dict:
+    """The sign-in kept on a standalone ESXi connection for its VMs' own
+    systems (Settings → Hypervisors, or saved from the migration page): {} when
+    there is none. It is sealed at rest with the rest of the connection and is
+    never put on a page."""
+    if conn and conn.get("guest_user") and conn.get("guest_password") and virtops.flavor(conn) == "esxi":
+        return {"user": str(conn["guest_user"]), "password": str(conn["guest_password"])}
+    return {}
+
+
+def _signin(form: dict, src_conn: dict, who: str) -> tuple[dict, str]:
+    """(the guest sign-in a move uses, where it came from): typed for this
+    move, else the one saved for the host, else none."""
+    at = str(form.get("guest_host", "")).strip()
+    if str(form.get("guest_password", "")):
+        return {"user": str(form.get("guest_user", "")).strip(), "password": str(form.get("guest_password", "")),
+                "host": at, "who": who}, "typed"
+    saved = saved_signin(src_conn)
+    if saved:
+        return {**saved, "host": at, "who": who}, "saved"
+    return {"user": str(form.get("guest_user", "")).strip(), "password": "", "host": at, "who": who}, ""
 
 
 # ── what the guest must offer ──────────────────────────────────
@@ -306,29 +338,62 @@ def check(user, form: dict) -> dict:
     ok, why = moveiso.parts()
     if not ok:
         raise MoveError(why)
-    guest = {"user": str(form.get("guest_user", "")).strip(), "password": str(form.get("guest_password", ""))}
+    who = (user or {}).get("email", "") if isinstance(user, dict) else ""
+    guest, signin = _signin(form, src_conn, who)
+    refused = False
     src = side(src_conn, str(form.get("node", "")), str(form.get("vm", "")), guest)
     facts = src.facts()
-    if facts["power"] != "running":
-        problems.append("the VM is not running: a stopped VM is moved as a copy of its disks, not by EnvMap Move")
-    problems += facts["blockers"]
+    # running: the system moves itself. Powered off: its disks are copied by
+    # two helpers and the VM is not started (coldmove). Anything else is neither.
+    off = facts["power"] == "stopped"
+    if facts["power"] not in ("running", "stopped"):
+        problems.append(f"the VM is {facts['power'] or 'in a state that could not be read'}: resume it, or power "
+                        "it off, and it can be moved")
+    if off:
+        signin = ""
+        problems += facts.get("blockers_off", [])
+        notes += facts.get("notes_off", [])
+    else:
+        problems += facts["blockers"]
     if src.flavor == "proxmox":
         try:
-            if src.ha_managed():
+            if src.ha_managed() and off:
+                notes.append("Proxmox HA manages this VM: leave it stopped there until the move is over. The old "
+                             "copy is kept, and HA must not start it again afterwards")
+            elif src.ha_managed():
                 problems.append("Proxmox HA manages this VM: when the old copy powers itself off at the end, HA "
                                 "would start it again from its old disks. Take it out of HA for the move "
                                 "(Datacenter → HA)")
         except VirtError as e:
             notes.append(f"whether Proxmox HA manages this VM could not be read: {e}")
     dst_where = str(form.get("dst_node", "")) if virtops.flavor(dst_conn) == "proxmox" else ""
-    dst = side(dst_conn, dst_where)
+    dst = side(dst_conn, dst_where, guest={"who": who})
+    # a host on the free ESXi licence is worked through its shell: is that road open?
+    for s_ in (src, dst):
+        if getattr(s_, "road", "") == "shell":
+            p_, n_ = s_.preflight()
+            problems += p_
+            notes += n_
     same_vm = (src_conn["id"] == dst_conn["id"] and virtops.flavor(dst_conn) == "esxi")
     if same_vm:
         problems.append("the source and the target are the same ESXi host")
+    elif dst.flavor == "esxi":
+        # the new VM carries the VM's name there, and an ESXi host has one VM of a name
+        try:
+            twins = [g for g in (virt.read(dst_conn, refresh=True) or {}).get("guests") or []
+                     if g.get("name") == facts["name"]]
+        except Exception as e:                                # noqa: BLE001
+            twins = []
+            notes.append(f"whether {dst_conn.get('name', 'the target')} already has a VM of this name could not be read: {e}")
+        if twins:
+            problems.append(f"{dst_conn.get('name', 'the target')} already has a VM called {facts['name']}: rename one "
+                            "of the two first")
     cross = virtops.flavor(src_conn) != virtops.flavor(dst_conn)
     # the guest
     g = {}
-    if not src.agent_ok():
+    if off:
+        pass                                    # nothing runs in it: nothing is asked of it
+    elif not src.agent_ok():
         problems.append("the guest agent is not answering: Proxmox needs qemu-guest-agent running in the guest and "
                         "the agent option on" if src.flavor == "proxmox" else
                         "VMware Tools are not running in the guest")
@@ -338,16 +403,34 @@ def check(user, form: dict) -> dict:
             g = parse_kv(out)
             problems += guest_problems(g, cross)
         except VirtError as e:
-            if "disabled" in str(e).lower() or "not allowed" in str(e).lower():
+            if src.flavor == "proxmox" and ("disabled" in str(e).lower() or "not allowed" in str(e).lower()):
                 problems.append("the guest agent does not run commands or write files: on RHEL, Alma and Rocky "
                                 "allow guest-exec, guest-exec-status and guest-file-* in /etc/sysconfig/qemu-ga "
                                 f"and restart qemu-guest-agent ({e})")
             else:
+                # a sign-in the guest refused is told apart by what raised it, not by its words
+                refused = bool(getattr(e, "denied", False)) or getattr(e, "fault", "") == "InvalidGuestLogin"
                 problems.append(f"the guest could not be asked: {e}")
+        if getattr(src, "road", "") == "shell":
+            notes += src.pinned
+            src.pinned = []
+    # where the guest's SSH is, settled now and kept for the whole move
+    guest_at = ""
+    if getattr(src, "road", "") == "shell" and not off:
+        try:
+            guest_at = src.guest_address()
+        except VirtError:
+            guest_at = ""
     # the target
     try:
         room = dst.room()
-        if room["free_mb"] and room["free_mb"] < facts["memory_mb"] + 512:
+        if off and room["free_mb"] and room["free_mb"] < coldside.HELPER_MB + 256:
+            problems.append(f"the target has {room['free_mb']} MB of memory free; the helper that takes the disks "
+                            f"needs {coldside.HELPER_MB} MB")
+        elif off and room["free_mb"] and room["free_mb"] < facts["memory_mb"] + 512:
+            notes.append(f"the target has {room['free_mb']} MB of memory free and the VM needs {facts['memory_mb']} "
+                         "MB: it can be moved there, and started there once memory is free")
+        elif room["free_mb"] and room["free_mb"] < facts["memory_mb"] + 512:
             problems.append(f"the target has {room['free_mb']} MB of memory free; the VM needs {facts['memory_mb']} MB")
     except VirtError as e:
         notes.append(f"the target's free memory could not be read: {e}")
@@ -367,6 +450,51 @@ def check(user, form: dict) -> dict:
             problems.append("the target node has no storage that holds ISO images (for the receiver CD)")
     else:
         iso_store = store
+    # powered off: what the two helpers need
+    src_iso, helper_store = "", ""
+    if off:
+        try:
+            here = src.room()
+            if here["free_mb"] and here["free_mb"] < coldside.HELPER_MB + 256:
+                problems.append(f"the VM's host has {here['free_mb']} MB of memory free; the helper that reads the "
+                                f"disks needs {coldside.HELPER_MB} MB")
+        except VirtError as e:
+            notes.append(f"the free memory of the VM's host could not be read: {e}")
+        if src.flavor == "proxmox":
+            try:
+                isos = [s["name"] for s in src.choices().get("iso_storages", [])]
+            except VirtError as e:
+                isos = []
+                notes.append(f"the VM's node did not list its storages: {e}")
+            src_iso = str(form.get("src_iso_storage", "")).strip()
+            src_iso = src_iso if src_iso in isos else (isos[0] if isos else "")
+            if not src_iso:
+                problems.append("the VM's node has no storage that holds ISO images (for the helper's CD)")
+        else:
+            src_iso = helper_store = facts.get("datastore", "")
+            if not src_iso:
+                problems.append("the datastore the VM is on could not be read")
+        n = len(facts["disks"])
+        if not n:
+            problems.append("the VM has no disk to move")
+        for fl, what in ((src.flavor, "the old host"), (dst.flavor, "the new host")):
+            if n > coldside.most(fl):
+                problems.append(f"the VM has {n} disks; a helper on {what} holds {coldside.most(fl)}")
+        places = [d.get("volume") or d.get("file") or "" for d in facts["disks"]]
+        if n and not all(places):
+            problems.append("where one of the VM's disks is kept could not be read")
+        if src.flavor == "proxmox":
+            lack = coldside.pve_may_attach(src, places)
+            if lack:
+                problems.append("a powered-off VM is read by a helper that has the VM's disks attached, and "
+                                "EnvMap's Proxmox user may not attach another VM's disk on "
+                                f"{', '.join(lack)}: give it Datastore.Allocate there")
+        if dst.flavor == "proxmox" and st:
+            if coldside.pve_may_attach(dst, [f"{store}:x"]):
+                problems.append("the helper on the new host has the new VM's disks attached, and EnvMap's Proxmox "
+                                f"user may not attach another VM's disk on {store}: give it Datastore.Allocate there")
+        notes.append("powered off: its disks are copied by two small helper machines EnvMap makes, one on each "
+                     "host, and every byte is read back from the new storage. The VM is not started, here or there")
     nets = []
     for i, n in enumerate(facts["nics"]):
         net = str(form.get(f"net{i}", "")).strip()
@@ -376,8 +504,9 @@ def check(user, form: dict) -> dict:
         if vlan and not (vlan.isdigit() and 1 <= int(vlan) <= 4094):
             problems.append(f"card {i + 1}: a VLAN tag between 1 and 4094")
         nets.append({"network": net, "vlan": vlan if dst.flavor == "proxmox" else ""})
-    if not facts["nics"]:
-        problems.append("the VM has no network card")
+    if not facts["nics"] and not (off and form.get("src_tnet") and form.get("dst_tnet")):
+        problems.append("the VM has no network card" + (
+            ": open Transfer network and choose the network the helpers talk over on each host" if off else ""))
     tr = transfer_addresses(form)
     first = facts["nics"][0] if facts["nics"] else {"network": "", "vlan": ""}
     if form.get("src_tnet"):
@@ -405,26 +534,135 @@ def check(user, form: dict) -> dict:
                 problems.append("the VM's transfer network is not one of its hypervisor's networks")
         except VirtError as e:
             problems.append(f"the VM's networks could not be read: {e}")
-    if cross:
+    if cross and off and src.flavor == "esxi":
+        notes.append("ESXi to Proxmox, powered off: the new VM gets the device types the system already drives "
+                     "where Proxmox has them (VMware's paravirtual SCSI, VMXNET3, E1000); a disk on an LSI Logic "
+                     "or NVMe controller goes on SATA")
+    elif cross and off:
+        notes.append("Proxmox to ESXi, powered off: ESXi has no VirtIO devices, so the system starts there only "
+                     "if its start-up image carries VMware's disk driver (pvscsi). Debian and Ubuntu images do. "
+                     "On Red Hat, AlmaLinux and Rocky choose the rescue entry at the first start and run "
+                     "dracut -f. Windows needs VMware Tools' drivers installed before the move")
+    elif cross:
         notes.append("across hypervisors: the disk controllers change type, so the storage is re-pointed on arrival")
     if facts["firmware"] == "efi":
         notes.append("UEFI: the new VM starts with its own firmware settings; it boots from its disk's standard boot file after a restart")
-    if cross and src.flavor == "proxmox":
+    if cross and src.flavor == "proxmox" and not off:
         notes.append("Proxmox to ESXi: the system shows it has arrived through VMware Tools, which a system that "
                      "started on Proxmox may not run; then you confirm it on the new VM's console")
     name = facts["name"]
-    return {"ok": not problems, "problems": problems, "notes": notes,
+    return {"ok": not problems, "problems": problems, "notes": notes, "mode": "off" if off else "live",
             "src": {"conn": src_conn["id"], "conn_name": src_conn.get("name", ""), "flavor": src.flavor,
+                    "iso_storage": src_iso, "helper_store": helper_store,
                     "node": str(form.get("node", "")), "vm": str(form.get("vm", "")), "name": name,
                     "cpus": facts["cpus"], "memory_mb": facts["memory_mb"], "firmware": facts["firmware"],
                     "disks": [{"key": str(d["key"]), "gib": d["gib"]} for d in facts["disks"]],
                     "nics": [{"key": str(n["key"]), "mac": n["mac"], "network": n["network"]} for n in facts["nics"]],
                     "os": g.get("os", ""), "kernel": g.get("kernel", ""),
+                    "road": getattr(src, "road", ""), "guest_at": guest_at,
+                    "signin": signin if src.flavor == "esxi" else "", "signin_refused": refused,
                     "production": bool(src_conn.get("production"))},
             "dst": {"conn": dst_conn["id"], "conn_name": dst_conn.get("name", ""), "flavor": dst.flavor,
                     "node": dst_where, "storage": store, "iso_storage": iso_store, "nets": nets,
+                    "road": getattr(dst, "road", ""),
                     "production": bool(dst_conn.get("production"))},
             "transfer": tr, "cross": cross, "facts": facts}
+
+
+def net_key(src_conn: dict, node: str, network: str, dst_conn: dict, dst_node: str) -> str:
+    return "|".join((src_conn.get("id", ""), node or "", network or "", dst_conn.get("id", ""), dst_node or ""))
+
+
+def autofill(user, p: dict) -> dict:
+    """What a move needs decided, decided from the two hosts: the form `check`
+    and `start` take. `needs` is what could not be decided without the person:
+    {"storage": why, "nets": [card numbers], "signin": "none", "confirm": name}.
+    Nothing is changed and the guest is not asked anything.
+
+    A network is chosen only when it is certain: the one the person picked, the
+    one picked before for this pair of hosts, the network of the same name, or
+    the only one there is. A guess here would land a VM on the wrong network."""
+    src_conn, dst_conn = virtops.find_conn(str(p.get("c", ""))), virtops.find_conn(str(p.get("to", "")))
+    if not src_conn or not dst_conn:
+        raise MoveError("unknown connection")
+    why = may_move(user, src_conn, dst_conn)
+    if why:
+        raise MoveError(why)
+    sf, df = virtops.flavor(src_conn), virtops.flavor(dst_conn)
+    node = str(p.get("node", ""))
+    dst_node = str(p.get("dst_node", "")) if df == "proxmox" else ""
+    if df == "proxmox" and not dst_node:
+        raise MoveError("choose the node the VM goes to")
+    if src_conn["id"] == dst_conn["id"] and (df == "esxi" or node == dst_node):
+        raise MoveError("that is the host the VM is on already")
+    facts = side(src_conn, node, str(p.get("vm", ""))).facts()
+    ch = side(dst_conn, dst_node).choices()
+    form = {"c": src_conn["id"], "vm": str(p.get("vm", "")), "node": node, "to": dst_conn["id"], "dst_node": dst_node}
+    needs: dict = {}
+    # where the disks go: what was picked, else the storage with the most room that holds them
+    gib = sum(d["bytes"] for d in facts["disks"]) / 1024 ** 3
+    storages = ch.get("storages") or []
+    pick = str(p.get("storage", "")).strip()
+    if pick not in [s["name"] for s in storages]:
+        fits = [s for s in storages if s.get("free_gib") is None or s["free_gib"] >= gib + 1]
+        best = max(fits, key=lambda s: s.get("free_gib") or 0, default=None)
+        pick = best["name"] if best else ""
+    form["storage"] = pick
+    if not pick:
+        needs["storage"] = (f"no storage on the target has room for the disks ({gib:.1f} GiB)" if storages
+                            else "the target reports no storage for disks")
+    if df == "proxmox":
+        isos = [s["name"] for s in ch.get("iso_storages") or []]
+        form["iso_storage"] = str(p.get("iso_storage", "")) if p.get("iso_storage") in isos else (isos[0] if isos else "")
+    # each card's network on the other host
+    memo = store.move_netmap()
+    nets = list(ch.get("networks") or [])
+    cards = []
+    for i, n in enumerate(facts["nics"]):
+        now = str(n.get("network") or "")
+        kept = memo.get(net_key(src_conn, node, now, dst_conn, dst_node)) or {}
+        chosen, how = str(p.get(f"net{i}", "")).strip(), "chosen"
+        if chosen not in nets:
+            if kept.get("network") in nets:
+                chosen, how = kept["network"], "as last time"
+            elif now in nets:
+                chosen, how = now, "same name"
+            elif len(nets) == 1:
+                chosen, how = nets[0], "the only network there"
+            else:
+                chosen, how = "", ""
+        vlan = ""
+        if df == "proxmox":
+            vlan = str(p[f"vlan{i}"]).strip() if f"vlan{i}" in p else \
+                str(kept.get("vlan") or (n.get("vlan") if sf == "proxmox" else "") or "")
+            form[f"vlan{i}"] = vlan
+        form[f"net{i}"] = chosen
+        cards.append({"i": i, "mac": n["mac"], "now": now, "network": chosen, "how": how, "vlan": vlan})
+        if not chosen:
+            needs.setdefault("nets", []).append(i)
+    # the guest's own sign-in, on ESXi
+    signin = ""
+    if sf == "esxi" and facts["power"] != "stopped":
+        if str(p.get("guest_password", "")):
+            form.update(guest_user=str(p.get("guest_user", "")).strip() or "root",
+                        guest_password=str(p.get("guest_password", "")))
+            signin = "typed"
+        elif saved_signin(src_conn):
+            signin = "saved"
+        else:
+            needs["signin"] = "none"
+        if p.get("guest_host"):
+            form["guest_host"] = str(p.get("guest_host", "")).strip()
+    name = facts["name"]
+    if src_conn.get("production") or dst_conn.get("production"):
+        form["confirm"] = str(p.get("confirm", ""))
+        if form["confirm"].strip() != (name or "").strip() or not name:
+            needs["confirm"] = name
+    return {"form": form, "needs": needs, "cards": cards, "networks": nets, "storages": storages,
+            "iso_storages": [s["name"] for s in ch.get("iso_storages") or []], "name": name,
+            "flavors": {"src": sf, "dst": df}, "signin": signin, "disks_gib": round(gib, 1),
+            "running": facts["power"] == "running", "power": facts["power"],
+            "saved_for": src_conn.get("name", "") if sf == "esxi" else ""}
 
 
 def confirm_name(plan: dict, confirm: str) -> None:
@@ -437,9 +675,11 @@ def confirm_name(plan: dict, confirm: str) -> None:
 
 
 # ── starting one ───────────────────────────────────────────────
-def start(user, form: dict) -> dict:
-    """Check again, then start the move in the background. Returns the job."""
-    plan = check(user, form)
+def start(user, form: dict, plan: dict | None = None) -> dict:
+    """Check again, then start the move in the background. Returns the job.
+    `plan`: the check of this same form, made a moment ago in the same request
+    (the migration page checks once, not twice)."""
+    plan = plan or check(user, form)
     if not plan["ok"]:
         raise MoveError("; ".join(plan["problems"]))
     confirm_name(plan, str(form.get("confirm", "")))
@@ -455,11 +695,13 @@ def start(user, form: dict) -> dict:
                "by": {"id": (user or {}).get("id", ""), "email": (user or {}).get("email", ""),
                       "name": (user or {}).get("name") or (user or {}).get("email", "")},
                "src": plan["src"], "dst": plan["dst"], "transfer": plan["transfer"], "cross": plan["cross"],
+               "mode": plan.get("mode", "live"),
                "built": {}, "times": {"starting": time.time()}, "log": [],
-               "tokens": {"boot": secrets.token_urlsafe(24), "verdict": secrets.token_urlsafe(24)}}
-        if plan["src"]["flavor"] == "esxi":
-            _secrets[jid] = {"user": str(form.get("guest_user", "")).strip(),
-                             "password": str(form.get("guest_password", ""))}
+               "tokens": {"boot": secrets.token_urlsafe(24), "verdict": secrets.token_urlsafe(24),
+                          "cold": secrets.token_urlsafe(24)}}
+        if plan["src"]["flavor"] == "esxi" and job["mode"] != "off":
+            _secrets[jid] = _signin(form, virtops.find_conn(plan["src"]["conn"]) or {},
+                                    (user or {}).get("email", "") if isinstance(user, dict) else "")[0]
         save(job)
         t = threading.Thread(target=_run, args=(jid, plan["facts"]), daemon=True, name=f"move-{jid}")
         _running[jid] = t
@@ -471,20 +713,42 @@ def _sides(job: dict):
     sc, dc = virtops.find_conn(job["src"]["conn"]), virtops.find_conn(job["dst"]["conn"])
     if not sc or not dc:
         raise MoveError("a connection of this move was deleted")
-    src = side(sc, job["src"]["node"], job["src"]["vm"], _secrets.get(job["id"]))
-    dst = side(dc, job["dst"]["node"], job["built"].get("vm"))
+    # the road each host is worked through, and where the guest's SSH is, were
+    # settled when the move was checked: they are not asked again half-way
+    guest = dict(_secrets.get(job["id"]) or {})
+    if not guest and job["src"].get("signin") == "saved" and saved_signin(sc):
+        # the sign-in kept on the connection is still there after EnvMap restarted
+        guest = {**saved_signin(sc), "who": (job.get("by") or {}).get("email", "")}
+    if job["src"].get("guest_at"):
+        guest.update(host=job["src"]["guest_at"], fixed=True)
+    src = side(sc, job["src"]["node"], job["src"]["vm"], guest, road=job["src"].get("road", ""))
+    dst = side(dc, job["dst"]["node"], job["built"].get("vm"), road=job["dst"].get("road", ""))
+    if getattr(dst, "road", "") == "shell":
+        dst.made_vmx = str(job["built"].get("vmx") or "")
+        if job.get("state") not in ("finishing", *DONE):
+            # what a start of the new VM must find connected, while it is still a receiver
+            dst.cd, dst.tcard = str(job["built"].get("cd") or ""), str(job["built"].get("tcard") or "")
+            dst.blank = job.get("state") in ("starting", "preparing")
     return src, dst
 
 
 def _run(jid: str, facts: dict) -> None:
     job = load(jid)
+    off = job.get("mode") == "off"
     try:
-        _prepare(job, facts)
-        _move(job)
+        if off:
+            from . import coldmove
+            coldmove.run(job, facts)
+        else:
+            _prepare(job, facts)
+            _move(job)
     except Exception as e:                                 # noqa: BLE001
         job = load(jid) or job
         say(job, f"stopped: {e}", "error")
-        _after_failure(job, str(e))
+        if off:
+            coldmove.after_failure(job, str(e))
+        else:
+            _after_failure(job, str(e))
     finally:
         with _lock:
             _running.pop(jid, None)
@@ -515,16 +779,35 @@ def _prepare(job: dict, facts: dict) -> None:
                                         transfer=tr, iso=job["built"]["iso"])
         job["built"]["vm"] = dst.create(spec)
         job["built"].update(cd=where["cd"], tcard=where["transfer"], boot=where["boot"], onboot=where["onboot"])
+    elif dst.road == "shell":
+        # the host's shell cannot rename a running VM: it carries the VM's
+        # name from the start (another host, so the two do not clash)
+        new_name = name
+        # what will be made is written down before any of it is: a move that
+        # dies between two commands can still be undone (_after_failure)
+        job["built"]["making"] = dst.plan_build(facts, name=new_name, datastore=job["dst"]["storage"])
+        update(job, lambda c: None)
+        job["built"].update(dst.build(facts, name=new_name, datastore=job["dst"]["storage"], nets=job["dst"]["nets"],
+                                      transfer=tr, iso=job["built"]["iso"], plan=job["built"]["making"]))
+        dst.tcard, dst.cd = str(job["built"].get("tcard") or ""), str(job["built"].get("cd") or "")
     else:
-        cfg = moveside.esxi_spec(facts, name=new_name, datastore=job["dst"]["storage"],
-                                 nets=job["dst"]["nets"], transfer=tr, iso=job["built"]["iso"])
-        job["built"]["vm"] = dst.create(cfg)
-        keys = dst.device_keys()
-        job["built"].update(cd=(keys["cdroms"] or [""])[0], tcard=keys["nics"].get(tr["dst_mac"], ""))
+        job["built"].update(dst.build(facts, name=new_name, datastore=job["dst"]["storage"],
+                                      nets=job["dst"]["nets"], transfer=tr, iso=job["built"]["iso"]))
     update(job, lambda c: None)
     say(job, f"new VM {new_name} created ({job['built']['vm']}), stopped, with blank disks of the same sizes")
     # the source's transfer card, and the engine in the guest
+    if getattr(src, "road", "") == "shell":
+        # through the shell, adding the card and learning which one it is are
+        # two steps: the cards it had before are written down first, so one
+        # that was added and then lost track of can still be found and undone
+        job["built"]["cards_before"] = src.cards()
+        update(job, lambda c: None)
     job["built"]["scard"] = src.add_card(tr["src_mac"], tr["src_net"], tr.get("src_vlan", ""))
+    got = getattr(src, "card_mac", "")
+    if got and got != tr["src_mac"]:
+        # through the host's shell the card comes with an address VMware chose
+        update(job, lambda c: c["transfer"].update(src_mac=got))
+        tr = job["transfer"]
     update(job, lambda c: None)
     say(job, f"transfer card added to the running VM ({tr['src_mac']}, network {tr['src_net']}"
              + (f", VLAN {tr['src_vlan']}" if tr.get("src_vlan") else "") + ")")
@@ -643,6 +926,28 @@ def watch(job: dict, src, dst) -> None:
                     last_dst = time.time()
                     if dst.agent_ok():
                         # only the moved system has a guest agent there: the receiver has none
+                        d = job.get("decision") or {}
+                        if d.get("what") == "back" and d.get("restarted") and src.status() != "stopped":
+                            # The new VM was restarted to be a receiver again, and a
+                            # receiver has no agent: what answers there is the copy on
+                            # its disks, started instead of the receiver. Taken for the
+                            # VM, it would have the VM itself powered off below.
+                            try:
+                                dst.stop()
+                                how, off = "off", "The new VM was powered off"
+                            except Exception as e:              # noqa: BLE001
+                                how, off = "on", f"The new VM could not be powered off ({str(e)[:160]}): power it off now"
+                            # `restarted` stays: a VM that is off has no agent, so this does not come round again by
+                            # itself, and a copy that could not be powered off is tried again, never taken for the VM
+                            if d.get("copy") != how:
+                                update(job, lambda c: c.setdefault("decision", {}).update(copy=how))
+                                phase(job, "stuck", "after Bring it back a system answers on the new VM: that is the "
+                                                    "copy on its disks, started instead of the receiver, not the VM. "
+                                                    f"{off}; the VM itself is still frozen where it was. Bring it "
+                                                    "back again; if the same happens, the new VM does not start from "
+                                                    "its receiver CD: start it from the CD in its boot menu, in the "
+                                                    "hypervisor's own client")
+                            continue
                         if src.status() != "stopped":
                             say(job, "the new VM's guest agent answers: the system runs there; powering the old "
                                      "copy off (it was waiting for that)")
@@ -707,6 +1012,7 @@ def _arrived(job: dict, src, dst) -> None:
     b, name = job["built"], job["src"]["name"]
     stamp = time.strftime("%Y%m%d")
     steps = []
+    shell = getattr(dst, "road", "") == "shell"
     if dst.flavor == "proxmox":
         upd = {b["cd"]: "none,media=cdrom", "boot": b.get("boot") or "order=scsi0"}
         if b.get("onboot"):
@@ -714,9 +1020,14 @@ def _arrived(job: dict, src, dst) -> None:
         steps.append(("the receiver CD taken out, the disk made the start device", lambda: dst.set(upd)))
         steps.append(("the new VM's transfer card removed", lambda: dst.remove_card(b["tcard"])))
         steps.append((f"the new VM named {name}", lambda: dst.set({"name": re.sub(r"[^A-Za-z0-9.-]", "-", name)})))
+    elif shell:
+        # the shell can neither take the CD out of a running VM nor change its
+        # start order: one step, and its sentence says what is true afterwards
+        steps.append(("the receiver CD put out of use", lambda: dst.cd_done(b.get("cd"), b.get("iso"))))
+        steps.append(("the new VM's transfer card removed", lambda: dst.remove_card(b["tcard"]) if b.get("tcard") else None))
+        steps.append((f"the new VM named {name}", lambda: dst.rename(name)))
     else:
-        steps.append(("the receiver CD taken out", lambda: dst._wait(moveside.E.cd_set(dst.es, dst.moid, int(b["cd"]), ""))
-                      if b.get("cd") else None))
+        steps.append(("the receiver CD taken out", lambda: dst.cd_out(b.get("cd"))))
         steps.append(("the new VM's transfer card removed", lambda: dst.remove_card(b["tcard"]) if b.get("tcard") else None))
         steps.append(("the disk made the start device", lambda: dst.boot_disk_first()))
         steps.append((f"the new VM named {name}", lambda: dst.rename(name)))
@@ -731,12 +1042,16 @@ def _arrived(job: dict, src, dst) -> None:
     # a backstop for anything that starts the old VM again (a host restart, an
     # autostart list, a person): its cards come up disconnected
     steps.append(("the old VM's network cards disconnected", lambda: src.disconnect_cards()))
-    steps.append(("the receiver CD deleted", lambda: dst.delete_iso(b["iso"]) if b.get("iso") else None))
+    if not shell:
+        steps.append(("the receiver CD deleted", lambda: dst.delete_iso(b["iso"]) if b.get("iso") else None))
+    elif b.get("making"):
+        steps.append(("the new VM's folder is its own now", lambda: dst.settle(b["making"])))
     left = []
     for what, fn in steps:
         try:
-            fn()
-            say(job, what)
+            # a step may say what it did instead, when it could not do it the usual way
+            did = fn()
+            say(job, did if isinstance(did, str) and did else what)
         except Exception as e:                                # noqa: BLE001
             left.append(f"{what}: {e}")
             say(job, f"not done — {what}: {e}", "error")
@@ -781,22 +1096,52 @@ def _after_failure(job: dict, why: str, thawed: bool = False) -> None:
         phase(job, "failed", f"could not tidy up: {e}")
         return
     b = job.get("built", {})
-    if b.get("vm"):
+    # Whether a VM of this move is still on the target is asked of the target
+    # after the attempt. It was read from the words of a sentence at first: a
+    # VM that was already gone then kept its image for good, and a datastore
+    # that could not be looked into read as "nothing made", after which the
+    # image was "deleted" under a VM that was still registered.
+    gone = True
+    try:
+        if b.get("making") and getattr(dst, "road", "") == "shell":
+            # through the shell the new VM is undone from the record of what was
+            # being made, however far that got: the VM if the host knows it (by
+            # this move's mark and the settings file EnvMap wrote, or by the
+            # number and that file when both are on record), its files, the folder
+            say(job, dst.unmake(b["making"], b.get("vm") if b.get("vmx") else ""))
+        elif b.get("vm"):
+            if dst.exists():
+                dst.destroy()
+                say(job, "the new VM deleted")
+            else:
+                say(job, "the new VM was already gone")
+    except Exception as e:                                    # noqa: BLE001
+        gone = False
+        say(job, f"the new VM could not be taken away: {e}", "error")
+    if b.get("iso") and not gone:
+        # its CD points at this image: without the image the host asks a
+        # question at that VM's next power-on
+        say(job, "the receiver CD's image kept: the new VM was not taken away, and its CD points at this image", "error")
+    elif b.get("iso"):
         try:
-            dst.destroy()
-            say(job, "the new VM deleted")
-        except Exception as e:                                # noqa: BLE001
-            say(job, f"the new VM could not be deleted: {e}", "error")
-    if b.get("iso"):
-        try:
-            dst.delete_iso(b["iso"])
-            say(job, "the receiver CD deleted")
+            say(job, dst.delete_iso(b["iso"]) or "the receiver CD deleted")
         except Exception as e:                                # noqa: BLE001
             say(job, f"the receiver CD could not be deleted: {e}", "error")
-    if b.get("scard"):
+    scards = [b["scard"]] if b.get("scard") else []
+    if not scards and b.get("cards_before") is not None and getattr(src, "road", "") == "shell":
+        # a card was being added when it stopped: any the VM has now and did not have then
         try:
-            src.remove_card(b["scard"])
-            say(job, "the transfer card taken out of the VM")
+            scards = src.strays(b["cards_before"], (job.get("transfer") or {}).get("src_net", ""))
+            if len(scards) > 1:
+                # more than one: which is EnvMap's cannot be told, so none is touched
+                say(job, f"the VM has {len(scards)} cards it did not have before the move, on the transfer network: "
+                         "which one EnvMap added cannot be told, so they are left for a person", "error")
+                scards = []
+        except Exception as e:                                # noqa: BLE001
+            say(job, f"whether a transfer card was left on the VM could not be read: {e}", "error")
+    for key in scards:
+        try:
+            say(job, src.remove_card(key) or "the transfer card taken out of the VM")
         except Exception as e:                                # noqa: BLE001
             say(job, f"the transfer card could not be taken out: {e}", "error")
     phase(job, "undone" if job.get("times", {}).get("copying") else "failed",
@@ -840,10 +1185,15 @@ def bring_back(user, jid: str, confirm: str = "") -> dict:
         update(job, lambda c: c.update(decision={"what": "back", "by": job_by(user), "t": time.time()}))
         say(job, f"bring it back: {job_by(user)} restarted the new VM, whose receiver tells the VM to carry on "
                  "where it was")
+        # Off first, and that written down before it is started again: once
+        # the new VM has been off, nothing that answers there can be the moved
+        # system (watch), whatever then becomes of the start. Written down
+        # after the restart, a start that failed half-way left a copy running
+        # unmarked, and the watcher powered the VM itself off for it.
         if dst.status() == "running":
-            dst.reset()
-        else:
-            dst.start()
+            dst.stop()
+        update(job, lambda c: c.setdefault("decision", {}).update(restarted=time.time()))
+        dst.start()
         phase(job, "frozen")
     _resume(job)
     return job
@@ -871,6 +1221,46 @@ def keep_new(user, jid: str, confirm: str = "") -> dict:
         phase(job, "finishing")
     _resume(job)
     return job
+
+
+# ── the SSH keys written down for moves on free-licence hosts ──
+def _pin_conn(tid: str):
+    bits = (tid or "").split(":")
+    return virtops.find_conn(bits[2]) if len(bits) >= 3 and bits[0] == "move" else None
+
+
+def ssh_pins(user) -> list[dict]:
+    """The host and guest keys EnvMap wrote down at a first contact, for the
+    connections this person administers: what a later contact is held to."""
+    from . import pam
+    out = []
+    for tid in sorted(pam.host_pins()):
+        conn = _pin_conn(tid)
+        if not conn or virtops.may_why(user, "admin", conn.get("pid") or ""):
+            continue
+        pin = pam.host_pin(tid) or {}
+        guest = tid.split(":")[1] == "guest"
+        out.append({"id": tid, "what": ("a guest on " if guest else "") + conn.get("name", ""),
+                    "host": pin.get("host", ""), "port": pin.get("port", 22),
+                    "fingerprints": pin.get("fingerprints") or [], "pinned": pin.get("pinned", ""),
+                    "by": pin.get("pinned_by", "")})
+    return out
+
+
+def forget_ssh_pin(user, tid: str) -> dict:
+    """Let the next contact be a first one again (a host that was reinstalled)."""
+    from . import pam
+    conn = _pin_conn(tid)
+    if not conn:
+        raise MoveError("that key is not known")
+    why = virtops.may_why(user, "admin", conn.get("pid") or "")
+    if why:
+        raise MoveError(why)
+    old = pam.forget_pin(tid)
+    if not old:
+        raise MoveError("that key is not known")
+    return {"what": conn.get("name", ""), "host": old.get("host", ""),
+            "fingerprints": old.get("fingerprints") or []}
 
 
 def job_by(user) -> str:
@@ -906,11 +1296,21 @@ def resume_all() -> None:
     for job in all_jobs():
         if job.get("state") in DONE:
             continue
+        if job.get("mode") == "off":
+            from . import coldmove
+            if job.get("state") in ("starting", "preparing"):
+                say(job, "EnvMap restarted while the move was being prepared", "error")
+                coldmove.after_failure(job, "the move was not started")
+            else:
+                say(job, "EnvMap restarted: the helpers went on meanwhile, and are listened to again")
+                coldmove.resume(job)
+            continue
         if job.get("state") in ("starting", "preparing"):
             say(job, "EnvMap restarted while the move was being prepared", "error")
             _after_failure(job, "the move was not started")
             continue
-        if job["src"]["flavor"] == "esxi":
+        if job["src"]["flavor"] == "esxi" and not (
+                job["src"].get("signin") == "saved" and saved_signin(virtops.find_conn(job["src"]["conn"]))):
             say(job, "EnvMap restarted: the guest's sign-in is gone, so the move is followed through the VMs alone", "error")
         _resume(job)
 

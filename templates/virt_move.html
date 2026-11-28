@@ -4,14 +4,21 @@
   <a href="/virt/vm?c={{ conn.id|urlencode }}&vm={{ vmid|urlencode }}&node={{ node|urlencode }}&kind=qemu">{{ vm.name or vmid }}</a> <span>›</span>
   <b>Move</b>{% endblock %}
 {% block content %}
+{%- set off = vm.power in ('poweredOff', 'stopped') -%}
 <div data-move data-c="{{ conn.id }}" data-vm="{{ vmid }}" data-node="{{ node }}" data-flavor="{{ flavor }}"
-     data-name="{{ vm.name or '' }}" data-targets='{{ targets|tojson }}'>
+     data-name="{{ vm.name or '' }}" data-off="{{ '1' if off else '0' }}" data-targets='{{ targets|tojson }}'>
 <div class="page-head"><div>
-  <h1 style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">Move {{ vm.name or vmid }} while it runs
+  <h1 style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">Move {{ vm.name or vmid }}{{ ', powered off' if off else ' while it runs' }}
     <span class="badge">preview</span></h1>
+  {% if off %}
+  <p class="sub">To another hypervisor, or another host of this one. The VM stays powered off: EnvMap copies its
+    disks with two small helper machines of its own, one on each host, and reads every byte back from the new
+    storage. Neither the VM nor its copy is started; start it on the new host when you want it.</p>
+  {% else %}
   <p class="sub">To another hypervisor, or another host of this one. The VM keeps running while its disks and memory
     are copied; at the end it pauses for a moment while the last changes cross, and carries on on the new VM with
-    the same addresses, connections and processes.</p></div>
+    the same addresses, connections and processes.</p>
+  {% endif %}</div>
   <div><a class="btn btn-ghost" href="/virt/moves" style="white-space:nowrap;">All moves</a></div>
 </div>
 {% if error %}<div class="flash err">⚠ {{ error }}</div>
@@ -21,7 +28,8 @@
   “Allow management from EnvMap” ticked and your roles must include Administer for it.</div>
 {% else %}
 {%- set on = vm.power in ('poweredOn', 'running') -%}
-{% if not on %}<div class="flash warn">⚠ {{ vm.name }} is not running. EnvMap Move moves running VMs.</div>{% endif %}
+{% if not on and not off %}<div class="flash warn">⚠ {{ vm.name }} is neither running nor powered off. Resume it, or
+  power it off, and it can be moved.</div>{% endif %}
 
 <div class="card"><div class="card-h">What moves</div><div class="card-b mv-facts">
   <div><span>Now on</span><b>{{ conn.name }}{% if node %} · {{ node }}{% endif %}</b></div>
@@ -41,7 +49,7 @@
     </select></div>
   <div class="dfield" data-pve-only><label for="mv_node">Node</label><select id="mv_node" name="dst_node"></select></div>
   <div class="dfield"><label for="mv_store" data-store-label>Disks go on</label><select id="mv_store" name="storage" required></select></div>
-  <div class="dfield" data-pve-only><label for="mv_iso">Receiver CD on</label><select id="mv_iso" name="iso_storage"></select></div>
+  <div class="dfield" data-pve-only><label for="mv_iso">{{ "Helper's CD on" if off else 'Receiver CD on' }}</label><select id="mv_iso" name="iso_storage"></select></div>
 </div></div>
 
 <div class="card"><div class="card-h">Network cards</div><div class="card-b">
@@ -59,18 +67,33 @@
   </div>
 </div></div>
 
-{% if flavor == 'esxi' %}
+{% if flavor == 'esxi' and not off %}
 <div class="card"><div class="card-h">The guest's sign-in</div><div class="card-b vnewgrid">
+  {% if src_free %}
+  <p class="hint" style="grid-column:1/-1;margin:0;">This host runs the free ESXi licence, on which VMware's API only
+    reads. EnvMap reaches the guest over SSH with the guest's own account: root, or a user who may use sudo without a
+    password. What you type here is used for this move only.</p>
+  {% else %}
   <p class="hint" style="grid-column:1/-1;margin:0;">ESXi reaches into a guest through VMware Tools with the guest's own
-    account: root, or a user who may use sudo without a password. It is used for this move only and is never stored.</p>
-  <div class="dfield"><label for="mv_gu">User</label><input id="mv_gu" name="guest_user" value="root" autocomplete="off" spellcheck="false"></div>
-  <div class="dfield"><label for="mv_gp">Password</label><input id="mv_gp" name="guest_password" type="password" autocomplete="new-password" data-nosave></div>
+    account: root, or a user who may use sudo without a password. What you type here is used for this move only.</p>
+  {% endif %}
+  {% if saved_signin %}
+  <p class="hint" style="grid-column:1/-1;margin:0;color:var(--ok-ink);">A sign-in is saved for this host's VMs
+    (Settings → Hypervisors) and is used when the password below is left empty. Type one only if this VM's differs.</p>
+  {% endif %}
+  <div class="dfield"><label for="mv_gu">User</label><input id="mv_gu" name="guest_user" value="{{ conn.guest_user if saved_signin else 'root' }}" autocomplete="off" spellcheck="false"></div>
+  <div class="dfield"><label for="mv_gp">Password</label><input id="mv_gp" name="guest_password" type="password" autocomplete="new-password" data-nosave
+    placeholder="{{ 'the saved one' if saved_signin else '' }}"></div>
+  {% if src_free %}
+  <div class="dfield"><label for="mv_gh">Guest address for SSH</label><input id="mv_gh" name="guest_host" autocomplete="off" spellcheck="false"
+    placeholder="{{ vm.ip or 'as VMware Tools report it' }}"><span class="hint">Leave empty to use the address VMware Tools report. Give another of the guest's own addresses, or add :port, when SSH listens elsewhere.</span></div>
+  {% endif %}
 </div></div>
 {% endif %}
 
-<details class="card mv-adv"><summary class="card-h">Transfer network <span class="hint">· how the two VMs reach each other during the move</span></summary>
+<details class="card mv-adv"><summary class="card-h">Transfer network <span class="hint">· how the two {{ 'helpers' if off else 'VMs' }} reach each other during the move</span></summary>
   <div class="card-b vnewgrid">
-  <p class="hint" style="grid-column:1/-1;margin:0;">Each side gets a transfer card for the move only. By default both go
+  <p class="hint" style="grid-column:1/-1;margin:0;">{{ 'Each helper has one card, for the move only.' if off else 'Each side gets a transfer card for the move only.' }} By default both go
     on the network of the first card and use link-local addresses EnvMap picks (169.254.x.x): nothing on the network is
     asked for an address. When the two hypervisors do not share that network, give routed addresses.</p>
   <label class="chk" style="grid-column:1/-1;"><input type="radio" name="transfer_mode" value="auto" checked> same network, link-local addresses (automatic)</label>

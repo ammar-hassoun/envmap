@@ -128,10 +128,18 @@ class Pve:
     def status(self) -> str:
         return (self.api("GET", f"{self.base}/status/current") or {}).get("status", "")
 
+    def exists(self) -> bool:
+        """Whether the node still has this VM, from the node's own list. A
+        node that does not answer raises: that is not a no."""
+        if self.vmid in (None, ""):
+            return False
+        return any(str(v.get("vmid")) == str(self.vmid) for v in self.api("GET", f"/nodes/{self.node}/qemu") or [])
+
     def facts(self) -> dict:
         cfg = self.config()
         st = self.api("GET", f"{self.base}/status/current") or {}
         disks, cds, nics, why = [], [], [], []
+        off, off_notes = [], []                 # the same for a VM that is powered off
         for k, v in sorted(cfg.items()):
             if DISK_KEY.match(k):
                 o = P._opts(v)
@@ -140,6 +148,7 @@ class Pve:
                     continue
                 gib = P._size_gib(o.get("size", ""))
                 disks.append({"key": k, "bytes": int(round(gib * 1024 ** 3)), "gib": gib,
+                              "volume": o.get("_", ""),
                               "opts": {x: o[x] for x in DISK_OPTS if x in o}})
             elif NET_KEY.match(k):
                 o = P._opts(v)
@@ -149,12 +158,16 @@ class Pve:
                              "opts": {x: o[x] for x in NIC_OPTS if x in o}})
             elif re.match(r"^(hostpci|usb|parallel)\d+$", k):
                 why.append(f"{k} ({v[:60]}) is a device of this host that cannot move with it")
+                off_notes.append(f"{k} ({v[:60]}) is a device of this host: the new VM is built without it")
         if cfg.get("template"):
             why.append("this is a template, not a running VM")
+            off.append("this is a template, not a VM")
         if cfg.get("lock"):
             why.append(f"Proxmox has the VM locked ({cfg['lock']}): wait for that to finish")
+            off.append(why[-1])
         if "tpmstate0" in cfg:
             why.append("its TPM holds keys that cannot be copied (a disk sealed to it would not open on the new VM)")
+            off.append(why[-1])
         hot = (cfg.get("hotplug") or "network,disk,usb").split(",")
         if "network" not in hot and cfg.get("hotplug") != "1":
             why.append("network hot-plug is off for this VM (Options → Hotplug), so a transfer card cannot be added while it runs")
@@ -164,7 +177,8 @@ class Pve:
                 "cpus": int(cfg.get("vcpus") or sockets * cores), "sockets": sockets, "cores": cores,
                 "memory_mb": int(cfg.get("memory") or 512),
                 "firmware": "efi" if cfg.get("bios") == "ovmf" else "bios",
-                "disks": disks, "cdroms": cds, "nics": nics, "blockers": why, "config": cfg}
+                "disks": disks, "cdroms": cds, "nics": nics, "blockers": why,
+                "blockers_off": off, "notes_off": off_notes, "config": cfg}
 
     # into the guest: the QEMU guest agent
     def agent_ok(self) -> bool:
@@ -300,9 +314,12 @@ class Pve:
 
 
 def pve_spec(src: dict, dst_flavor_from: str, *, name: str, storage: str, nets: list[dict],
-             transfer: dict, iso: str) -> tuple[dict, dict]:
+             transfer: dict | None, iso: str | None) -> tuple[dict, dict]:
     """The new VM's Proxmox configuration, and where its CD and transfer card
-    went ({"cd": key, "transfer": key, "boot": the order to restore})."""
+    went ({"cd": key, "transfer": key, "boot": the order to restore}).
+
+    With `iso` None the VM gets no receiver CD and no transfer card: the new
+    VM of a powered-off move, which EnvMap never starts (coldside)."""
     spec: dict = {"name": name}
     disks = src["disks"]
     if dst_flavor_from == "proxmox":
@@ -314,8 +331,10 @@ def pve_spec(src: dict, dst_flavor_from: str, *, name: str, storage: str, nets: 
             spec["description"] = cfg["description"]
         if cfg.get("bios") == "ovmf":
             ef = P._opts(cfg.get("efidisk0", ""))
-            # Secure Boot off: the receiver CD's boot loader is not signed for it
-            spec["efidisk0"] = f"{storage}:1,efitype={ef.get('efitype', '4m')},pre-enrolled-keys=0"
+            # Secure Boot off: the receiver CD's boot loader is not signed for it.
+            # A VM that never starts from that CD keeps what the source had.
+            keys = "0" if iso is not None else ("1" if str(ef.get("pre-enrolled-keys", "0")) == "1" else "0")
+            spec["efidisk0"] = f"{storage}:1,efitype={ef.get('efitype', '4m')},pre-enrolled-keys={keys}"
         for d in disks:
             spec[d["key"]] = _pve_disk(storage, d)
         for c in src["cdroms"]:
@@ -341,6 +360,11 @@ def pve_spec(src: dict, dst_flavor_from: str, *, name: str, storage: str, nets: 
         for i, (n, m) in enumerate(zip(src["nics"], nets)):
             spec[f"net{i}"] = _pve_nic("virtio", n["mac"], m, {})
         boot_after = "order=" + ";".join(f"scsi{i}" for i in range(len(disks)))
+    if iso is None:
+        spec["boot"] = boot_after
+        spec["onboot"] = 0                   # set as the source had it once the copy is confirmed
+        return spec, {"cd": "", "transfer": "", "boot": boot_after,
+                      "onboot": (src.get("config") or {}).get("onboot", 0)}
     if dst_flavor_from != "proxmox" and cd in spec:
         cd = "ide0"
     spec[cd] = f"{iso},media=cdrom"
@@ -377,7 +401,11 @@ def _pve_nic(model: str, mac: str, m: dict, opts: dict | None) -> str:
 
 # ── ESXi ───────────────────────────────────────────────────────
 class Esxi:
+    """An ESXi host with a licence whose API takes changes. A host on the free
+    licence, where the API only reads, is esxshell.EsxiShell: the same
+    interface, through the host's shell and SSH to the guest."""
     flavor = "esxi"
+    road = "api"
 
     def __init__(self, conn: dict, moid: str | None = None, guest_user: str = "",
                  guest_password: str = ""):
@@ -398,6 +426,19 @@ class Esxi:
         return {"poweredOn": "running", "poweredOff": "stopped",
                 "suspended": "suspended"}.get(p.get("runtime.powerState", ""), "")
 
+    def exists(self) -> bool:
+        """Whether the host still has this VM. A host that cannot be read
+        raises: that is not a no."""
+        if not self.moid:
+            return False
+        try:
+            self.es.props("VirtualMachine", self.moid, ["runtime.powerState"])
+        except VirtError as e:
+            if getattr(e, "fault", "") == "ManagedObjectNotFound":
+                return False
+            raise
+        return True
+
     def raw_devices(self) -> list:
         return list(self.es.raw("VirtualMachine", self.moid, ["config.hardware.device"])
                     .get("config.hardware.device") or [])
@@ -407,13 +448,16 @@ class Esxi:
         raw = {E.num(_text(el, "key")): E.obj(el) for el in self.raw_devices()}
         ctrls = {c["key"]: c for c in d["controllers"]}
         disks, nics, why = [], [], []
+        off, off_notes = [], []                 # the same for a VM that is powered off
         for x in d["disks"]:
             c = ctrls.get(x["controller"]) or {}
             disks.append({"key": x["key"], "bytes": int(x.get("kb") or 0) * 1024,
                           "gib": x["gib"], "ctrl": c.get("type", ""), "bus": c.get("bus"),
-                          "unit": x.get("unit"), "ctrl_key": x["controller"]})
+                          "unit": x.get("unit"), "ctrl_key": x["controller"], "file": x.get("file") or ""})
             if (x.get("mode") or "").startswith("independent") or "rdm" in (x.get("file") or "").lower():
                 why.append(f"{x['label']} is an independent or raw disk")
+            if "rdm" in (x.get("file") or "").lower():
+                off.append(f"{x['label']} is a raw device of this host, not a disk file that can be copied")
         for n in d["nics"]:
             r = raw.get(n["key"]) or {}
             nics.append({"key": n["key"], "mac": (n.get("mac") or "").lower(),
@@ -423,10 +467,14 @@ class Esxi:
             t = r.get("_type", "") if isinstance(r, dict) else ""
             if t in ("VirtualPCIPassthrough", "VirtualUSB", "VirtualParallelPort"):
                 why.append(f"{t.removeprefix('Virtual')} cannot move with the VM")
+                off_notes.append(f"{t.removeprefix('Virtual')} is a device of this host: the new VM is built without it")
         if d.get("template"):
             why.append("this is a template, not a running VM")
+            off.append("this is a template, not a VM")
         if d.get("snapshots"):
             why.append("it has snapshots: remove them first (their disks would not move)")
+            off_notes.append("it has snapshots: the new VM gets the disks as they are now; the snapshots stay "
+                             "with the old copy")
         cpus = d.get("cpus") or 1
         return {"flavor": "esxi", "name": d.get("name", ""),
                 "power": {"poweredOn": "running", "poweredOff": "stopped"}.get(d.get("power"), d.get("power")),
@@ -436,6 +484,7 @@ class Esxi:
                 "guest_id": d.get("guest_id", ""), "hw_version": d.get("hw_version", ""),
                 "datastore": re.sub(r"^\[([^\]]+)\].*$", r"\1", d.get("vmx", "")),
                 "disks": disks, "cdroms": d["cdroms"], "nics": nics, "blockers": why,
+                "blockers_off": off, "notes_off": off_notes,
                 "controllers": [{"key": c["key"], "type": c["type"], "bus": c.get("bus"),
                                  "slot": E.num(E.dig(raw.get(c["key"]) or {}, "slotInfo", "pciSlotNumber")),
                                  "shared": E.dig(raw.get(c["key"]) or {}, "sharedBus") or "noSharing"}
@@ -660,12 +709,35 @@ class Esxi:
         return {"cdroms": [c["key"] for c in d["cdroms"]],
                 "nics": {n["mac"].lower(): n["key"] for n in d["nics"]}}
 
+    def build(self, src: dict, *, name: str, datastore: str, nets: list[dict], transfer: dict,
+              iso: str) -> dict:
+        """The new VM, in the source's image: {"vm", "cd", "tcard"}."""
+        self.create(esxi_spec(src, name=name, datastore=datastore, nets=nets, transfer=transfer, iso=iso))
+        try:
+            keys = self.device_keys()
+        except Exception:
+            try:
+                self.destroy()
+            except VirtError:
+                pass
+            raise
+        return {"vm": self.moid, "cd": (keys["cdroms"] or [""])[0],
+                "tcard": keys["nics"].get(mac_ok(transfer["dst_mac"]), "")}
 
-def esxi_spec(src: dict, *, name: str, datastore: str, nets: list[dict], transfer: dict,
-              iso: str) -> str:
+    def cd_out(self, key) -> None:
+        if str(key or "").strip():
+            self._wait(E.cd_set(self.es, self.moid, int(key), ""))
+
+
+def esxi_spec(src: dict, *, name: str, datastore: str, nets: list[dict], transfer: dict | None,
+              iso: str | None) -> str:
     """The new VM's ESXi configuration (ConfigSpec XML). From an ESXi source:
     the same controllers in the same PCI slots, the same hardware version.
-    From Proxmox: one paravirtual SCSI controller and VMXNET3 cards."""
+    From Proxmox: one paravirtual SCSI controller and VMXNET3 cards.
+
+    With `iso` None the VM gets an empty CD drive, no transfer card, and
+    starts from its disk: the new VM of a powered-off move, which EnvMap
+    never starts (coldside)."""
     ds = E.check_name(datastore, "datastore")
     cps = max(1, int(src.get("cores") or src["cpus"]))
     cpus = int(src["cpus"])
@@ -713,9 +785,13 @@ def esxi_spec(src: dict, *, name: str, datastore: str, nets: list[dict], transfe
         changes.append(E._change("add", f'<device xsi:type="VirtualAHCIController"><key>{cd_ctrl}</key>'
                                         "<busNumber>3</busNumber></device>"))
     key -= 1
-    changes.append(E._change("add", f'<device xsi:type="VirtualCdrom"><key>{key}</key>'
-                                    f'<backing xsi:type="VirtualCdromIsoBackingInfo"><fileName>{_x(iso)}</fileName></backing>'
-                                    "<connectable><startConnected>true</startConnected><allowGuestControl>true</allowGuestControl>"
+    cd_backing = (f'<backing xsi:type="VirtualCdromIsoBackingInfo"><fileName>{_x(iso)}</fileName></backing>'
+                  if iso is not None else
+                  '<backing xsi:type="VirtualCdromRemotePassthroughBackingInfo"><deviceName></deviceName>'
+                  "<useAutoDetect>false</useAutoDetect><exclusive>false</exclusive></backing>")
+    changes.append(E._change("add", f'<device xsi:type="VirtualCdrom"><key>{key}</key>' + cd_backing
+                                    + f"<connectable><startConnected>{'true' if iso is not None else 'false'}</startConnected>"
+                                    "<allowGuestControl>true</allowGuestControl>"
                                     "<connected>false</connected></connectable>"
                                     f"<controllerKey>{cd_ctrl}</controllerKey><unitNumber>29</unitNumber></device>"))
     extra = []
@@ -733,13 +809,14 @@ def esxi_spec(src: dict, *, name: str, datastore: str, nets: list[dict], transfe
             # an address from another hypervisor: ESXi checks manual addresses
             # against VMware's range unless told not to, card by card
             extra.append(("ethernet%d.checkMACAddress" % i, "FALSE"))
-    key -= 1
-    changes.append(E._change("add", f'<device xsi:type="VirtualVmxnet3"><key>{key}</key>'
-                                    + E._net_backing(E.check_name(transfer["dst_net"], "network"))
-                                    + "<connectable><startConnected>true</startConnected><allowGuestControl>true"
-                                    "</allowGuestControl><connected>false</connected></connectable>"
-                                    f"<addressType>manual</addressType><macAddress>{mac_ok(transfer['dst_mac'])}"
-                                    "</macAddress></device>"))
+    if transfer is not None:
+        key -= 1
+        changes.append(E._change("add", f'<device xsi:type="VirtualVmxnet3"><key>{key}</key>'
+                                        + E._net_backing(E.check_name(transfer["dst_net"], "network"))
+                                        + "<connectable><startConnected>true</startConnected><allowGuestControl>true"
+                                        "</allowGuestControl><connected>false</connected></connectable>"
+                                        f"<addressType>manual</addressType><macAddress>{mac_ok(transfer['dst_mac'])}"
+                                        "</macAddress></device>"))
     ver = src.get("hw_version") if src["flavor"] == "esxi" and re.match(r"^vmx-\d+$", src.get("hw_version") or "") else ""
     opts = "".join(f"<extraConfig><key>{_x(k)}</key><value xsi:type=\"xsd:string\">{_x(v)}</value></extraConfig>"
                    for k, v in extra)
@@ -751,7 +828,8 @@ def esxi_spec(src: dict, *, name: str, datastore: str, nets: list[dict], transfe
             + f"<memoryMB>{int(src['memory_mb'])}</memoryMB>"
             + "".join(changes) + opts
             + "<bootOptions><efiSecureBootEnabled>false</efiSecureBootEnabled>"
-            + "<bootOrder xsi:type=\"VirtualMachineBootOptionsBootableCdromDevice\"/></bootOptions>"
+            + ("<bootOrder xsi:type=\"VirtualMachineBootOptionsBootableCdromDevice\"/>" if iso is not None else "")
+            + "</bootOptions>"
             + f"<firmware>{'efi' if src['firmware'] == 'efi' else 'bios'}</firmware>")
 
 

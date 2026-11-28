@@ -23,7 +23,8 @@
       {{ hosts }} host{{ 's' if hosts != 1 }} · {{ guests }} guest{{ 's' if guests != 1 }} ·
       {{ running }} running{% if stopped %} ·
       <span style="color:var(--warn-ink);">{{ stopped }} not running</span>{% endif %}</p></div>
-  <div style="display:flex;gap:10px;flex-wrap:wrap;">
+  <div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end;">
+    <a class="btn" href="/virt/migrate" title="move a running VM from one host to another">⇄ VM migration</a>
     <a class="btn btn-ghost" href="/virt/moves" title="running VMs moved with EnvMap Move">⇢ Moves</a>
     {%- if view == 'group' %}
     <button type="button" class="btn btn-ghost" data-vcards="open">Expand all</button>

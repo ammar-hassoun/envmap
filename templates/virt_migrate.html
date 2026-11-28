@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block crumbs %}<a href="/virt">Hypervisors</a> <span>›</span> <b>VM migration</b>{% endblock %}
+{% block content %}
+{#- Two hosts side by side and an arrow between them (asked for on 27 November
+    2026). static/vmmigrate.js draws the lists and the moves; every name on
+    this page comes from a hypervisor, so the script puts text on the page
+    with textContent only. The arrows are disabled with their reason, never
+    hidden (house rule). -#}
+<div class="page-head" style="flex-wrap:wrap;row-gap:12px;margin-bottom:18px;">
+  <div style="flex:1 1 340px;min-width:0;"><h1 style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">VM migration
+      <span class="badge">preview</span></h1>
+    <p class="sub">Choose a host on each side, select a VM, and click the arrow. A running VM keeps running while it
+    moves: at the end it pauses for a moment and carries on on the other host, with the same addresses, connections
+    and processes. A VM that is powered off is moved by its disks, and is not started.</p></div>
+  <div style="display:flex;gap:10px;flex:none;">
+    <a class="btn btn-ghost" href="/virt/moves" style="white-space:nowrap;">All moves</a>
+    <a class="btn btn-ghost" href="/settings/conns/virt" style="white-space:nowrap;">⚙ Manage</a>
+  </div>
+</div>
+{% if engine_why %}<div class="flash err">⚠ {{ engine_why }}</div>{% endif %}
+{% set usable = hosts|rejectattr('off')|list %}
+{% if not hosts %}
+<div class="empty">
+  <div class="big">{{ glyph("layers", 40) }}</div>
+  <h2>No hypervisor connected</h2>
+  <p>Connect two standalone ESXi hosts or Proxmox nodes, and a running VM can be moved between them from here.</p>
+  <a class="btn" href="/settings/conns/virt">＋ Connect a hypervisor</a>
+</div>
+{% else %}
+{% if usable|length < 2 %}
+<div class="flash warn">⚠ A move needs two hosts: {{ 'one host is' if usable|length == 1 else 'no host is' }} connected
+  that a VM can be moved between. <a href="/settings/conns/virt">Connect another</a>.</div>
+{% endif %}
+
+<div class="mg" data-migrate data-hosts='{{ hosts|tojson }}' data-a="{{ a }}" data-b="{{ b }}"
+     data-ready="{{ '' if engine_why else '1' }}" data-engine-why="{{ engine_why }}">
+  {% for side, label in (('a', 'left'), ('b', 'right')) %}
+  {% if side == 'b' %}
+  <div class="mg-mid">
+    <button type="button" class="mg-arrow" data-go="ab" disabled
+            aria-label="Move the selected VM to the host on the right">
+      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2.2"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12h15M13 6l6 6-6 6"/></svg>
+    </button>
+    <button type="button" class="mg-arrow" data-go="ba" disabled
+            aria-label="Move the selected VM to the host on the left">
+      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2.2"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12H5M11 6l-6 6 6 6"/></svg>
+    </button>
+    <p class="mg-say" data-say role="status" aria-live="polite"></p>
+    <button type="button" class="mg-opt" data-options disabled>Choose storage and networks first</button>
+  </div>
+  {% endif %}
+  <section class="card mg-box" data-side="{{ side }}" aria-label="The host on the {{ label }}">
+    <div class="mg-head">
+      <label class="mg-lbl" for="mg_{{ side }}">Host</label>
+      <select id="mg_{{ side }}" data-host aria-label="The host on the {{ label }}">
+        <option value="">— choose a host —</option>
+        {% for h in hosts %}
+        <option value="{{ h.key }}"{% if h.off %} disabled{% endif %}>{{ h.name }} · {{ {'esxi': 'ESXi', 'proxmox': 'Proxmox', 'vcenter': 'vCenter'}.get(h.flavor, 'hypervisor') }}{{ ' · production' if h.production }}{{ (' · ' ~ h.off) if h.off }}</option>
+        {% endfor %}
+      </select>
+      <button type="button" class="btn btn-ghost tbtn" data-reload disabled title="read this host again"
+              aria-label="Read the host on the {{ label }} again">↻</button>
+    </div>
+    <p class="mg-sub" data-sub></p>
+    <div class="mg-find"><input type="search" data-find placeholder="Filter by name or address" autocomplete="off"
+         spellcheck="false" aria-label="Filter the VMs on the {{ label }}" disabled></div>
+    <ul class="mg-list" data-list role="listbox" aria-label="VMs of the host on the {{ label }}"></ul>
+  </section>
+  {% endfor %}
+</div>
+
+<section class="card mg-panel" data-panel hidden aria-label="Before the move starts">
+  <div class="card-h"><span data-panel-title>Before it moves</span>
+    <span style="flex:1"></span>
+    <button type="button" class="btn btn-ghost tbtn" data-panel-close>Cancel</button></div>
+  <div class="card-b">
+    <ul class="mv-list" data-panel-problems hidden></ul>
+    <form data-panel-form autocomplete="off" class="mg-form"></form>
+    <ul class="mv-list mv-notes" data-panel-notes hidden></ul>
+    <div class="mg-panel-go">
+      <button type="button" class="go" data-panel-go>Move it now</button>
+      <span class="hint" data-panel-say></span>
+      <span style="flex:1"></span>
+      <a class="hint" data-panel-full href="#">Transfer network and other options: the full form</a>
+    </div>
+  </div>
+</section>
+
+<section class="mg-tracks" data-tracks aria-label="Moves under way" aria-live="polite"></section>
+
+<div class="card"><div class="card-b">
+  <div class="sec-note" style="margin:0;">A running VM moves without stopping. A VM that is powered off moves
+    too: EnvMap copies its disks with two small helper machines of its own, reads every byte back, and never starts
+    the VM. A VM on Proxmox moves with no sign-in, and so does any VM that is powered off. A running VM on a
+    standalone ESXi host is started from inside, so EnvMap signs in to it: save one sign-in for a host's VMs and
+    it is not asked again (it is stored encrypted with the connection, see <a href="/settings/conns/virt">Settings →
+    Hypervisors</a>). A network is chosen for you only when it is certain: the network of the same name, the
+    only one there is, or the one you chose last time for these two hosts. Moving needs “Hypervisors:
+    administer” on both hosts, and each must allow management from EnvMap.</div>
+</div></div>
+{% endif %}
+<script src="/static/vmmigrate.js?v={{ portal_version() }}" nonce="{{ csp_nonce() }}"></script>
+{% endblock %}

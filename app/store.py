@@ -377,6 +377,20 @@ def _set_setting(key: str, value: dict) -> None:
     _bump()
 
 
+# ── EnvMap Move: the network a card goes on at the other host, chosen once
+def move_netmap() -> dict:
+    return dict(load().get("move_netmap") or {})
+
+
+def remember_move_net(key: str, network: str, vlan: str = "") -> None:
+    """Keep the choice for this pair of hosts and this source network, so the
+    migration page asks once. The newest 500 are kept."""
+    m = move_netmap()
+    m.pop(key, None)
+    m[key] = {"network": network, "vlan": vlan}
+    _set_setting("move_netmap", dict(list(m.items())[-500:]))
+
+
 # ── links set by hand, for app/chain.py ───────────────────────
 # {"hosts": {"<virt conn>|<host>": "<bmc id>" or ""},
 #  "vms":   {"<virt conn>|<vm id>": "<cluster id>|<node>" or ""}}
@@ -1124,7 +1138,7 @@ CONN_KINDS = ("ci", "sec", "log", "mon", "stor", "cloud",
 # Every other field is the user's to clear. Keep this in step with the
 # write-only inputs in the templates; test_writeonly.py fails if it drifts.
 WRITE_ONLY = ("token", "secret", "client_secret", "password",
-              "private_key", "api_key")
+              "private_key", "api_key", "guest_password")
 
 
 def add_conn(kind: str, pid: str, conn: dict) -> str:
@@ -1168,6 +1182,14 @@ def update_conn(kind: str, pid: str, cid: str, **fields) -> None:
     _update("conns", cid,
             {k: v for k, v in fields.items()
              if v != "" or k not in WRITE_ONLY})
+
+
+def clear_conn_fields(kind: str, cid: str, *keys: str) -> None:
+    """Empty fields of a connection outright, the write-only ones too. This is
+    how a stored secret is taken away again: `update_conn` keeps a secret that
+    is submitted blank, because an untouched form submits it blank."""
+    if db.one("SELECT id FROM conns WHERE id = ? AND kind = ?", (cid, kind)) is not None:
+        _update("conns", cid, {k: "" for k in keys})
 
 
 def delete_conn(kind: str, pid: str, cid: str) -> None:

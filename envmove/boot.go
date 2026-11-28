@@ -125,6 +125,12 @@ type bootConfig struct {
 	// this machine: it tells the system to carry on where it was.
 	Verdict string `json:"verdict"`
 	VToken  string `json:"vtoken"`
+	// A helper of a powered-off move (cold_linux.go): its role ("give" on the
+	// old host, "take" on the new one), where the taker waits (IP:PORT, for
+	// the giver), and the place of each disk.
+	Role  string     `json:"role"`
+	To    string     `json:"to"`
+	Disks []coldSlot `json:"disks"`
 }
 
 // bringBack watches for the moving system waiting for a verdict, and when it
@@ -211,6 +217,9 @@ func bootInit() {
 	if cfg == nil {
 		say("no settings CD (envmove.jsn); nothing to do")
 		halt()
+	}
+	if cfg.Role != "" {
+		coldInit(cfg) // a helper of a powered-off move: it never returns
 	}
 	id, err := netFromConfig(cfg.IP, cfg.GW, cfg.MAC)
 	if err != nil {

@@ -73,7 +73,7 @@ Also in the box:
 - **Pipelines and workflows**: Jenkins, GitHub Actions, GitLab CI, Bitbucket Pipelines, Temporal and Airflow.
 - **Monitoring and logs**: firing alerts, Grafana dashboards drawn in place, Elasticsearch, OpenSearch and Loki.
 - **Certificates**: request, renew and download, with the private key kept sealed.
-- **Infrastructure**: Proxmox, vCenter and ESXi, server hardware over Redfish, cloud accounts, storage and IT spend. A preview moves a running Linux VM between Proxmox and ESXi without stopping it.
+- **Infrastructure**: Proxmox, vCenter and ESXi, server hardware over Redfish, cloud accounts, storage and IT spend. A preview moves a VM between Proxmox and ESXi hosts: a running Linux VM without stopping it, a powered-off VM without starting it.
 - **Ansible and Terraform**: playbooks, check runs, schedules, stacks and new virtual machines.
 - **AI clients over MCP**: connect Claude Code, Cursor or VS Code with a token that carries only its owner's permissions.
 - **Roles, MFA and audit**: roles built from permission areas, an authenticator for everyone, and a hash-chained log of every change.

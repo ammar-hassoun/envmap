@@ -387,6 +387,12 @@ def _fault_error(kind: str, msg: str, priv: str = "") -> VirtError:
         err = _NoPermission("the account has no permission to read this host "
                             "— give it the Read-only role (Host Client: Host "
                             "→ Actions → Permissions)")
+    elif kind.startswith("RestrictedVersion") or "prohibits execution" in (msg or ""):
+        # the free ESXi licence ("vSphere Hypervisor"): the API reads and
+        # refuses everything else. VMware's own sentence does not say that.
+        err = VirtError("this host's ESXi licence makes VMware's API read-only: EnvMap can show the host and "
+                        "its VMs but cannot change anything on it through the API (the free vSphere Hypervisor "
+                        "licence; a paid licence lifts it)")
     else:
         err = VirtError(f"vSphere refused the request: {(msg or kind)[:240]}")
     err.fault = kind.removesuffix("Fault")

@@ -159,7 +159,7 @@ class FakePve:
             if rest == ["status"] and m == "GET":
                 n = self.nodes[node]
                 return 200, {"cpu": n["cpu"], "uptime": 86400 * 31,
-                             "memory": {"used": n["mem"], "total": n["maxmem"]},
+                             "memory": {"used": n["mem"], "total": n["maxmem"], "free": n["maxmem"] - n["mem"]},
                              "cpuinfo": {"model": "AMD EPYC 7443P 24-Core Processor", "cpus": n["maxcpu"], "sockets": 1},
                              "pveversion": "pve-manager/8.2.4/faa83925c9641325", "kversion": "Linux 6.8.8-2-pve",
                              "loadavg": ["0.42", "0.38", "0.31"]}

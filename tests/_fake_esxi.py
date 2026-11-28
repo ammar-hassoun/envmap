@@ -46,6 +46,18 @@ def _t(el, name, default=""):
     return (k.text or "").strip() if k is not None else default
 
 
+# what the free licence still answers: reading, and nothing else
+READ_OPS = {"RetrieveServiceContent", "Login", "Logout", "RetrievePropertiesEx", "ContinueRetrievePropertiesEx",
+            "CreateContainerView", "DestroyView", "QueryConfigOption", "SearchDatastore_Task",
+            "SearchDatastoreSubFolders_Task"}
+
+
+def free_licence(host) -> None:
+    """Make a stand-in host behave as one on the free ESXi licence does."""
+    host.licence = ("vSphere 8 Hypervisor", "esx.hypervisor.cpuPackageCoreLimited")
+    host.read_only = True
+
+
 class Fault(Exception):
     def __init__(self, kind: str, msg: str):
         super().__init__(msg)
@@ -95,6 +107,12 @@ class FakeEsxi:
         self.calls: list[tuple] = []
         self.encodings_seen: list[list[int]] = []
         self.pings_seen = 0
+        # (name, edition key) as LicenseManager reports them. With read_only the
+        # API behaves as it does on the free licence: it reads, and refuses the
+        # rest with VMware's own sentence (measured on ESXi 7.0 and 8.0).
+        self.licence = ("vSphere 8 Enterprise Plus", "esx.enterprisePlus.cpuPackage")
+        self.read_only = False
+        self.refused: list[str] = []
         self.tickets: set = set()
         self.maintenance = False
         self.fail_next: dict = {}
@@ -172,6 +190,14 @@ class FakeEsxi:
             def do_GET(self):
                 if self.path.startswith("/api/"):
                     return self._send(400, b"Unsupported content type")
+                m = re.match(r"^/folder/([^?]+)\?(.*)$", self.path)
+                if m and "vmware_soap_session" in self.headers.get("Cookie", ""):
+                    import urllib.parse as up
+                    q = dict(up.parse_qsl(m.group(2)))
+                    with fake.lock:
+                        raw = fake.read_file(q.get("dsName", ""), up.unquote(m.group(1)))
+                    if raw is not None:
+                        return self._send(200, raw)
                 self._send(404, b"")
 
             def _send(self, code, raw, cookie=""):
@@ -201,6 +227,11 @@ class FakeEsxi:
     def url(self) -> str:
         return f"http://127.0.0.1:{self.port}"
 
+    def read_file(self, ds: str, path: str):
+        """What the file service returns for a file, or None when it has none
+        to return (a stand-in that keeps file contents overrides this)."""
+        return None
+
     # ── SOAP ────────────────────────────────────────────────
     def soap(self, body: str, cookie: str) -> tuple[int, str, str]:
         root = ET.fromstring(body)
@@ -224,6 +255,10 @@ class FakeEsxi:
                 if op in self.fail_next:
                     kind, msg = self.fail_next.pop(op)
                     raise Fault(kind, msg)
+                if self.read_only and op not in READ_OPS:
+                    self.refused.append(op)
+                    raise Fault("RestrictedVersion", "Current license or ESXi version prohibits execution of "
+                                                     "the requested operation.")
                 handler = getattr(self, "op_" + op, None)
                 if not handler:
                     raise Fault("MethodNotFound", op)
@@ -318,6 +353,17 @@ class FakeEsxi:
 
     def _prop(self, kind, moid, p):
         S, MO, MOS = self._s, self._mo, self._mos
+        if kind == "LicenseManager":
+            if p != "licenses":
+                return None
+            name, edition = self.licence
+            feature = ("" if edition.startswith("esx.hypervisor") else
+                       '<properties><key>feature</key><value xsi:type="KeyValue"><key>vsphereapi</key>'
+                       '<value>vSphere API</value></value></properties>')
+            return ('<val xsi:type="ArrayOfLicenseManagerLicenseInfo"><LicenseManagerLicenseInfo>'
+                    f'<licenseKey>00000-00000-00000-00000-00000</licenseKey><editionKey>{x(edition)}</editionKey>'
+                    f'<name>{x(name)}</name><total>0</total><used>2</used><costUnit>cpuPackage</costUnit>'
+                    f'{feature}</LicenseManagerLicenseInfo></val>')
         if kind == "Folder" and moid == "ha-folder-root" and p == "childEntity":
             return MOS("Datacenter", ["ha-datacenter"])
         if kind == "Folder" and moid == "ha-folder-host" and p == "childEntity":
@@ -435,6 +481,9 @@ class FakeEsxi:
             else:
                 label = t.replace("Virtual", "") + " 0"
             inner = f"<key>{key}</key><deviceInfo><label>{x(label)}</label><summary>{x(label)}</summary></deviceInfo>"
+            if d.get("slot") is not None:
+                inner += ('<slotInfo xsi:type="VirtualDevicePciBusSlotInfo">'
+                          f'<pciSlotNumber>{int(d["slot"])}</pciSlotNumber></slotInfo>')
             if t == "VirtualDisk":
                 inner += (f'<backing xsi:type="VirtualDiskFlatVer2BackingInfo"><fileName>{x(d["file"])}</fileName>'
                           '<datastore type="Datastore">ds-1</datastore><diskMode>persistent</diskMode>'
@@ -444,15 +493,16 @@ class FakeEsxi:
             elif t in ("VirtualVmxnet3", "VirtualE1000e", "VirtualE1000"):
                 inner += (f'<backing xsi:type="VirtualEthernetCardNetworkBackingInfo"><deviceName>{x(d["network"])}'
                           f'</deviceName><network type="Network">HaNetwork-{x(d["network"])}</network></backing>'
-                          f'<connectable><startConnected>true</startConnected><allowGuestControl>true</allowGuestControl>'
+                          f'<connectable><startConnected>{"true" if d.get("start_connected", True) else "false"}'
+                          f'</startConnected><allowGuestControl>true</allowGuestControl>'
                           f'<connected>{"true" if d["connected"] else "false"}</connected><status>ok</status></connectable>'
                           f'<controllerKey>{d.get("controller", 100)}</controllerKey><unitNumber>{d.get("unit", 7)}</unitNumber>'
-                          f'<addressType>generated</addressType><macAddress>{d["mac"]}</macAddress>')
+                          f'<addressType>{d.get("address_type", "generated")}</addressType><macAddress>{d["mac"]}</macAddress>')
             elif t == "VirtualCdrom":
                 back = (f'<backing xsi:type="VirtualCdromIsoBackingInfo"><fileName>{x(d["iso"])}</fileName></backing>'
                         if d["iso"] else '<backing xsi:type="VirtualCdromRemotePassthroughBackingInfo">'
                         '<deviceName></deviceName><useAutoDetect>false</useAutoDetect><exclusive>false</exclusive></backing>')
-                inner += (back + f'<connectable><startConnected>{"true" if d["iso"] else "false"}</startConnected>'
+                inner += (back + f'<connectable><startConnected>{"true" if d.get("start_connected", bool(d["iso"])) else "false"}</startConnected>'
                           f'<allowGuestControl>true</allowGuestControl><connected>{"true" if d["connected"] else "false"}'
                           f'</connected><status>ok</status></connectable><controllerKey>{d["controller"]}</controllerKey>'
                           f'<unitNumber>{d["unit"]}</unitNumber>')
@@ -485,10 +535,11 @@ class FakeEsxi:
             "config.annotation": S(vm["notes"]), "config.hardware.numCPU": S(vm["cpus"]),
             "config.hardware.numCoresPerSocket": S(vm["cps"]), "config.hardware.memoryMB": S(vm["mem"]),
             "config.firmware": S(vm["firmware"]),
-            "config.files.vmPathName": S(f"[datastore1] {vm['name']}/{vm['name']}.vmx"),
-            "config.version": S("vmx-21"), "config.uuid": S(vm.get("uuid") or f"4210{moid:0>4}-fake"),
+            "config.files.vmPathName": S(vm.get("vmx") or f"[datastore1] {vm['name']}/{vm['name']}.vmx"),
+            "config.version": S(vm.get("hw") or "vmx-21"), "config.uuid": S(vm.get("uuid") or f"4210{moid:0>4}-fake"),
             "config.template": S("false", "xsd:boolean"),
             "guest.toolsRunningStatus": S(vm["tools"]), "guest.toolsVersionStatus2": S("guestToolsCurrent"),
+            "guestHeartbeatStatus": S("green" if on and vm["tools"] == "guestToolsRunning" else "gray"),
             "summary.config.numCpu": S(vm["cpus"]), "summary.config.memorySizeMB": S(vm["mem"]),
             "summary.config.template": S("false"),
             "summary.runtime.maxCpuUsage": S(vm["cpus"] * 2300),

@@ -85,6 +85,23 @@
                         {% if c[key] %}checked{% endif %}>
               <span class="sec-note" style="margin:0 0 0 8px;">{{ note }}</span></div></div>
           {% endfor %}
+          {% if kind == 'virt' and c.type == 'vsphere' %}
+          <div class="field-row"><label>sign-in for this host's VMs</label>
+            <div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+                <input type="text" name="guest_user" value="{{ c.guest_user or '' }}" placeholder="root"
+                       autocomplete="off" spellcheck="false" style="max-width:170px;" aria-label="user inside the VMs">
+                <input type="password" name="guest_password" autocomplete="new-password" style="max-width:240px;"
+                       aria-label="password inside the VMs"
+                       placeholder="{% if c.guest_password %}•••••• stored — type to replace{% else %}password{% endif %}">
+                {% if c.guest_password %}<label class="chk"><input type="checkbox" name="guest_forget"> forget it</label>{% endif %}
+              </div>
+              <span class="sec-note" style="display:block;margin:6px 0 0;">For VM migration from a standalone ESXi
+                host: the move starts inside the VM, so EnvMap signs in to it as root, or as a user who may use sudo
+                without a password. Saved here, it is used for every VM on this host and not asked again; it is stored
+                encrypted with the connection and never shown. Leave it empty to be asked at each move.</span>
+            </div></div>
+          {% endif %}
           <div class="actions"><button type="submit"
                   style="padding:6px 16px;font-size:12.5px;">Save &amp; test</button></div>
         </form>

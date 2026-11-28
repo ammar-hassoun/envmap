@@ -78,6 +78,12 @@ RUN curl -fsSL -o tofu.tar.gz \
 FROM --platform=$BUILDPLATFORM golang:1.25.7-bookworm AS envmove
 WORKDIR /src
 COPY envmove/ /src/
+# The copy of a powered-off machine's disks has tests of its own
+# (coldcopy_test.go: memory disks, a real connection, every rule with its
+# fault). They run here when the building machine is x86-64, as the release's
+# is: no image is made from an engine whose copy does not pass them. (The
+# engine itself only builds for x86-64, so on another builder they cannot run.)
+RUN if [ "$(go env GOHOSTARCH)" = "amd64" ]; then CGO_ENABLED=0 go test -count=1 . ; fi
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o /out/envmove . \
  && test "$(head -c 4 /out/envmove | od -An -tx1 | tr -d ' ')" = "7f454c46"
 

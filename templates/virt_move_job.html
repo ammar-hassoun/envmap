@@ -2,7 +2,8 @@
 {% block crumbs %}<a href="/virt">Hypervisors</a> <span>›</span> <a href="/virt/moves">Moves</a> <span>›</span>
   <b>{{ job.src.name }}</b>{% endblock %}
 {% block content %}
-<div data-move-job data-id="{{ job.id }}" data-prod="{{ '1' if (job.src.production or job.dst.production) else '0' }}">
+{%- set off = job.mode == 'off' -%}
+<div data-move-job data-id="{{ job.id }}" data-mode="{{ 'off' if off else 'live' }}" data-prod="{{ '1' if (job.src.production or job.dst.production) else '0' }}">
 <div class="page-head"><div>
   <h1 style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">Moving {{ job.src.name }}
     <span class="mv-state" data-job-state>{{ job.state }}</span></h1>
@@ -12,12 +13,24 @@
   <div><a class="btn btn-ghost" href="/virt/moves" style="white-space:nowrap;">All moves</a></div>
 </div>
 
-<div class="mv-steps" data-job-steps>
-  {% for key, label in [('preparing', 'New VM ready'), ('copying', 'Disks and memory copied while it runs'),
-                        ('frozen', 'Last changes cross'), ('finishing', 'Running on the new VM'), ('done', 'Done')] %}
+<div class="mv-steps{{ ' mv-steps-4' if off }}" data-job-steps>
+  {% for key, label in ([('preparing', 'New VM and two helpers ready'), ('copying', 'Disks copied and read back'),
+                         ('finishing', 'Helpers removed'), ('done', 'Done')] if off else
+                        [('preparing', 'New VM ready'), ('copying', 'Disks and memory copied while it runs'),
+                         ('frozen', 'Last changes cross'), ('finishing', 'Running on the new VM'), ('done', 'Done')]) %}
   <div class="mv-step" data-step="{{ key }}"><span class="dot"></span><span>{{ label }}</span></div>
   {% endfor %}
 </div>
+{% if off %}
+<div class="card" data-job-copy hidden><div class="card-b">
+  <div class="mv-bar"><div class="mv-bar-fill" data-job-bar></div></div>
+  <p class="hint" data-job-numbers style="margin:8px 0 0;"></p>
+  <div style="margin-top:10px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;" data-job-stop>
+    <button type="button" data-decide="stop">Stop the move</button>
+    <span class="hint">Stopping undoes it: the helpers, their CDs and the new VM are removed. The VM is not changed.</span>
+  </div>
+</div></div>
+{% endif %}
 
 <div class="flash" data-job-banner hidden></div>
 

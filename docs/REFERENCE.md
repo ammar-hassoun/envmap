@@ -626,10 +626,13 @@ chassis, health and firmware inventory for every machine, read-only.
 
 **Proxmox VE, and vCenter or standalone ESXi.** Hosts and their virtual
 machines: the layer underneath the Kubernetes nodes, where "the node went
-away" usually gets explained. These pages are read-only by design. There is no
-start, stop, migrate or snapshot here, because both tools have their own
-consoles, permissions and audit trails. Power buttons exist only for the VMs
-DevOps EnvMap provisioned itself.
+away" usually gets explained. A connection is read-only until **Allow
+management from EnvMap** is ticked on it. With that, and roles that allow it,
+a standalone ESXi host's or a Proxmox node's VMs can be started, stopped,
+snapshotted and changed from here, and a VM can be moved to another host or
+to the other hypervisor (a preview:
+[Move a VM](https://envmap.tech/docs/infra/move/)). A vCenter stays
+read-only.
 
 ### Storage devices
 
